@@ -1,0 +1,1146 @@
+<Window x:Class="WindowMonitorApp.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:oxy="http://oxyplot.org/wpf"
+        mc:Ignorable="d"
+        Title="窗口专注助手"
+        Height="900"
+        Width="1320"
+        MinWidth="1120"
+        MinHeight="760"
+        WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+        <SolidColorBrush x:Key="AppPrimaryBrush" Color="#2563EB" />
+        <SolidColorBrush x:Key="AppPrimaryHoverBrush" Color="#1D4ED8" />
+        <SolidColorBrush x:Key="AppSecondaryBrush" Color="#E2E8F0" />
+        <SolidColorBrush x:Key="AppSecondaryHoverBrush" Color="#CBD5E1" />
+        <SolidColorBrush x:Key="AppDangerBrush" Color="#DC2626" />
+        <SolidColorBrush x:Key="AppDangerHoverBrush" Color="#B91C1C" />
+        <SolidColorBrush x:Key="AppSurfaceBrush" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="AppBorderBrush" Color="#D7DEE8" />
+
+        <Style x:Key="BaseButtonStyle" TargetType="Button">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Padding" Value="12,6" />
+            <Setter Property="Background" Value="{StaticResource AppSecondaryBrush}" />
+            <Setter Property="Foreground" Value="#0F172A" />
+            <Setter Property="BorderBrush" Value="#CBD5E1" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.92" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.84" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}" />
+
+        <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}">
+            <Setter Property="Background" Value="{StaticResource AppPrimaryBrush}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource AppPrimaryBrush}" />
+        </Style>
+
+        <Style x:Key="SecondaryButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}">
+            <Setter Property="Background" Value="{StaticResource AppSecondaryBrush}" />
+            <Setter Property="Foreground" Value="#0F172A" />
+            <Setter Property="BorderBrush" Value="#CBD5E1" />
+        </Style>
+
+        <Style x:Key="DangerButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}">
+            <Setter Property="Background" Value="{StaticResource AppDangerBrush}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource AppDangerBrush}" />
+        </Style>
+
+        <Style x:Key="StepperButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}">
+            <Setter Property="MinWidth" Value="30" />
+            <Setter Property="Padding" Value="0,0" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+
+        <Style TargetType="TextBox">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="Background" Value="{StaticResource AppSurfaceBrush}" />
+            <Setter Property="BorderBrush" Value="#CBD5E1" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Style.Triggers>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="{StaticResource AppPrimaryBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style TargetType="ComboBox">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Padding" Value="6,2" />
+            <Setter Property="Background" Value="{StaticResource AppSurfaceBrush}" />
+            <Setter Property="BorderBrush" Value="#CBD5E1" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+
+        <Style x:Key="InputLabelStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#1E293B" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style x:Key="InputHintStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#64748B" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Margin" Value="0,4,0,0" />
+        </Style>
+
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="#F8FAFC" />
+            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="Padding" Value="16" />
+            <Setter Property="BorderBrush" Value="{StaticResource AppBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Background="#E9EEF5" Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Style="{StaticResource CardStyle}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0" Content="上一页" Command="{Binding PreviousPageCommand}" Style="{StaticResource SecondaryButtonStyle}" Margin="0,0,8,0" />
+                <Button Grid.Column="1" Content="下一页" Command="{Binding NextPageCommand}" Style="{StaticResource SecondaryButtonStyle}" Margin="0,0,16,0" />
+
+                <TextBlock Grid.Column="2"
+                           Text="{Binding PageIndicatorText}"
+                           VerticalAlignment="Center"
+                           FontSize="16"
+                           FontWeight="SemiBold"
+                           Foreground="#0F172A" />
+
+                <Button Grid.Column="3" Content="番茄钟" Command="{Binding GoToPageCommand}" CommandParameter="0" MinWidth="68" Margin="6,0,0,0" />
+                <Button Grid.Column="4" Content="统计" Command="{Binding GoToPageCommand}" CommandParameter="1" MinWidth="56" Margin="6,0,0,0" />
+                <Button Grid.Column="5" Content="窗口" Command="{Binding GoToPageCommand}" CommandParameter="2" MinWidth="56" Margin="6,0,0,0" />
+                <Button Grid.Column="6" Content="焦点" Command="{Binding GoToPageCommand}" CommandParameter="3" MinWidth="56" Margin="6,0,0,0" />
+                <Button Grid.Column="7" Content="电源" Command="{Binding GoToPageCommand}" CommandParameter="4" MinWidth="56" Margin="6,0,0,0" />
+                <Button Grid.Column="8" Content="待办" Command="{Binding GoToPageCommand}" CommandParameter="5" MinWidth="56" Margin="6,0,0,0" />
+                <Button Grid.Column="9" Content="刷新数据" Command="{Binding RefreshCommand}" Style="{StaticResource PrimaryButtonStyle}" Margin="12,0,0,0" />
+                <TextBlock Grid.Column="10"
+                           Text="{Binding CurrentTimeText}"
+                           VerticalAlignment="Center"
+                           Foreground="#334155"
+                           Margin="16,0,0,0" />
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="1" Style="{StaticResource CardStyle}" Margin="0,8,0,0">
+            <TabControl SelectedIndex="{Binding SelectedPageIndex}" Background="Transparent" BorderThickness="0">
+                <TabControl.ItemContainerStyle>
+                    <Style TargetType="TabItem">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                    </Style>
+                </TabControl.ItemContainerStyle>
+
+                <TabItem>
+                    <Grid Margin="4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="3*" />
+                            <ColumnDefinition Width="2*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Style="{StaticResource CardStyle}" Margin="0,0,8,0">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Text="番茄钟专注" FontSize="28" FontWeight="Bold" Foreground="#0F172A" />
+                                    <TextBlock Text="{Binding PomodoroDisplay}" FontSize="62" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,8,0,0" />
+                                    <TextBlock Text="{Binding PomodoroModeText}" FontSize="18" HorizontalAlignment="Center" Foreground="#475569" Margin="0,0,0,12" />
+
+                                    <Grid Margin="0,8,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                            <TextBlock Text="专注时长（分钟）" Style="{StaticResource InputLabelStyle}" />
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox Grid.Column="0" Text="{Binding FocusMinutesInput, UpdateSourceTrigger=PropertyChanged}" ToolTip="范围 1-240" />
+                                                <Button Grid.Column="1"
+                                                        Content="-"
+                                                        Style="{StaticResource StepperButtonStyle}"
+                                                        Command="{Binding AdjustFocusSettingCommand}"
+                                                        CommandParameter="focus:-5"
+                                                        Margin="6,0,0,0" />
+                                                <Button Grid.Column="2"
+                                                        Content="+"
+                                                        Style="{StaticResource StepperButtonStyle}"
+                                                        Command="{Binding AdjustFocusSettingCommand}"
+                                                        CommandParameter="focus:5"
+                                                        Margin="6,0,0,0" />
+                                            </Grid>
+                                            <TextBlock Text="建议每次按 5 分钟调整" Style="{StaticResource InputHintStyle}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Margin="8,0,8,0">
+                                            <TextBlock Text="休息时长（分钟）" Style="{StaticResource InputLabelStyle}" />
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox Grid.Column="0" Text="{Binding BreakMinutesInput, UpdateSourceTrigger=PropertyChanged}" ToolTip="范围 1-120" />
+                                                <Button Grid.Column="1"
+                                                        Content="-"
+                                                        Style="{StaticResource StepperButtonStyle}"
+                                                        Command="{Binding AdjustFocusSettingCommand}"
+                                                        CommandParameter="break:-1"
+                                                        Margin="6,0,0,0" />
+                                                <Button Grid.Column="2"
+                                                        Content="+"
+                                                        Style="{StaticResource StepperButtonStyle}"
+                                                        Command="{Binding AdjustFocusSettingCommand}"
+                                                        CommandParameter="break:1"
+                                                        Margin="6,0,0,0" />
+                                            </Grid>
+                                            <TextBlock Text="建议 1-15 分钟" Style="{StaticResource InputHintStyle}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2" Margin="8,0,0,0">
+                                            <TextBlock Text="专注开始跳转页" Style="{StaticResource InputLabelStyle}" />
+                                            <ComboBox ItemsSource="{Binding PageOptions}"
+                                                      DisplayMemberPath="Name"
+                                                      SelectedValuePath="Index"
+                                                      SelectedValue="{Binding FocusPageIndex}" />
+                                            <TextBlock Text="开始专注时自动切换到该页面" Style="{StaticResource InputHintStyle}" />
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                            <TextBlock Text="提醒阈值（分钟）" Style="{StaticResource InputLabelStyle}" />
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox Grid.Column="0" Text="{Binding AlertThresholdMinutesInput, UpdateSourceTrigger=PropertyChanged}" ToolTip="范围 0.1-240" />
+                                                <Button Grid.Column="1"
+                                                        Content="-"
+                                                        Style="{StaticResource StepperButtonStyle}"
+                                                        Command="{Binding AdjustFocusSettingCommand}"
+                                                        CommandParameter="threshold:-0.5"
+                                                        Margin="6,0,0,0" />
+                                                <Button Grid.Column="2"
+                                                        Content="+"
+                                                        Style="{StaticResource StepperButtonStyle}"
+                                                        Command="{Binding AdjustFocusSettingCommand}"
+                                                        CommandParameter="threshold:0.5"
+                                                        Margin="6,0,0,0" />
+                                            </Grid>
+                                            <TextBlock Text="默认值 1 分钟" Style="{StaticResource InputHintStyle}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Margin="8,0,8,0">
+                                            <TextBlock Text="提醒统计方式" Style="{StaticResource InputLabelStyle}" />
+                                            <ComboBox ItemsSource="{Binding AlertModes}" SelectedItem="{Binding SelectedAlertMode}" />
+                                            <TextBlock Text="连续：不中断计时；累计：可中断累加" Style="{StaticResource InputHintStyle}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2" Margin="8,0,0,0">
+                                            <TextBlock Text="循环次数（&lt;=0 为无限）" Style="{StaticResource InputLabelStyle}" />
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox Grid.Column="0" Text="{Binding PlanCycleCountInput, UpdateSourceTrigger=PropertyChanged}" ToolTip="例如 3 表示执行 3 轮" />
+                                                <Button Grid.Column="1"
+                                                        Content="-"
+                                                        Style="{StaticResource StepperButtonStyle}"
+                                                        Command="{Binding AdjustFocusSettingCommand}"
+                                                        CommandParameter="cycle:-1"
+                                                        Margin="6,0,0,0" />
+                                                <Button Grid.Column="2"
+                                                        Content="+"
+                                                        Style="{StaticResource StepperButtonStyle}"
+                                                        Command="{Binding AdjustFocusSettingCommand}"
+                                                        CommandParameter="cycle:1"
+                                                        Margin="6,0,0,0" />
+                                            </Grid>
+                                            <TextBlock Text="输入 0 或负数表示无限循环" Style="{StaticResource InputHintStyle}" />
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <UniformGrid Columns="3">
+                                        <Button Content="{Binding PomodoroButtonText}" Command="{Binding StartPausePomodoroCommand}" Style="{StaticResource PrimaryButtonStyle}" Margin="3" />
+                                        <Button Content="重置计时" Command="{Binding ResetPomodoroCommand}" Style="{StaticResource SecondaryButtonStyle}" Margin="3" />
+                                        <Button Content="切换模式" Command="{Binding SwitchPomodoroModeCommand}" Style="{StaticResource SecondaryButtonStyle}" Margin="3" />
+                                    </UniformGrid>
+
+                                    <Border Background="#EDF2F7" CornerRadius="10" Padding="12" Margin="0,12,0,0">
+                                        <StackPanel>
+                                            <TextBlock Text="当前前台窗口" FontWeight="Bold" Foreground="#0F172A" />
+                                            <TextBlock Text="{Binding CurrentForegroundWindowText}" TextWrapping="Wrap" Margin="0,4,0,8" />
+                                            <TextBlock Text="提醒状态" FontWeight="Bold" Foreground="#0F172A" />
+                                            <TextBlock Text="{Binding DistractionStatusText}" TextWrapping="Wrap" Margin="0,4,0,8" />
+                                            <TextBlock Text="计划执行状态" FontWeight="Bold" Foreground="#0F172A" />
+                                            <TextBlock Text="{Binding FocusPlanSummaryText}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Background="#F1F5F9" CornerRadius="10" Padding="12" Margin="0,12,0,0">
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="*" />
+                                            </Grid.RowDefinitions>
+
+                                            <TextBlock Grid.Row="0" Text="专注计划队列" FontWeight="Bold" Foreground="#0F172A" />
+
+                                            <Grid Grid.Row="1" Margin="0,8,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="120" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox Grid.Column="0"
+                                                         Text="{Binding PlanTemplateDraftName, UpdateSourceTrigger=PropertyChanged}"
+                                                         Margin="0,0,8,0" />
+                                                <ComboBox Grid.Column="1"
+                                                          ItemsSource="{Binding FocusPlanTemplates}"
+                                                          SelectedItem="{Binding SelectedPlanTemplate}"
+                                                          DisplayMemberPath="Name"
+                                                          Margin="0,0,8,0" />
+                                                <Button Grid.Column="2"
+                                                        Content="保存模板"
+                                                        Command="{Binding SaveFocusPlanTemplateCommand}"
+                                                        Style="{StaticResource PrimaryButtonStyle}"
+                                                        Margin="0,0,8,0" />
+                                                <Button Grid.Column="3"
+                                                        Content="载入模板"
+                                                        Style="{StaticResource SecondaryButtonStyle}"
+                                                        Command="{Binding LoadFocusPlanTemplateCommand}" />
+                                            </Grid>
+
+                                            <StackPanel Grid.Row="2" Orientation="Horizontal">
+                                                <Button Content="删除模板"
+                                                        Command="{Binding DeleteFocusPlanTemplateCommand}"
+                                                        Style="{StaticResource DangerButtonStyle}"
+                                                        Margin="0,0,8,0" />
+                                                <Button
+                                                    Content="清空队列"
+                                                    Style="{StaticResource SecondaryButtonStyle}"
+                                                    Command="{Binding ClearPlanStepsCommand}"
+                                                    />
+                                            </StackPanel>
+
+                                            <ListBox Grid.Row="3" ItemsSource="{Binding FocusPlanSteps}">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="8" Padding="8" Margin="0,0,0,8">
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="90" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                                                    <TextBlock Text="{Binding Title}" FontWeight="Bold" />
+                                                                    <TextBlock Text="{Binding WindowSummaryText}" Foreground="#64748B" TextWrapping="Wrap" />
+                                                                </StackPanel>
+                                                                <TextBox Grid.Column="1"
+                                                                         Text="{Binding DurationMinutesInput, UpdateSourceTrigger=PropertyChanged}"
+                                                                         VerticalAlignment="Center"
+                                                                         Margin="0,0,8,0"
+                                                                         ToolTip="该步骤专注分钟数" />
+                                                                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                                                    <Button Content="上移"
+                                                                            Command="{Binding DataContext.MovePlanStepUpCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                            CommandParameter="{Binding}"
+                                                                            Style="{StaticResource SecondaryButtonStyle}"
+                                                                            Margin="0,0,6,0" />
+                                                                    <Button Content="下移"
+                                                                            Command="{Binding DataContext.MovePlanStepDownCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                            CommandParameter="{Binding}"
+                                                                            Style="{StaticResource SecondaryButtonStyle}"
+                                                                            Margin="0,0,6,0" />
+                                                                    <Button Content="移除"
+                                                                            Command="{Binding DataContext.RemovePlanStepCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                            Style="{StaticResource DangerButtonStyle}"
+                                                                            CommandParameter="{Binding}" />
+                                                                </StackPanel>
+                                                            </Grid>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </Grid>
+                                    </Border>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+
+                        <Border Grid.Column="1" Style="{StaticResource CardStyle}" Margin="8,0,0,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="1.1*" />
+                                </Grid.RowDefinitions>
+
+                                <Border Grid.Row="0" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="10" Padding="10" Margin="0,0,0,8">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <TextBlock Grid.Row="0"
+                                                   Text="允许专注窗口（手动多选）"
+                                                   FontSize="16"
+                                                   FontWeight="Bold"
+                                                   Foreground="#0F172A" />
+
+                                        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,10">
+                                            <Button Content="刷新窗口列表" Command="{Binding RefreshOpenWindowsCommand}" Style="{StaticResource SecondaryButtonStyle}" Margin="0,0,8,0" />
+                                            <Button Content="全选" Command="{Binding SelectAllFocusWindowsCommand}" Style="{StaticResource SecondaryButtonStyle}" Margin="0,0,8,0" />
+                                            <Button Content="清空选择" Command="{Binding ClearFocusWindowsCommand}" Style="{StaticResource SecondaryButtonStyle}" />
+                                        </StackPanel>
+
+                                        <ListBox Grid.Row="2" ItemsSource="{Binding FocusWindowOptions}">
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <CheckBox IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"
+                                                              Content="{Binding DisplayName}"
+                                                              Margin="2" />
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+
+                                        <TextBlock Grid.Row="3"
+                                                   Text="{Binding AllowedWindowCount, StringFormat=已选允许窗口：{0}}"
+                                                   Foreground="#334155"
+                                                   Margin="0,10,0,0" />
+                                    </Grid>
+                                </Border>
+
+                                <Border Grid.Row="1" BorderBrush="#D7DEE8" BorderThickness="1" CornerRadius="10" Padding="10" Margin="0,8,0,0">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Text="专注事项库"
+                                                   FontSize="16"
+                                                   FontWeight="Bold"
+                                                   Foreground="#0F172A" />
+
+                                        <StackPanel Grid.Row="1" Margin="0,8,0,10">
+                                            <TextBlock Text="{Binding FocusItemEditorTitleText}" Foreground="#475569" Margin="0,0,0,6" />
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="100" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox Grid.Column="0"
+                                                         Text="{Binding FocusItemDraftTitle, UpdateSourceTrigger=PropertyChanged}"
+                                                         Margin="0,0,8,0" />
+                                                <TextBox Grid.Column="1"
+                                                         Text="{Binding FocusItemDraftMinutesInput, UpdateSourceTrigger=PropertyChanged}"
+                                                         Margin="0,0,8,0" />
+                                                <Button Grid.Column="2"
+                                                        Content="-"
+                                                        Style="{StaticResource StepperButtonStyle}"
+                                                        Command="{Binding AdjustFocusSettingCommand}"
+                                                        CommandParameter="item:-5"
+                                                        Margin="0,0,6,0" />
+                                                <Button Grid.Column="3"
+                                                        Content="+"
+                                                        Style="{StaticResource StepperButtonStyle}"
+                                                        Command="{Binding AdjustFocusSettingCommand}"
+                                                        CommandParameter="item:5"
+                                                        Margin="0,0,8,0" />
+                                                <Button Grid.Column="4"
+                                                        Content="{Binding FocusItemEditorButtonText}"
+                                                        Command="{Binding CreateFocusItemCommand}"
+                                                        Style="{StaticResource PrimaryButtonStyle}"
+                                                        Margin="0,0,8,0"
+                                                        Padding="10,4" />
+                                                <Button Grid.Column="5"
+                                                        Content="取消编辑"
+                                                        Command="{Binding CancelEditFocusItemCommand}"
+                                                        Style="{StaticResource SecondaryButtonStyle}"
+                                                        Padding="10,4" />
+                                            </Grid>
+
+                                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                                <Button Content="草稿窗口全选" Command="{Binding SelectAllFocusItemWindowsCommand}" Style="{StaticResource SecondaryButtonStyle}" Margin="0,0,8,0" />
+                                                <Button Content="清空草稿选择" Command="{Binding ClearFocusItemWindowsCommand}" Style="{StaticResource SecondaryButtonStyle}" Margin="0,0,8,0" />
+                                                <TextBlock Text="{Binding FocusItemWindowCount, StringFormat=已选：{0}}" VerticalAlignment="Center" Foreground="#334155" />
+                                            </StackPanel>
+
+                                            <ListBox ItemsSource="{Binding FocusItemWindowOptions}" Height="88" Margin="0,8,0,0">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <CheckBox IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}" Content="{Binding DisplayName}" Margin="2" />
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </StackPanel>
+
+                                        <ListBox Grid.Row="2" ItemsSource="{Binding FocusItems}" SelectedItem="{Binding SelectedFocusItem}">
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="8" Padding="8" Margin="0,0,0,8">
+                                                        <StackPanel>
+                                                            <TextBlock Text="{Binding Title}" FontWeight="Bold" />
+                                                            <TextBlock Text="{Binding DefaultMinutes, StringFormat=默认时长：{0} 分钟}" Foreground="#475569" />
+                                                            <TextBlock Text="{Binding TotalFocusDurationText, StringFormat=累计专注：{0}}" Foreground="#475569" />
+                                                            <TextBlock Text="{Binding WindowSummaryText}" Foreground="#64748B" TextWrapping="Wrap" Margin="0,2,0,6" />
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <Button Content="加入队列"
+                                                                        Command="{Binding DataContext.AddFocusItemToPlanCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                        CommandParameter="{Binding}"
+                                                                        Style="{StaticResource PrimaryButtonStyle}"
+                                                                        Margin="0,0,8,0" />
+                                                                <Button Content="编辑"
+                                                                        Command="{Binding DataContext.StartEditFocusItemCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                        CommandParameter="{Binding}"
+                                                                        Style="{StaticResource SecondaryButtonStyle}"
+                                                                        Margin="0,0,8,0" />
+                                                                <Button Content="删除"
+                                                                        Command="{Binding DataContext.DeleteFocusItemCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                        Style="{StaticResource DangerButtonStyle}"
+                                                                        CommandParameter="{Binding}" />
+                                                            </StackPanel>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </TabItem>
+
+                <TabItem>
+                    <Grid Margin="4">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Border Grid.Row="0" Style="{StaticResource CardStyle}" Margin="0,0,0,8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="数据统计" FontSize="22" FontWeight="Bold" Foreground="#0F172A" />
+                                    <TextBlock Text="{Binding CurrentForegroundWindowText}" Foreground="#475569" Margin="0,4,0,0" />
+                                </StackPanel>
+
+                                <Button Grid.Column="1"
+                                        Content="{Binding AnalyticsModeText}"
+                                        Command="{Binding ToggleAnalyticsModeCommand}"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        Margin="8,0,0,0"
+                                        Padding="10,4" />
+                                <Button Grid.Column="2"
+                                        Content="前一天"
+                                        Command="{Binding PreviousAnalyticsDateCommand}"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        Margin="8,0,0,0"
+                                        Padding="10,4" />
+                                <DatePicker Grid.Column="3"
+                                            SelectedDate="{Binding AnalyticsDateLocal}"
+                                            Margin="8,0,0,0" />
+                                <Button Grid.Column="4"
+                                        Content="后一天"
+                                        Command="{Binding NextAnalyticsDateCommand}"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        Margin="8,0,0,0"
+                                        Padding="10,4" />
+                            </Grid>
+                        </Border>
+
+                        <Grid Grid.Row="1">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="340" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Border Grid.Column="0" Style="{StaticResource CardStyle}" Margin="0,0,8,0">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="进程性质映射"
+                                               FontWeight="Bold"
+                                               Foreground="#0F172A"
+                                               Margin="0,0,0,8" />
+                                    <DataGrid Grid.Row="1"
+                                              ItemsSource="{Binding ProcessCategoryItems}"
+                                              AutoGenerateColumns="False"
+                                              IsReadOnly="False"
+                                              CanUserAddRows="False">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="进程" Binding="{Binding ProcessName}" Width="*" IsReadOnly="True" />
+                                            <DataGridTemplateColumn Header="性质" Width="130">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <ComboBox ItemsSource="{Binding DataContext.CategoryOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  SelectedItem="{Binding Category, UpdateSourceTrigger=PropertyChanged}" />
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </Grid>
+                            </Border>
+
+                            <Grid Grid.Column="1">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="2*" />
+                                    <RowDefinition Height="2*" />
+                                    <RowDefinition Height="2*" />
+                                    <RowDefinition Height="3*" />
+                                </Grid.RowDefinitions>
+
+                                <Border Grid.Row="0" Style="{StaticResource CardStyle}">
+                                    <oxy:PlotView Model="{Binding PieChartModel}" />
+                                </Border>
+
+                                <Border Grid.Row="1" Style="{StaticResource CardStyle}">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="时间范围" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <TextBox Grid.Column="1" Text="{Binding TimelineStartText, UpdateSourceTrigger=PropertyChanged}" Width="140" Margin="0,0,8,0" />
+                                        <TextBox Grid.Column="2" Text="{Binding TimelineEndText, UpdateSourceTrigger=PropertyChanged}" Width="140" Margin="0,0,8,0" />
+                                        <Button Grid.Column="3" Content="应用" Command="{Binding ApplyTimelineRangeCommand}" Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,8,0" />
+                                        <ComboBox Grid.Column="4" ItemsSource="{Binding HeatmapMetricOptions}" SelectedItem="{Binding SelectedHeatmapMetric}" Width="140" Margin="0,0,8,0" />
+                                    </Grid>
+                                </Border>
+
+                                <Border Grid.Row="2" Style="{StaticResource CardStyle}">
+                                    <oxy:PlotView Model="{Binding HeatmapChartModel}" />
+                                </Border>
+
+                                <Border Grid.Row="3" Style="{StaticResource CardStyle}">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="*" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+
+                                        <oxy:PlotView Grid.Row="0" Model="{Binding BarChartModel}" />
+
+                                        <DataGrid Grid.Row="1"
+                                                  Margin="0,8,0,0"
+                                                  ItemsSource="{Binding TimelineEntries}"
+                                                  AutoGenerateColumns="False"
+                                                  IsReadOnly="True">
+                                            <DataGrid.Columns>
+                                                <DataGridTemplateColumn Header="" Width="36">
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Marker}"
+                                                                       Foreground="{Binding MarkerColorHex}"
+                                                                       HorizontalAlignment="Center"
+                                                                       FontSize="14" />
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
+                                                <DataGridTextColumn Header="开始" Binding="{Binding TimeLocalText}" Width="170" />
+                                                <DataGridTextColumn Header="结束" Binding="{Binding EndTimeLocalText}" Width="170" />
+                                                <DataGridTextColumn Header="内容" Binding="{Binding Label}" Width="*" />
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </Grid>
+                    </Grid>
+                </TabItem>
+
+                <TabItem>
+                    <Grid Margin="4">
+                        <TextBlock Text="全部窗口开启时长"
+                                   FontSize="22"
+                                   FontWeight="Bold"
+                                   Foreground="#0F172A"
+                                   Margin="0,0,0,10" />
+                        <DataGrid Margin="0,40,0,0"
+                                  ItemsSource="{Binding AllWindowStats}"
+                                  AutoGenerateColumns="False"
+                                  IsReadOnly="True"
+                                  GridLinesVisibility="Horizontal">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="进程" Binding="{Binding ProcessName}" Width="140" />
+                                <DataGridTextColumn Header="窗口标题" Binding="{Binding Title}" Width="*" />
+                                <DataGridTextColumn Header="开启时长" Binding="{Binding TotalDurationText}" Width="140" />
+                                <DataGridTextColumn Header="焦点时长" Binding="{Binding FocusDurationText}" Width="140" />
+                                <DataGridTextColumn Header="最后出现" Binding="{Binding LastSeenLocalText}" Width="170" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </TabItem>
+
+                <TabItem>
+                    <Grid Margin="4">
+                        <TextBlock Text="焦点窗口时长排行"
+                                   FontSize="22"
+                                   FontWeight="Bold"
+                                   Foreground="#0F172A"
+                                   Margin="0,0,0,10" />
+                        <DataGrid Margin="0,40,0,0"
+                                  ItemsSource="{Binding FocusWindowStats}"
+                                  AutoGenerateColumns="False"
+                                  IsReadOnly="True"
+                                  GridLinesVisibility="Horizontal">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="进程" Binding="{Binding ProcessName}" Width="160" />
+                                <DataGridTextColumn Header="窗口标题" Binding="{Binding Title}" Width="*" />
+                                <DataGridTextColumn Header="焦点时长" Binding="{Binding FocusDurationText}" Width="160" />
+                                <DataGridTextColumn Header="开启时长" Binding="{Binding TotalDurationText}" Width="160" />
+                                <DataGridTextColumn Header="最后出现" Binding="{Binding LastSeenLocalText}" Width="170" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </TabItem>
+
+                <TabItem>
+                    <Grid Margin="4">
+                        <TextBlock Text="开关机与会话事件"
+                                   FontSize="22"
+                                   FontWeight="Bold"
+                                   Foreground="#0F172A"
+                                   Margin="0,0,0,10" />
+                        <DataGrid Margin="0,40,0,0"
+                                  ItemsSource="{Binding PowerEvents}"
+                                  AutoGenerateColumns="False"
+                                  IsReadOnly="True"
+                                  GridLinesVisibility="Horizontal">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="时间" Binding="{Binding OccurredAtLocalText}" Width="170" />
+                                <DataGridTextColumn Header="事件类型" Binding="{Binding EventTypeDisplay}" Width="230" />
+                                <DataGridTextColumn Header="详情" Binding="{Binding Detail}" Width="*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </TabItem>
+
+                <TabItem>
+                    <Grid Margin="4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2*" />
+                            <ColumnDefinition Width="3*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Style="{StaticResource CardStyle}" Margin="0,0,10,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="2*" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                            <StackPanel Grid.Row="0" Margin="0,0,0,10">
+                                <TextBlock Text="待办事项" FontSize="20" FontWeight="Bold" Foreground="#0F172A" Margin="0,0,0,8" />
+                                <Button Content="新建待办"
+                                        Command="{Binding ToggleCreateTodoPanelCommand}"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        HorizontalAlignment="Left"
+                                        Padding="14,4"
+                                        Margin="0,0,0,8" />
+
+                                <Expander Header="创建设置"
+                                          IsExpanded="{Binding IsCreateTodoPanelExpanded}">
+                                    <StackPanel Margin="0,6,0,0">
+                                        <TextBlock Text="标题" />
+                                        <TextBox Text="{Binding DraftTitle, UpdateSourceTrigger=PropertyChanged}" ToolTip="请输入任务标题" />
+
+                                        <Grid Margin="0,8,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                                <TextBlock Text="任务类型" />
+                                                <ComboBox ItemsSource="{Binding TaskTypeOptions}" SelectedItem="{Binding DraftTaskType}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                                                <TextBlock Text="重复规则" />
+                                                <ComboBox ItemsSource="{Binding RepeatModeOptions}" SelectedItem="{Binding DraftRepeatMode}" />
+                                            </StackPanel>
+                                        </Grid>
+
+                                        <TextBlock Text="每周执行日（1-7）"
+                                                   Margin="0,8,0,4"
+                                                   Visibility="{Binding IsDraftWeekly, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                        <ItemsControl ItemsSource="{Binding DraftWeeklyDays}"
+                                                      Visibility="{Binding IsDraftWeekly, Converter={StaticResource BoolToVisibilityConverter}}">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <CheckBox Content="{Binding Label}" IsChecked="{Binding IsSelected}" Margin="0,0,8,4" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+
+                                        <TextBlock Text="每月执行日（1-31）"
+                                                   Margin="0,8,0,4"
+                                                   Visibility="{Binding IsDraftMonthly, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                        <ItemsControl ItemsSource="{Binding DraftMonthlyDays}"
+                                                      Visibility="{Binding IsDraftMonthly, Converter={StaticResource BoolToVisibilityConverter}}">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <CheckBox Content="{Binding Label}" IsChecked="{Binding IsSelected}" Margin="0,0,8,4" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+
+                                        <TextBlock Text="自定义模式"
+                                                   Margin="0,8,0,0"
+                                                   Visibility="{Binding IsDraftCustom, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                        <TextBox Text="{Binding DraftCustomPattern, UpdateSourceTrigger=PropertyChanged}"
+                                                 Visibility="{Binding IsDraftCustom, Converter={StaticResource BoolToVisibilityConverter}}" />
+
+                                        <CheckBox Content="开启提醒"
+                                                  IsChecked="{Binding DraftReminderEnabled}"
+                                                  Margin="0,8,0,4" />
+                                        <UniformGrid Columns="6" IsEnabled="{Binding DraftReminderEnabled}">
+                                            <TextBox Text="{Binding DraftReminderYear, UpdateSourceTrigger=PropertyChanged}" ToolTip="年（可留空）" Margin="0,0,6,0" />
+                                            <TextBox Text="{Binding DraftReminderMonth, UpdateSourceTrigger=PropertyChanged}" ToolTip="月（可留空）" Margin="0,0,6,0" />
+                                            <TextBox Text="{Binding DraftReminderDay, UpdateSourceTrigger=PropertyChanged}" ToolTip="日（可留空）" Margin="0,0,6,0" />
+                                            <TextBox Text="{Binding DraftReminderHour, UpdateSourceTrigger=PropertyChanged}" ToolTip="时（必填 0-23）" Margin="0,0,6,0" />
+                                            <TextBox Text="{Binding DraftReminderMinute, UpdateSourceTrigger=PropertyChanged}" ToolTip="分（必填 0-59）" Margin="0,0,6,0" />
+                                            <TextBox Text="{Binding DraftReminderSecond, UpdateSourceTrigger=PropertyChanged}" ToolTip="秒（必填 0-59）" />
+                                        </UniformGrid>
+
+                                        <WrapPanel Margin="0,6,0,0" IsEnabled="{Binding DraftReminderEnabled}">
+                                            <Button Content="年+" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustDraftReminderValueCommand}" CommandParameter="year:1" Margin="0,0,6,0" />
+                                            <Button Content="年-" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustDraftReminderValueCommand}" CommandParameter="year:-1" Margin="0,0,8,0" />
+                                            <Button Content="月+" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustDraftReminderValueCommand}" CommandParameter="month:1" Margin="0,0,6,0" />
+                                            <Button Content="月-" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustDraftReminderValueCommand}" CommandParameter="month:-1" Margin="0,0,8,0" />
+                                            <Button Content="日+" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustDraftReminderValueCommand}" CommandParameter="day:1" Margin="0,0,6,0" />
+                                            <Button Content="日-" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustDraftReminderValueCommand}" CommandParameter="day:-1" Margin="0,0,8,0" />
+                                            <Button Content="时+" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustDraftReminderValueCommand}" CommandParameter="hour:1" Margin="0,0,6,0" />
+                                            <Button Content="时-" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustDraftReminderValueCommand}" CommandParameter="hour:-1" Margin="0,0,8,0" />
+                                            <Button Content="分+" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustDraftReminderValueCommand}" CommandParameter="minute:1" Margin="0,0,6,0" />
+                                            <Button Content="分-" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustDraftReminderValueCommand}" CommandParameter="minute:-1" Margin="0,0,8,0" />
+                                            <Button Content="秒+" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustDraftReminderValueCommand}" CommandParameter="second:1" Margin="0,0,6,0" />
+                                            <Button Content="秒-" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustDraftReminderValueCommand}" CommandParameter="second:-1" />
+                                        </WrapPanel>
+
+                                        <Button Content="创建"
+                                                Command="{Binding CreateTodoCommand}"
+                                                Style="{StaticResource PrimaryButtonStyle}"
+                                                HorizontalAlignment="Right"
+                                                Margin="0,8,0,0"
+                                                Padding="14,4" />
+                                    </StackPanel>
+                                </Expander>
+                            </StackPanel>
+
+                            <ListBox Grid.Row="1"
+                                     ItemsSource="{Binding ActiveTodoTasks}"
+                                     SelectedItem="{Binding SelectedActiveTask}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border BorderBrush="#E2E8F0" BorderThickness="0,0,0,1" Padding="0,8">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <CheckBox Grid.Column="0"
+                                                          Command="{Binding DataContext.CompleteTodoCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                          CommandParameter="{Binding}"
+                                                          VerticalAlignment="Center"
+                                                          Margin="0,0,8,0" />
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock Text="{Binding Title}" FontWeight="Bold" VerticalAlignment="Center" />
+                                                    <TextBlock Text="{Binding SummaryText}" Foreground="#64748B" />
+                                                    <TextBlock Text="{Binding UpdatedAtLocalText}" Foreground="#94A3B8" FontSize="11" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <Border Grid.Row="2" BorderBrush="#E2E8F0" BorderThickness="1,1,1,0" Margin="0,8,0,0" Padding="8">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="归档列表" FontWeight="Bold" Margin="0,0,0,8" />
+                                    <ListBox Grid.Row="1"
+                                             ItemsSource="{Binding ArchivedTodoGroups}"
+                                             SelectedItem="{Binding SelectedArchiveGroup}">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border BorderBrush="#E2E8F0" BorderThickness="0,0,0,1" Padding="0,6">
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
+                                                        <TextBlock Text="{Binding CompletedCount, StringFormat=完成次数：{0}}" Foreground="#64748B" />
+                                                        <TextBlock Text="{Binding LastCompletedAtLocalText}" Foreground="#94A3B8" FontSize="11" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Grid>
+                            </Border>
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Column="1" Style="{StaticResource CardStyle}" Margin="10,0,0,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0"
+                                           Text="{Binding TodoStatusText}"
+                                           Foreground="#475569"
+                                           Margin="0,0,0,8" />
+
+                                <Grid Grid.Row="1"
+                                      Visibility="{Binding HasSelectedActiveTask, Converter={StaticResource BoolToVisibilityConverter}}">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <StackPanel>
+                                            <TextBlock Text="任务详情"
+                                                       FontSize="20"
+                                                       FontWeight="Bold"
+                                                       Margin="0,0,0,8" />
+                                            <TextBlock Text="标题" />
+                                            <TextBox Text="{Binding EditTitle, UpdateSourceTrigger=PropertyChanged}" />
+
+                                            <Grid Margin="0,8,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                                    <TextBlock Text="任务类型" />
+                                                    <ComboBox ItemsSource="{Binding TaskTypeOptions}" SelectedItem="{Binding EditTaskType}" />
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                                                    <TextBlock Text="重复规则" />
+                                                    <ComboBox ItemsSource="{Binding RepeatModeOptions}" SelectedItem="{Binding EditRepeatMode}" />
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <TextBlock Text="每周执行日（1-7）"
+                                                       Margin="0,8,0,4"
+                                                       Visibility="{Binding IsEditWeekly, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                            <ItemsControl ItemsSource="{Binding EditWeeklyDays}"
+                                                          Visibility="{Binding IsEditWeekly, Converter={StaticResource BoolToVisibilityConverter}}">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate><CheckBox Content="{Binding Label}" IsChecked="{Binding IsSelected}" Margin="0,0,8,4" /></DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+
+                                            <TextBlock Text="每月执行日（1-31）"
+                                                       Margin="0,8,0,4"
+                                                       Visibility="{Binding IsEditMonthly, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                            <ItemsControl ItemsSource="{Binding EditMonthlyDays}"
+                                                          Visibility="{Binding IsEditMonthly, Converter={StaticResource BoolToVisibilityConverter}}">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate><CheckBox Content="{Binding Label}" IsChecked="{Binding IsSelected}" Margin="0,0,8,4" /></DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+
+                                            <TextBlock Text="自定义模式"
+                                                       Margin="0,8,0,0"
+                                                       Visibility="{Binding IsEditCustom, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                            <TextBox Text="{Binding EditCustomPattern, UpdateSourceTrigger=PropertyChanged}"
+                                                     Visibility="{Binding IsEditCustom, Converter={StaticResource BoolToVisibilityConverter}}" />
+
+                                            <CheckBox Content="开启提醒"
+                                                      IsChecked="{Binding EditReminderEnabled}"
+                                                      Margin="0,8,0,4" />
+                                            <UniformGrid Columns="6" IsEnabled="{Binding EditReminderEnabled}">
+                                                <TextBox Text="{Binding EditReminderYear, UpdateSourceTrigger=PropertyChanged}" ToolTip="年（可留空）" Margin="0,0,6,0" />
+                                                <TextBox Text="{Binding EditReminderMonth, UpdateSourceTrigger=PropertyChanged}" ToolTip="月（可留空）" Margin="0,0,6,0" />
+                                                <TextBox Text="{Binding EditReminderDay, UpdateSourceTrigger=PropertyChanged}" ToolTip="日（可留空）" Margin="0,0,6,0" />
+                                                <TextBox Text="{Binding EditReminderHour, UpdateSourceTrigger=PropertyChanged}" ToolTip="时（必填 0-23）" Margin="0,0,6,0" />
+                                                <TextBox Text="{Binding EditReminderMinute, UpdateSourceTrigger=PropertyChanged}" ToolTip="分（必填 0-59）" Margin="0,0,6,0" />
+                                                <TextBox Text="{Binding EditReminderSecond, UpdateSourceTrigger=PropertyChanged}" ToolTip="秒（必填 0-59）" />
+                                            </UniformGrid>
+
+                                            <WrapPanel Margin="0,6,0,0" IsEnabled="{Binding EditReminderEnabled}">
+                                                <Button Content="年+" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustEditReminderValueCommand}" CommandParameter="year:1" Margin="0,0,6,0" />
+                                                <Button Content="年-" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustEditReminderValueCommand}" CommandParameter="year:-1" Margin="0,0,8,0" />
+                                                <Button Content="月+" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustEditReminderValueCommand}" CommandParameter="month:1" Margin="0,0,6,0" />
+                                                <Button Content="月-" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustEditReminderValueCommand}" CommandParameter="month:-1" Margin="0,0,8,0" />
+                                                <Button Content="日+" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustEditReminderValueCommand}" CommandParameter="day:1" Margin="0,0,6,0" />
+                                                <Button Content="日-" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustEditReminderValueCommand}" CommandParameter="day:-1" Margin="0,0,8,0" />
+                                                <Button Content="时+" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustEditReminderValueCommand}" CommandParameter="hour:1" Margin="0,0,6,0" />
+                                                <Button Content="时-" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustEditReminderValueCommand}" CommandParameter="hour:-1" Margin="0,0,8,0" />
+                                                <Button Content="分+" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustEditReminderValueCommand}" CommandParameter="minute:1" Margin="0,0,6,0" />
+                                                <Button Content="分-" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustEditReminderValueCommand}" CommandParameter="minute:-1" Margin="0,0,8,0" />
+                                                <Button Content="秒+" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustEditReminderValueCommand}" CommandParameter="second:1" Margin="0,0,6,0" />
+                                                <Button Content="秒-" Style="{StaticResource StepperButtonStyle}" Command="{Binding AdjustEditReminderValueCommand}" CommandParameter="second:-1" />
+                                            </WrapPanel>
+
+                                            <TextBlock Text="心得（自动保存）" Margin="0,8,0,4" />
+                                            <TextBox Text="{Binding EditInsight, UpdateSourceTrigger=PropertyChanged}"
+                                                     TextWrapping="Wrap"
+                                                     AcceptsReturn="True"
+                                                     VerticalScrollBarVisibility="Auto"
+                                                     MinHeight="220" />
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                </Grid>
+
+                                <Grid Grid.Row="1"
+                                      Visibility="{Binding HasSelectedArchiveGroup, Converter={StaticResource BoolToVisibilityConverter}}">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="归档详情"
+                                               FontSize="20"
+                                               FontWeight="Bold"
+                                               Margin="0,0,0,8" />
+                                    <DataGrid Grid.Row="1"
+                                              ItemsSource="{Binding SelectedArchiveRecords}"
+                                              AutoGenerateColumns="False"
+                                              IsReadOnly="True">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="完成时间" Binding="{Binding CompletedAtLocalText}" Width="180" />
+                                            <DataGridTextColumn Header="心得" Binding="{Binding Insight}" Width="*" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </Grid>
+
+                                <Grid Grid.Row="2" Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Text="{Binding TodoStatusText}"
+                                               Foreground="#475569"
+                                               VerticalAlignment="Center" />
+                                    <Button Grid.Column="1"
+                                            Content="保存任务设置"
+                                            Command="{Binding SaveSelectedTodoCommand}"
+                                            Style="{StaticResource PrimaryButtonStyle}"
+                                            Padding="14,6"
+                                            Margin="8,0,8,0" />
+                                    <Button Grid.Column="2"
+                                            Content="删除选中归档"
+                                            Command="{Binding DeleteArchiveGroupCommand}"
+                                            CommandParameter="{Binding SelectedArchiveGroup}"
+                                            Style="{StaticResource DangerButtonStyle}"
+                                            Padding="14,6" />
+                                </Grid>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </TabItem>
+            </TabControl>
+        </Border>
+    </Grid>
+</Window>

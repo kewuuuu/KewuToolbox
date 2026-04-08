@@ -1,0 +1,30 @@
+# Build artifacts
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+publish/
+publish-new/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider / VS Code
+.idea/
+.vscode/
+
+# Generated files
+*.cache
+*.pdb
+*.ilk
+*.ipdb
+*.iobj
+*.log
+
+# OS files
+Thumbs.db
+Desktop.ini
