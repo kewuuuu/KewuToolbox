@@ -10,6 +10,17 @@ export default function MonitoringPage() {
 
   // All windows with aggregated stats
   const windowStats = useMemo(() => {
+    if (state.windowStats.length > 0) {
+      return [...state.windowStats].map(item => ({
+        displayName: item.displayName,
+        objectType: item.objectType,
+        processName: item.processName,
+        totalVisible: item.totalVisibleSeconds,
+        focusTime: item.focusSeconds,
+        lastSeen: item.lastSeenAt,
+      }));
+    }
+
     const map = new Map<string, { displayName: string; objectType: string; processName: string; totalVisible: number; focusTime: number; lastSeen: string }>();
     state.sessions.forEach(s => {
       const existing = map.get(s.classificationKey);
@@ -29,7 +40,7 @@ export default function MonitoringPage() {
       }
     });
     return Array.from(map.values());
-  }, [state.sessions]);
+  }, [state.sessions, state.windowStats]);
 
   const focusRanking = [...windowStats].sort((a, b) => b.focusTime - a.focusTime);
 

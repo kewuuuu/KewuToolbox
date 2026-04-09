@@ -1,86 +1,20 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { AppState, WindowClassificationProfile, FocusSubject, FocusQueueItem, PomodoroSettings, TodoTask, TodoArchiveRecord, Category } from '@/types';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AppState,
+  AppUserState,
+  Category,
+  FocusQueueItem,
+  FocusSubject,
+  PomodoroSettings,
+  TodoArchiveRecord,
+  TodoTask,
+  WindowClassificationProfile,
+} from '@/types';
 import { createInitialState } from '@/data/mockData';
 import { buildReminderStamp, normalizeTodoTask, shouldTriggerReminder, validateTodoTask } from '@/lib/todo';
 import { toast } from 'sonner';
 
-const STORAGE_KEY = 'efficiency-app-state';
-
-function normalizePomodoroSettings(input: Partial<PomodoroSettings> | undefined, fallback: PomodoroSettings): PomodoroSettings {
-  const pickNumber = (value: number | undefined, min: number, max: number, fallbackValue: number) => {
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) {
-      return fallbackValue;
-    }
-
-    return Math.max(min, Math.min(max, Math.floor(parsed)));
-  };
-
-  return {
-    ...fallback,
-    ...input,
-    focusMinutes: pickNumber(input?.focusMinutes, 1, 240, fallback.focusMinutes),
-    breakMinutes: pickNumber(input?.breakMinutes, 1, 120, fallback.breakMinutes),
-    distractionThresholdMinutes: pickNumber(input?.distractionThresholdMinutes, 1, 240, fallback.distractionThresholdMinutes),
-    cycleCount: pickNumber(input?.cycleCount, 0, 9999, fallback.cycleCount),
-    distractionMode: input?.distractionMode === '累计' ? '累计' : '连续',
-    notifyEnabled: input?.notifyEnabled ?? fallback.notifyEnabled,
-    soundEnabled: input?.soundEnabled ?? fallback.soundEnabled,
-  };
-}
-
-function normalizeAppState(raw: unknown): AppState {
-  const initial = createInitialState();
-  if (!raw || typeof raw !== 'object') {
-    return initial;
-  }
-
-  const input = raw as Partial<AppState>;
-  const profiles = Array.isArray(input.profiles) && input.profiles.length > 0
-    ? input.profiles
-    : initial.profiles;
-  const profileMap = new Map(profiles.map(profile => [profile.classificationKey, profile]));
-
-  const sessions = Array.isArray(input.sessions) ? input.sessions : initial.sessions;
-  const subjects = Array.isArray(input.subjects) ? input.subjects : initial.subjects;
-  const queue = Array.isArray(input.queue)
-    ? input.queue.map((item, index) => ({ ...item, orderIndex: index }))
-    : initial.queue;
-  const todos = (Array.isArray(input.todos) ? input.todos : initial.todos).map(task => normalizeTodoTask(task));
-  const archives = Array.isArray(input.archives) ? input.archives : initial.archives;
-  const powerEvents = Array.isArray(input.powerEvents) ? input.powerEvents : initial.powerEvents;
-  const pomodoroSettings = normalizePomodoroSettings(input.pomodoroSettings, initial.pomodoroSettings);
-
-  const focusedFromState = input.currentFocusedWindow;
-  const currentFocusedWindow = focusedFromState && profileMap.has(focusedFromState.classificationKey)
-    ? profileMap.get(focusedFromState.classificationKey) ?? null
-    : initial.currentFocusedWindow;
-
-  return {
-    profiles,
-    sessions,
-    subjects,
-    queue,
-    pomodoroSettings,
-    todos,
-    archives,
-    powerEvents,
-    currentFocusedWindow,
-    displayMode: input.displayMode === '显示窗口' ? '显示窗口' : '显示性质',
-  };
-}
-
-function loadState(): AppState {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      return normalizeAppState(JSON.parse(stored));
-    }
-  } catch {
-    return createInitialState();
-  }
-  return createInitialState();
-}
+const STORAGE_KEY = 'mindful-desktop-state';
 
 interface AppContextType {
   state: AppState;
@@ -97,28 +31,187 @@ interface AppContextType {
   completeTodo: (id: string) => void;
   deleteTodo: (id: string) => void;
   deleteArchiveGroup: (taskId: string) => void;
-  setDisplayMode: (m: '显示性质' | '显示窗口') => void;
+  setDisplayMode: (m: string) => void;
   setCurrentWindow: (w: WindowClassificationProfile) => void;
 }
 
 const AppContext = createContext<AppContextType | null>(null);
 
+function isElectronRuntime() {
+  return Boolean(window.desktopApi?.isElectron);
+}
+
+function normalizePomodoroSettings(input: Partial<PomodoroSettings> | undefined, fallback: PomodoroSettings): PomodoroSettings {
+  const pickNumber = (value: number | undefined, min: number, max: number, fallbackValue: number) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return fallbackValue;
+    }
+    return Math.max(min, Math.min(max, Math.floor(parsed)));
+  };
+
+  return {
+    ...fallback,
+    ...input,
+    focusMinutes: pickNumber(input?.focusMinutes, 1, 240, fallback.focusMinutes),
+    breakMinutes: pickNumber(input?.breakMinutes, 1, 120, fallback.breakMinutes),
+    distractionThresholdMinutes: pickNumber(
+      input?.distractionThresholdMinutes,
+      1,
+      240,
+      fallback.distractionThresholdMinutes,
+    ),
+    cycleCount: pickNumber(input?.cycleCount, 0, 9999, fallback.cycleCount),
+    distractionMode:
+      typeof input?.distractionMode === 'string' && input.distractionMode.trim().length > 0
+        ? input.distractionMode
+        : fallback.distractionMode,
+    notifyEnabled: input?.notifyEnabled ?? fallback.notifyEnabled,
+    soundEnabled: input?.soundEnabled ?? fallback.soundEnabled,
+  };
+}
+
+function normalizeState(raw: unknown): AppState {
+  const initial = createInitialState();
+  if (!raw || typeof raw !== 'object') {
+    return initial;
+  }
+
+  const input = raw as Partial<AppState>;
+  const profiles = Array.isArray(input.profiles) ? input.profiles : initial.profiles;
+  const profileMap = new Map(profiles.map(profile => [profile.classificationKey, profile]));
+  const currentFocusedKey = input.currentFocusedWindow?.classificationKey;
+
+  return {
+    ...initial,
+    ...input,
+    profiles,
+    sessions: Array.isArray(input.sessions) ? input.sessions : initial.sessions,
+    windowStats: Array.isArray(input.windowStats) ? input.windowStats : initial.windowStats,
+    subjects: Array.isArray(input.subjects) ? input.subjects : initial.subjects,
+    queue: Array.isArray(input.queue)
+      ? input.queue.map((item, index) => ({ ...item, orderIndex: index }))
+      : initial.queue,
+    todos: (Array.isArray(input.todos) ? input.todos : initial.todos).map(task => normalizeTodoTask(task)),
+    archives: Array.isArray(input.archives) ? input.archives : initial.archives,
+    powerEvents: Array.isArray(input.powerEvents) ? input.powerEvents : initial.powerEvents,
+    pomodoroSettings: normalizePomodoroSettings(input.pomodoroSettings, initial.pomodoroSettings),
+    currentFocusedWindow: currentFocusedKey ? profileMap.get(currentFocusedKey) ?? null : null,
+    displayMode: typeof input.displayMode === 'string' ? input.displayMode : initial.displayMode,
+  };
+}
+
+function extractUserState(state: AppState): AppUserState {
+  return {
+    profiles: state.profiles,
+    subjects: state.subjects,
+    queue: state.queue,
+    pomodoroSettings: state.pomodoroSettings,
+    todos: state.todos,
+    archives: state.archives,
+    displayMode: state.displayMode,
+  };
+}
+
+function mergeLiveState(prev: AppState, incoming: AppState): AppState {
+  const localCategoryMap = new Map(prev.profiles.map(profile => [profile.classificationKey, profile.category]));
+  const profiles = incoming.profiles.map(profile => ({
+    ...profile,
+    category: localCategoryMap.get(profile.classificationKey) ?? profile.category,
+  }));
+  const profileMap = new Map(profiles.map(profile => [profile.classificationKey, profile]));
+  const focused = incoming.currentFocusedWindow
+    ? profileMap.get(incoming.currentFocusedWindow.classificationKey) ?? incoming.currentFocusedWindow
+    : null;
+
+  return {
+    ...prev,
+    profiles,
+    sessions: incoming.sessions,
+    windowStats: incoming.windowStats.map(item => ({
+      ...item,
+      category: localCategoryMap.get(item.classificationKey) ?? item.category,
+    })),
+    powerEvents: incoming.powerEvents,
+    currentFocusedWindow: focused,
+  };
+}
+
+function loadBrowserState(): AppState {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) {
+      return createInitialState();
+    }
+    return normalizeState(JSON.parse(stored));
+  } catch {
+    return createInitialState();
+  }
+}
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<AppState>(loadState);
-  const stateRef = useRef(state);
-  stateRef.current = state;
+  const [state, setState] = useState<AppState>(() => (isElectronRuntime() ? createInitialState() : loadBrowserState()));
+  const lastSavedUserStateRef = useRef<string>('');
+
+  useEffect(() => {
+    if (!isElectronRuntime()) {
+      return;
+    }
+
+    let disposed = false;
+    let unbind: (() => void) | null = null;
+
+    const bootstrap = async () => {
+      const remote = await window.desktopApi!.getState();
+      if (disposed) {
+        return;
+      }
+      const normalized = normalizeState(remote);
+      setState(normalized);
+      lastSavedUserStateRef.current = JSON.stringify(extractUserState(normalized));
+
+      unbind = window.desktopApi!.onState(nextState => {
+        if (disposed) {
+          return;
+        }
+        setState(prev => mergeLiveState(prev, normalizeState(nextState)));
+      });
+    };
+
+    void bootstrap();
+    return () => {
+      disposed = true;
+      if (unbind) {
+        unbind();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => {
+      if (isElectronRuntime()) {
+        const userState = extractUserState(state);
+        const snapshot = JSON.stringify(userState);
+        if (snapshot === lastSavedUserStateRef.current) {
+          return;
+        }
+        lastSavedUserStateRef.current = snapshot;
+        void window.desktopApi?.saveUserState(userState);
+        return;
+      }
+
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    }, 500);
+    }, 300);
+
     return () => clearTimeout(timer);
   }, [state]);
 
   useEffect(() => {
     const playNotificationTone = () => {
       try {
-        const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        const AudioCtx =
+          window.AudioContext ||
+          (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
         if (!AudioCtx) {
           return;
         }
@@ -137,7 +230,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         oscillator.stop(audioContext.currentTime + 0.22);
         window.setTimeout(() => void audioContext.close(), 260);
       } catch {
-        // Ignore audio failures in restricted browser environments.
+        // Ignore audio failure in restricted environments.
       }
     };
 
@@ -197,39 +290,38 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => clearInterval(timer);
   }, []);
 
-  // Simulate window focus changes
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const profiles = stateRef.current.profiles;
-      const idx = Math.floor(Math.random() * profiles.length);
-      setState(s => ({ ...s, currentFocusedWindow: profiles[idx] }));
-    }, 8000);
-    return () => clearInterval(interval);
-  }, []);
-
   const updateProfile = useCallback((id: string, category: Category) => {
     setState(s => ({
       ...s,
-      profiles: s.profiles.map(p => p.id === id ? { ...p, category, updatedAt: new Date().toISOString() } : p),
+      profiles: s.profiles.map(p =>
+        p.id === id ? { ...p, category, updatedAt: new Date().toISOString() } : p,
+      ),
+      windowStats: s.windowStats.map(item => {
+        const profile = s.profiles.find(p => p.classificationKey === item.classificationKey);
+        if (!profile || profile.id !== id) {
+          return item;
+        }
+        return { ...item, category };
+      }),
     }));
   }, []);
 
-  const addSubject = useCallback((sub: FocusSubject) => {
-    setState(s => ({ ...s, subjects: [...s.subjects, sub] }));
+  const addSubject = useCallback((subject: FocusSubject) => {
+    setState(s => ({ ...s, subjects: [...s.subjects, subject] }));
   }, []);
 
-  const updateSubject = useCallback((sub: FocusSubject) => {
-    setState(s => ({ ...s, subjects: s.subjects.map(x => x.id === sub.id ? sub : x) }));
+  const updateSubject = useCallback((subject: FocusSubject) => {
+    setState(s => ({ ...s, subjects: s.subjects.map(item => (item.id === subject.id ? subject : item)) }));
   }, []);
 
   const deleteSubject = useCallback((id: string) => {
-    setState(s => ({ ...s, subjects: s.subjects.filter(x => x.id !== id) }));
+    setState(s => ({ ...s, subjects: s.subjects.filter(item => item.id !== id) }));
   }, []);
 
-  const setQueue = useCallback((q: FocusQueueItem[]) => {
+  const setQueue = useCallback((queue: FocusQueueItem[]) => {
     setState(s => ({
       ...s,
-      queue: q.map((item, index) => ({ ...item, orderIndex: index })),
+      queue: queue.map((item, index) => ({ ...item, orderIndex: index })),
     }));
   }, []);
 
@@ -241,21 +333,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const removeFromQueue = useCallback((id: string) => {
-    setState(s => ({ ...s, queue: s.queue.filter(x => x.id !== id).map((x, i) => ({ ...x, orderIndex: i })) }));
+    setState(s => ({
+      ...s,
+      queue: s.queue.filter(item => item.id !== id).map((item, index) => ({ ...item, orderIndex: index })),
+    }));
   }, []);
 
   const updateSettings = useCallback((partial: Partial<PomodoroSettings>) => {
     setState(s => ({
       ...s,
-      pomodoroSettings: normalizePomodoroSettings(
-        { ...s.pomodoroSettings, ...partial },
-        s.pomodoroSettings,
-      ),
+      pomodoroSettings: normalizePomodoroSettings({ ...s.pomodoroSettings, ...partial }, s.pomodoroSettings),
     }));
   }, []);
 
-  const addTodo = useCallback((t: TodoTask) => {
-    const normalized = normalizeTodoTask(t);
+  const addTodo = useCallback((todo: TodoTask) => {
+    const normalized = normalizeTodoTask(todo);
     const error = validateTodoTask(normalized);
     if (error) {
       toast.error('创建待办失败', { description: error });
@@ -265,21 +357,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setState(s => ({ ...s, todos: [...s.todos, normalized] }));
   }, []);
 
-  const updateTodo = useCallback((t: TodoTask) => {
-    const normalized = normalizeTodoTask(t);
+  const updateTodo = useCallback((todo: TodoTask) => {
+    const normalized = normalizeTodoTask(todo);
     const error = validateTodoTask(normalized);
     if (error) {
       toast.error('更新待办失败', { description: error });
       return;
     }
 
-    setState(s => ({ ...s, todos: s.todos.map(x => x.id === t.id ? normalized : x) }));
+    setState(s => ({
+      ...s,
+      todos: s.todos.map(item => (item.id === normalized.id ? normalized : item)),
+    }));
   }, []);
 
   const completeTodo = useCallback((id: string) => {
     setState(s => {
-      const task = s.todos.find(t => t.id === id);
-      if (!task) return s;
+      const task = s.todos.find(item => item.id === id);
+      if (!task) {
+        return s;
+      }
+
       const now = new Date().toISOString();
       const normalizedTask = normalizeTodoTask(task);
       const archive: TodoArchiveRecord = {
@@ -289,53 +387,88 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         completedAt: now,
         insightSnapshot: normalizedTask.currentInsight,
         taskSnapshotJson: JSON.stringify(normalizedTask),
-        occurrenceIndex: s.archives.filter(a => a.taskId === normalizedTask.id).length + 1,
+        occurrenceIndex: s.archives.filter(item => item.taskId === normalizedTask.id).length + 1,
       };
-      const updatedTask = normalizedTask.taskType === '重复'
-        ? { ...normalizedTask, currentInsight: '', updatedAt: now }
-        : { ...normalizedTask, isArchived: true, completedAt: now, updatedAt: now };
+
+      const updatedTask =
+        normalizedTask.taskType === '重复'
+          ? { ...normalizedTask, currentInsight: '', updatedAt: now }
+          : { ...normalizedTask, isArchived: true, completedAt: now, updatedAt: now };
+
       return {
         ...s,
-        todos: s.todos.map(t => t.id === id ? updatedTask : t),
+        todos: s.todos.map(item => (item.id === id ? updatedTask : item)),
         archives: [...s.archives, archive],
       };
     });
   }, []);
 
   const deleteTodo = useCallback((id: string) => {
-    setState(s => ({ ...s, todos: s.todos.filter(t => t.id !== id) }));
+    setState(s => ({ ...s, todos: s.todos.filter(todo => todo.id !== id) }));
   }, []);
 
   const deleteArchiveGroup = useCallback((taskId: string) => {
     setState(s => ({
       ...s,
-      archives: s.archives.filter(a => a.taskId !== taskId),
+      archives: s.archives.filter(record => record.taskId !== taskId),
       todos: s.todos.filter(todo => !(todo.id === taskId && todo.isArchived)),
     }));
   }, []);
 
-  const setDisplayMode = useCallback((m: '显示性质' | '显示窗口') => {
-    setState(s => ({ ...s, displayMode: m }));
+  const setDisplayMode = useCallback((mode: string) => {
+    setState(s => ({ ...s, displayMode: mode }));
   }, []);
 
-  const setCurrentWindow = useCallback((w: WindowClassificationProfile) => {
-    setState(s => ({ ...s, currentFocusedWindow: w }));
+  const setCurrentWindow = useCallback((windowProfile: WindowClassificationProfile) => {
+    setState(s => ({ ...s, currentFocusedWindow: windowProfile }));
   }, []);
 
-  return (
-    <AppContext.Provider value={{
-      state, updateProfile, addSubject, updateSubject, deleteSubject,
-      setQueue, addToQueue, removeFromQueue, updateSettings,
-      addTodo, updateTodo, completeTodo, deleteTodo, deleteArchiveGroup,
-      setDisplayMode, setCurrentWindow,
-    }}>
-      {children}
-    </AppContext.Provider>
+  const value = useMemo<AppContextType>(
+    () => ({
+      state,
+      updateProfile,
+      addSubject,
+      updateSubject,
+      deleteSubject,
+      setQueue,
+      addToQueue,
+      removeFromQueue,
+      updateSettings,
+      addTodo,
+      updateTodo,
+      completeTodo,
+      deleteTodo,
+      deleteArchiveGroup,
+      setDisplayMode,
+      setCurrentWindow,
+    }),
+    [
+      state,
+      updateProfile,
+      addSubject,
+      updateSubject,
+      deleteSubject,
+      setQueue,
+      addToQueue,
+      removeFromQueue,
+      updateSettings,
+      addTodo,
+      updateTodo,
+      completeTodo,
+      deleteTodo,
+      deleteArchiveGroup,
+      setDisplayMode,
+      setCurrentWindow,
+    ],
   );
+
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 
 export function useAppState() {
-  const ctx = useContext(AppContext);
-  if (!ctx) throw new Error('useAppState must be inside AppProvider');
-  return ctx;
+  const context = useContext(AppContext);
+  if (!context) {
+    throw new Error('useAppState must be used inside AppProvider');
+  }
+  return context;
 }

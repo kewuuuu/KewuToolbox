@@ -1,8 +1,8 @@
-export type Category = '学习' | '娱乐' | '社交' | '休息' | '其他';
+export type Category = string;
 export type ObjectType = 'AppWindow' | 'BrowserTab' | 'Desktop';
-export type DistractionMode = '连续' | '累计';
-export type TaskType = '一次性' | '重复';
-export type RepeatMode = '每日' | '每周' | '每月' | '自定义';
+export type DistractionMode = string;
+export type TaskType = string;
+export type RepeatMode = string;
 export type FocusQueueItemType = 'Subject' | 'AdHocWindowGroup';
 
 export interface WindowClassificationProfile {
@@ -33,6 +33,18 @@ export interface FocusSession {
   browserTabTitle?: string;
   domain?: string;
   isDesktop: boolean;
+}
+
+export interface WindowRuntimeStat {
+  classificationKey: string;
+  displayName: string;
+  objectType: ObjectType;
+  processName: string;
+  domain?: string;
+  category: Category;
+  totalVisibleSeconds: number;
+  focusSeconds: number;
+  lastSeenAt: string;
 }
 
 export interface WindowGroupItem {
@@ -115,6 +127,7 @@ export interface PowerEventRecord {
 export interface AppState {
   profiles: WindowClassificationProfile[];
   sessions: FocusSession[];
+  windowStats: WindowRuntimeStat[];
   subjects: FocusSubject[];
   queue: FocusQueueItem[];
   pomodoroSettings: PomodoroSettings;
@@ -122,5 +135,10 @@ export interface AppState {
   archives: TodoArchiveRecord[];
   powerEvents: PowerEventRecord[];
   currentFocusedWindow: WindowClassificationProfile | null;
-  displayMode: '显示性质' | '显示窗口';
+  displayMode: string;
 }
+
+export type AppUserState = Pick<
+  AppState,
+  'profiles' | 'subjects' | 'queue' | 'pomodoroSettings' | 'todos' | 'archives' | 'displayMode'
+>;
