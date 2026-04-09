@@ -7,26 +7,75 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Play, Pause, RotateCcw, SkipForward, Trash2, GripVertical, Plus } from 'lucide-react';
-import { FocusQueueItem } from '@/types';
+import { Play, Pause, RotateCcw, SkipForward, Trash2, GripVertical } from 'lucide-react';
 import { toast } from 'sonner';
 
 type TimerMode = '专注' | '休息';
 
 export default function PomodoroPage() {
-  const { state, updateSettings, setQueue, removeFromQueue, addToQueue } = useAppState();
+  const { state, updateSettings, removeFromQueue, addToQueue } = useAppState();
   const settings = state.pomodoroSettings;
 
   const [mode, setMode] = useState<TimerMode>('专注');
-  const [secondsLeft, setSecondsLeft] = useState(settings.focusMinutes * 60);
+  const [secondsLeft, setSecondsLeft] = useState(() => {
+    const firstQueueItem = state.queue[0];
+    const focusMinutes = firstQueueItem?.durationMinutes ?? settings.focusMinutes;
+    return Math.max(1, focusMinutes) * 60;
+  });
   const [isRunning, setIsRunning] = useState(false);
   const [currentCycle, setCurrentCycle] = useState(1);
   const [currentQueueIdx, setCurrentQueueIdx] = useState(0);
   const [offTargetSeconds, setOffTargetSeconds] = useState(0);
   const intervalRef = useRef<number>();
+  const distractionAlertedRef = useRef(false);
 
-  const totalSeconds = mode === '专注' ? settings.focusMinutes * 60 : settings.breakMinutes * 60;
+  const getFocusSecondsForIndex = useCallback((queueIndex: number) => {
+    const queueItem = state.queue[queueIndex];
+    const focusMinutes = queueItem?.durationMinutes ?? settings.focusMinutes;
+    return Math.max(1, focusMinutes) * 60;
+  }, [settings.focusMinutes, state.queue]);
+
+  const totalSeconds = mode === '专注' ? getFocusSecondsForIndex(currentQueueIdx) : Math.max(1, settings.breakMinutes) * 60;
   const progress = ((totalSeconds - secondsLeft) / totalSeconds) * 100;
+
+  const handleTimerEnd = useCallback(() => {
+    setIsRunning(false);
+    distractionAlertedRef.current = false;
+    setOffTargetSeconds(0);
+
+    if (mode === '专注') {
+      toast.success('🎉 专注完成！', { description: '休息一下吧' });
+      setMode('休息');
+      setSecondsLeft(Math.max(1, settings.breakMinutes) * 60);
+      return;
+    }
+
+    const isInfiniteCycle = settings.cycleCount <= 0;
+    const reachedCycleLimit = !isInfiniteCycle && currentCycle >= settings.cycleCount;
+    if (reachedCycleLimit) {
+      const nextQueueIndex = currentQueueIdx + 1;
+      if (nextQueueIndex < state.queue.length) {
+        setCurrentQueueIdx(nextQueueIndex);
+        setCurrentCycle(1);
+        setMode('专注');
+        setSecondsLeft(getFocusSecondsForIndex(nextQueueIndex));
+        toast.success('✅ 当前事项已完成，已切换到下一项');
+        return;
+      }
+
+      toast.success('🏆 所有队列事项已完成！');
+      setCurrentQueueIdx(0);
+      setCurrentCycle(1);
+      setMode('专注');
+      setSecondsLeft(getFocusSecondsForIndex(0));
+      return;
+    }
+
+    setCurrentCycle(cycle => cycle + 1);
+    setMode('专注');
+    setSecondsLeft(getFocusSecondsForIndex(currentQueueIdx));
+    toast.info('休息结束，开始下一个专注周期');
+  }, [currentCycle, currentQueueIdx, getFocusSecondsForIndex, mode, settings.breakMinutes, settings.cycleCount, state.queue.length]);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -40,53 +89,75 @@ export default function PomodoroPage() {
       });
     }, 1000);
     return () => clearInterval(intervalRef.current);
-  }, [isRunning, mode]);
+  }, [handleTimerEnd, isRunning]);
 
-  // Simulate off-target detection
   useEffect(() => {
-    if (!isRunning || mode !== '专注') return;
+    if (!isRunning || mode !== '专注') {
+      return;
+    }
+
     const currentItem = state.queue[currentQueueIdx];
-    if (!currentItem || !state.currentFocusedWindow) return;
-    const isOnTarget = currentItem.windowGroup.some(
-      w => w.classificationKey === state.currentFocusedWindow?.classificationKey
-    );
-    if (!isOnTarget) {
+    if (!currentItem || !state.currentFocusedWindow) {
+      return;
+    }
+
+    const tick = window.setInterval(() => {
+      const focused = state.currentFocusedWindow;
+      const onTarget = currentItem.windowGroup.some(item => item.classificationKey === focused?.classificationKey);
+
       setOffTargetSeconds(prev => {
-        const next = prev + 1;
-        if (next >= settings.distractionThresholdMinutes * 60 && settings.notifyEnabled) {
-          toast.warning('⚠️ 你已偏离专注目标！', { description: `已偏离 ${Math.floor(next / 60)} 分钟` });
+        let next = prev;
+        if (onTarget) {
+          if (settings.distractionMode === '连续') {
+            next = 0;
+            distractionAlertedRef.current = false;
+          }
+        } else {
+          next = prev + 1;
         }
+
+        const thresholdSeconds = Math.max(1, settings.distractionThresholdMinutes) * 60;
+        if (!onTarget && settings.notifyEnabled && next >= thresholdSeconds && !distractionAlertedRef.current) {
+          toast.warning('⚠️ 你已偏离专注目标！', {
+            description: `已偏离 ${Math.floor(next / 60)} 分钟`,
+          });
+          distractionAlertedRef.current = true;
+        }
+
         return next;
       });
-    }
-  }, [state.currentFocusedWindow, isRunning]);
+    }, 1000);
 
-  const handleTimerEnd = useCallback(() => {
-    setIsRunning(false);
-    if (mode === '专注') {
-      toast.success('🎉 专注完成！', { description: '休息一下吧' });
-      setMode('休息');
-      setSecondsLeft(settings.breakMinutes * 60);
-    } else {
-      if (currentCycle < settings.cycleCount) {
-        setCurrentCycle(c => c + 1);
-        setMode('专注');
-        setSecondsLeft(settings.focusMinutes * 60);
-        toast.info('休息结束，开始下一个专注周期');
-      } else {
-        toast.success('🏆 所有周期已完成！');
-        setCurrentCycle(1);
-        setCurrentQueueIdx(prev => Math.min(prev + 1, state.queue.length - 1));
-      }
+    return () => clearInterval(tick);
+  }, [currentQueueIdx, isRunning, mode, settings.distractionMode, settings.distractionThresholdMinutes, settings.notifyEnabled, state.currentFocusedWindow, state.queue]);
+
+  useEffect(() => {
+    if (currentQueueIdx < state.queue.length) {
+      return;
     }
-    setOffTargetSeconds(0);
-  }, [mode, currentCycle, settings]);
+
+    setCurrentQueueIdx(Math.max(0, state.queue.length - 1));
+  }, [currentQueueIdx, state.queue.length]);
+
+  useEffect(() => {
+    if (isRunning) {
+      return;
+    }
+
+    if (mode === '专注') {
+      setSecondsLeft(getFocusSecondsForIndex(currentQueueIdx));
+      return;
+    }
+
+    setSecondsLeft(Math.max(1, settings.breakMinutes) * 60);
+  }, [currentQueueIdx, getFocusSecondsForIndex, isRunning, mode, settings.breakMinutes]);
 
   const handleStart = () => setIsRunning(true);
   const handlePause = () => setIsRunning(false);
   const handleReset = () => {
     setIsRunning(false);
-    setSecondsLeft(mode === '专注' ? settings.focusMinutes * 60 : settings.breakMinutes * 60);
+    setSecondsLeft(mode === '专注' ? getFocusSecondsForIndex(currentQueueIdx) : Math.max(1, settings.breakMinutes) * 60);
+    distractionAlertedRef.current = false;
     setOffTargetSeconds(0);
   };
   const handleSkip = () => {
@@ -134,7 +205,7 @@ export default function PomodoroPage() {
                   {mode}
                 </span>
                 <span className="text-xs text-muted-foreground">
-                  周期 {currentCycle}/{settings.cycleCount}
+                  周期 {currentCycle}/{settings.cycleCount <= 0 ? '∞' : settings.cycleCount}
                 </span>
               </div>
 

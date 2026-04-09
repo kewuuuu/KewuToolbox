@@ -61,6 +61,14 @@ export default function AnalyticsPage() {
     return state.sessions.filter(s => new Date(s.startAt) >= start).sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
   }, [state.sessions]);
 
+  const timelinePowerEvents = useMemo(() => {
+    const now = new Date();
+    const start = new Date(now.getTime() - 12 * 3600000);
+    return state.powerEvents
+      .filter(event => new Date(event.occurredAt) >= start)
+      .sort((a, b) => new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime());
+  }, [state.powerEvents]);
+
   // Heatmap data (last 30 days)
   const heatmapData = useMemo(() => {
     const days: { date: string; minutes: number }[] = [];
@@ -215,7 +223,7 @@ export default function AnalyticsPage() {
                 </div>
               ))}
               {/* Power events markers */}
-              {state.powerEvents.map(e => (
+              {timelinePowerEvents.map(e => (
                 <div key={e.id} className="flex items-center gap-2 text-xs py-1 border-l-2 pl-2" style={{ borderColor: e.markerColor }}>
                   <span className="text-muted-foreground w-14 shrink-0">
                     {new Date(e.occurredAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}

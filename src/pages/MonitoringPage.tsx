@@ -122,7 +122,9 @@ export default function MonitoringPage() {
           <TabsContent value="events">
             <Card className="p-4 bg-card border-border">
               <div className="space-y-1.5">
-                {state.powerEvents.sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()).map(e => (
+                {[...state.powerEvents]
+                  .sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime())
+                  .map(e => (
                   <div key={e.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-secondary/30 border border-border/50">
                     <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: e.markerColor }} />
                     <span className="text-xs font-medium text-foreground w-12">{e.eventType}</span>

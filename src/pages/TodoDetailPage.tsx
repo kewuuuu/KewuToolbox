@@ -8,6 +8,8 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { ArrowLeft } from 'lucide-react';
+import { normalizeTodoTask, validateTodoTask } from '@/lib/todo';
+import { toast } from 'sonner';
 
 export default function TodoDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -20,7 +22,13 @@ export default function TodoDetailPage() {
 
   useEffect(() => {
     if (todo) setInsight(todo.currentInsight);
-  }, [todo?.id]);
+  }, [todo]);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(saveTimer.current);
+    };
+  }, []);
 
   const handleInsightChange = (value: string) => {
     setInsight(value);
@@ -28,7 +36,8 @@ export default function TodoDetailPage() {
     clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
       if (todo) {
-        updateTodo({ ...todo, currentInsight: value, updatedAt: new Date().toISOString() });
+        const nextTodo = normalizeTodoTask({ ...todo, currentInsight: value, updatedAt: new Date().toISOString() });
+        updateTodo(nextTodo);
         setSaveStatus('已保存');
       }
     }, 800);
@@ -46,7 +55,14 @@ export default function TodoDetailPage() {
   }
 
   const handleFieldUpdate = (fields: Partial<typeof todo>) => {
-    updateTodo({ ...todo, ...fields, updatedAt: new Date().toISOString() });
+    const nextTodo = normalizeTodoTask({ ...todo, ...fields, updatedAt: new Date().toISOString() });
+    const error = validateTodoTask(nextTodo);
+    if (error) {
+      toast.error('更新失败', { description: error });
+      return;
+    }
+
+    updateTodo(nextTodo);
   };
 
   return (

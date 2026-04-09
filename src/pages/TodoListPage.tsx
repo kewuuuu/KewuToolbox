@@ -10,6 +10,7 @@ import { Plus, Search, ChevronDown, ChevronUp } from 'lucide-react';
 import { TodoTask, TaskType, RepeatMode } from '@/types';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
+import { normalizeTodoTask, validateTodoTask } from '@/lib/todo';
 
 export default function TodoListPage() {
   const { state, addTodo, completeTodo } = useAppState();
@@ -39,9 +40,13 @@ export default function TodoListPage() {
     .filter(t => !searchQuery || t.title.toLowerCase().includes(searchQuery.toLowerCase()));
 
   const handleCreate = () => {
-    if (!title.trim()) return;
+    if (!title.trim()) {
+      toast.error('创建失败', { description: '标题不能为空' });
+      return;
+    }
+
     const now = new Date().toISOString();
-    const todo: TodoTask = {
+    const draft: TodoTask = {
       id: `todo-${Date.now()}`,
       title: title.trim(),
       taskType,
@@ -61,9 +66,29 @@ export default function TodoListPage() {
       createdAt: now,
       updatedAt: now,
     };
-    addTodo(todo);
+
+    const normalized = normalizeTodoTask(draft);
+    const error = validateTodoTask(normalized);
+    if (error) {
+      toast.error('创建失败', { description: error });
+      return;
+    }
+
+    addTodo(normalized);
     toast.success('待办已创建');
     setTitle('');
+    setTaskType('一次性');
+    setRepeatMode('每日');
+    setWeeklyDays([]);
+    setMonthlyDays([]);
+    setCustomPattern('');
+    setReminderEnabled(false);
+    setRYear('');
+    setRMonth('');
+    setRDay('');
+    setRHour('9');
+    setRMinute('0');
+    setRSecond('0');
     setShowForm(false);
   };
 
@@ -168,7 +193,7 @@ export default function TodoListPage() {
             {taskType === '重复' && repeatMode === '自定义' && (
               <div>
                 <Input placeholder="自定义模式，如: 0,2,3,1,-1" value={customPattern} onChange={e => setCustomPattern(e.target.value)} className="text-xs" />
-                <p className="text-[10px] text-muted-foreground mt-1">数字表示间隔天数，-1表示跳过</p>
+                <p className="text-[10px] text-muted-foreground mt-1">格式: 执行天数,跳过天数,... 末尾 -1 表示无限循环</p>
               </div>
             )}
             <div className="flex items-center gap-3">
