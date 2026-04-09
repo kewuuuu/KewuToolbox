@@ -5,6 +5,9 @@
 [Rr]elease/
 publish/
 publish-new/
+TestResults/
+.tmp/
+tmp/
 
 # Visual Studio
 .vs/
@@ -25,6 +28,14 @@ publish-new/
 *.iobj
 *.log
 
+# Runtime data/cache
+*.db
+*.db-shm
+*.db-wal
+Data\*.db
+Data\*.db-*
+
 # OS files
 Thumbs.db
 Desktop.ini
+.DS_Store

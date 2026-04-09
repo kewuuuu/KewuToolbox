@@ -47,7 +47,20 @@ public sealed partial class MainViewModel
             return;
         }
 
-        if (!TryParseReminder(
+        if (!ValidateTaskScheduleSettings(
+                DraftTaskType,
+                DraftRepeatMode,
+                DraftWeeklyDays,
+                DraftMonthlyDays,
+                DraftCustomPattern,
+                out var scheduleError))
+        {
+            WpfMessageBox.Show(scheduleError, "创建待办", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!TryResolveReminderSettings(
+                DraftReminderEnabled,
                 DraftReminderYear,
                 DraftReminderMonth,
                 DraftReminderDay,
@@ -59,9 +72,10 @@ public sealed partial class MainViewModel
                 out var reminderDay,
                 out var reminderHour,
                 out var reminderMinute,
-                out var reminderSecond))
+                out var reminderSecond,
+                out var reminderError))
         {
-            WpfMessageBox.Show("提醒时间输入无效。", "创建待办", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            WpfMessageBox.Show(reminderError, "创建待办", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
             return;
         }
 
@@ -133,7 +147,20 @@ public sealed partial class MainViewModel
             return;
         }
 
-        if (!TryParseReminder(
+        if (!ValidateTaskScheduleSettings(
+                EditTaskType,
+                EditRepeatMode,
+                EditWeeklyDays,
+                EditMonthlyDays,
+                EditCustomPattern,
+                out var scheduleError))
+        {
+            WpfMessageBox.Show(scheduleError, "保存待办", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!TryResolveReminderSettings(
+                EditReminderEnabled,
                 EditReminderYear,
                 EditReminderMonth,
                 EditReminderDay,
@@ -145,9 +172,10 @@ public sealed partial class MainViewModel
                 out var reminderDay,
                 out var reminderHour,
                 out var reminderMinute,
-                out var reminderSecond))
+                out var reminderSecond,
+                out var reminderError))
         {
-            WpfMessageBox.Show("提醒时间输入无效。", "保存待办", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            WpfMessageBox.Show(reminderError, "保存待办", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
             return;
         }
 
@@ -364,6 +392,11 @@ public sealed partial class MainViewModel
 
     private static bool IsReminderMatched(TodoTask task, DateTime now)
     {
+        if (!IsTaskScheduledForDate(task, now.Date))
+        {
+            return false;
+        }
+
         if (task.ReminderYear.HasValue && task.ReminderYear.Value != now.Year)
         {
             return false;
@@ -382,5 +415,311 @@ public sealed partial class MainViewModel
         return task.ReminderHour == now.Hour &&
                task.ReminderMinute == now.Minute &&
                task.ReminderSecond == now.Second;
+    }
+
+    private static bool TryResolveReminderSettings(
+        bool reminderEnabled,
+        string yearText,
+        string monthText,
+        string dayText,
+        string hourText,
+        string minuteText,
+        string secondText,
+        out int? year,
+        out int? month,
+        out int? day,
+        out int hour,
+        out int minute,
+        out int second,
+        out string errorMessage)
+    {
+        errorMessage = string.Empty;
+        year = null;
+        month = null;
+        day = null;
+        hour = 0;
+        minute = 0;
+        second = 0;
+
+        if (!reminderEnabled)
+        {
+            return true;
+        }
+
+        if (!TryParseReminder(
+                yearText,
+                monthText,
+                dayText,
+                hourText,
+                minuteText,
+                secondText,
+                out year,
+                out month,
+                out day,
+                out hour,
+                out minute,
+                out second))
+        {
+            errorMessage = "提醒时间输入无效。";
+            return false;
+        }
+
+        if (!IsValidReminderDateCombination(year, month, day))
+        {
+            errorMessage = "提醒日期组合无效，请检查年月日。";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool ValidateTaskScheduleSettings(
+        string taskType,
+        string repeatMode,
+        IEnumerable<DaySelectionItem> weeklyDays,
+        IEnumerable<DaySelectionItem> monthlyDays,
+        string customPattern,
+        out string errorMessage)
+    {
+        errorMessage = string.Empty;
+        if (!string.Equals(taskType, TodoTaskType.Repeat, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (string.Equals(repeatMode, TodoRepeatMode.Weekly, StringComparison.Ordinal) &&
+            !weeklyDays.Any(item => item.IsSelected))
+        {
+            errorMessage = "每周任务至少需要选择一个星期。";
+            return false;
+        }
+
+        if (string.Equals(repeatMode, TodoRepeatMode.Monthly, StringComparison.Ordinal) &&
+            !monthlyDays.Any(item => item.IsSelected))
+        {
+            errorMessage = "每月任务至少需要选择一个日期。";
+            return false;
+        }
+
+        if (string.Equals(repeatMode, TodoRepeatMode.Custom, StringComparison.Ordinal) &&
+            !TryParseCustomPattern(customPattern, out _, out errorMessage))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsTaskScheduledForDate(TodoTask task, DateTime currentDateLocal)
+    {
+        if (!string.Equals(task.TaskType, TodoTaskType.Repeat, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (string.Equals(task.RepeatMode, TodoRepeatMode.Daily, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (string.Equals(task.RepeatMode, TodoRepeatMode.Weekly, StringComparison.Ordinal))
+        {
+            var selectedDays = ParseIntCsv(task.WeeklyDays, 1, 7);
+            var todayIndex = ToWeekdayIndex(currentDateLocal.DayOfWeek);
+            return selectedDays.Contains(todayIndex);
+        }
+
+        if (string.Equals(task.RepeatMode, TodoRepeatMode.Monthly, StringComparison.Ordinal))
+        {
+            var selectedDays = ParseIntCsv(task.MonthlyDays, 1, 31);
+            return selectedDays.Contains(currentDateLocal.Day);
+        }
+
+        if (!string.Equals(task.RepeatMode, TodoRepeatMode.Custom, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return IsCustomPatternActiveOnDate(task, currentDateLocal);
+    }
+
+    private static bool IsCustomPatternActiveOnDate(TodoTask task, DateTime currentDateLocal)
+    {
+        if (!TryParseCustomPattern(task.CustomPattern, out var patternValues, out _))
+        {
+            return false;
+        }
+
+        var isInfinite = patternValues.Count > 0 && patternValues[^1] == -1;
+        if (isInfinite)
+        {
+            patternValues.RemoveAt(patternValues.Count - 1);
+        }
+
+        var phases = new List<(int ActiveDays, int TotalDays)>();
+        for (var i = 0; i < patternValues.Count; i += 2)
+        {
+            var activeDays = Math.Max(patternValues[i], 0);
+            var skipDays = i + 1 < patternValues.Count
+                ? Math.Max(patternValues[i + 1], 0)
+                : 0;
+            var totalDays = activeDays + skipDays;
+            if (totalDays > 0)
+            {
+                phases.Add((activeDays, totalDays));
+            }
+        }
+
+        if (phases.Count == 0)
+        {
+            return false;
+        }
+
+        var startDate = task.CreatedAtUtc.ToLocalTime().Date;
+        var offset = (currentDateLocal.Date - startDate).Days;
+        if (offset < 0)
+        {
+            return false;
+        }
+
+        if (isInfinite)
+        {
+            var cycleLength = phases.Sum(item => item.TotalDays);
+            if (cycleLength <= 0)
+            {
+                return false;
+            }
+
+            var cycleOffset = offset % cycleLength;
+            foreach (var phase in phases)
+            {
+                if (cycleOffset < phase.TotalDays)
+                {
+                    return cycleOffset < phase.ActiveDays;
+                }
+
+                cycleOffset -= phase.TotalDays;
+            }
+
+            return false;
+        }
+
+        var remaining = offset;
+        foreach (var phase in phases)
+        {
+            if (remaining < phase.TotalDays)
+            {
+                return remaining < phase.ActiveDays;
+            }
+
+            remaining -= phase.TotalDays;
+        }
+
+        return false;
+    }
+
+    private static bool TryParseCustomPattern(string pattern, out List<int> values, out string errorMessage)
+    {
+        values = [];
+        errorMessage = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            errorMessage = "自定义模式不能为空。";
+            return false;
+        }
+
+        var parts = pattern.Split(',', StringSplitOptions.TrimEntries);
+        foreach (var part in parts)
+        {
+            if (string.IsNullOrWhiteSpace(part))
+            {
+                continue;
+            }
+
+            if (!int.TryParse(part, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+            {
+                errorMessage = "自定义模式仅支持整数，格式示例：0,2,3,1,-1。";
+                return false;
+            }
+
+            values.Add(value);
+        }
+
+        if (values.Count == 0)
+        {
+            errorMessage = "自定义模式不能为空。";
+            return false;
+        }
+
+        if (values.Count == 1 && values[0] == -1)
+        {
+            errorMessage = "自定义模式无有效阶段。";
+            return false;
+        }
+
+        if (values.Take(values.Count - 1).Any(value => value == -1))
+        {
+            errorMessage = "仅最后一个数字允许为 -1（无限循环标记）。";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static HashSet<int> ParseIntCsv(string csv, int min, int max)
+    {
+        var result = new HashSet<int>();
+        foreach (var token in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+            {
+                continue;
+            }
+
+            if (value >= min && value <= max)
+            {
+                result.Add(value);
+            }
+        }
+
+        return result;
+    }
+
+    private static int ToWeekdayIndex(DayOfWeek dayOfWeek)
+    {
+        return dayOfWeek switch
+        {
+            DayOfWeek.Monday => 1,
+            DayOfWeek.Tuesday => 2,
+            DayOfWeek.Wednesday => 3,
+            DayOfWeek.Thursday => 4,
+            DayOfWeek.Friday => 5,
+            DayOfWeek.Saturday => 6,
+            _ => 7
+        };
+    }
+
+    private static bool IsValidReminderDateCombination(int? year, int? month, int? day)
+    {
+        if (!day.HasValue)
+        {
+            return true;
+        }
+
+        if (!month.HasValue)
+        {
+            return day.Value is >= 1 and <= 31;
+        }
+
+        if (!year.HasValue)
+        {
+            var maxPossibleDay = Enumerable.Range(1, 4)
+                .Select(index => 2024 + index)
+                .Max(testYear => DateTime.DaysInMonth(testYear, month.Value));
+            return day.Value <= maxPossibleDay;
+        }
+
+        return day.Value <= DateTime.DaysInMonth(year.Value, month.Value);
     }
 }

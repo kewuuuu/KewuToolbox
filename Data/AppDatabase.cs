@@ -1195,25 +1195,87 @@ public sealed class AppDatabase
 
     private static void BindTodoTaskCommonParameters(SqliteCommand command, TodoTask task, DateTime nowUtc)
     {
-        command.Parameters.AddWithValue("$title", task.Title);
-        command.Parameters.AddWithValue("$taskType", task.TaskType);
-        command.Parameters.AddWithValue("$repeatMode", task.RepeatMode);
-        command.Parameters.AddWithValue("$weeklyDays", task.WeeklyDays ?? string.Empty);
-        command.Parameters.AddWithValue("$monthlyDays", task.MonthlyDays ?? string.Empty);
-        command.Parameters.AddWithValue("$customPattern", task.CustomPattern ?? string.Empty);
+        var normalizedTaskType = TodoTaskType.Normalize(task.TaskType);
+        var normalizedRepeatMode = TodoRepeatMode.Normalize(task.RepeatMode);
+        var normalizedWeeklyDays = NormalizeDayCsv(task.WeeklyDays, 1, 7);
+        var normalizedMonthlyDays = NormalizeDayCsv(task.MonthlyDays, 1, 31);
+        var normalizedCustomPattern = NormalizeCustomPattern(task.CustomPattern);
+        var reminderYear = task.ReminderYear is >= 1 and <= 9999 ? task.ReminderYear : null;
+        var reminderMonth = task.ReminderMonth is >= 1 and <= 12 ? task.ReminderMonth : null;
+        var reminderDay = task.ReminderDay is >= 1 and <= 31 ? task.ReminderDay : null;
+        var reminderHour = Math.Clamp(task.ReminderHour, 0, 23);
+        var reminderMinute = Math.Clamp(task.ReminderMinute, 0, 59);
+        var reminderSecond = Math.Clamp(task.ReminderSecond, 0, 59);
+
+        command.Parameters.AddWithValue("$title", (task.Title ?? string.Empty).Trim());
+        command.Parameters.AddWithValue("$taskType", normalizedTaskType);
+        command.Parameters.AddWithValue("$repeatMode", normalizedRepeatMode);
+        command.Parameters.AddWithValue("$weeklyDays", normalizedWeeklyDays);
+        command.Parameters.AddWithValue("$monthlyDays", normalizedMonthlyDays);
+        command.Parameters.AddWithValue("$customPattern", normalizedCustomPattern);
         command.Parameters.AddWithValue("$reminderEnabled", task.ReminderEnabled ? 1 : 0);
-        command.Parameters.AddWithValue("$reminderYear", (object?)task.ReminderYear ?? DBNull.Value);
-        command.Parameters.AddWithValue("$reminderMonth", (object?)task.ReminderMonth ?? DBNull.Value);
-        command.Parameters.AddWithValue("$reminderDay", (object?)task.ReminderDay ?? DBNull.Value);
-        command.Parameters.AddWithValue("$reminderHour", task.ReminderHour);
-        command.Parameters.AddWithValue("$reminderMinute", task.ReminderMinute);
-        command.Parameters.AddWithValue("$reminderSecond", task.ReminderSecond);
+        command.Parameters.AddWithValue("$reminderYear", (object?)reminderYear ?? DBNull.Value);
+        command.Parameters.AddWithValue("$reminderMonth", (object?)reminderMonth ?? DBNull.Value);
+        command.Parameters.AddWithValue("$reminderDay", (object?)reminderDay ?? DBNull.Value);
+        command.Parameters.AddWithValue("$reminderHour", reminderHour);
+        command.Parameters.AddWithValue("$reminderMinute", reminderMinute);
+        command.Parameters.AddWithValue("$reminderSecond", reminderSecond);
         command.Parameters.AddWithValue("$currentInsight", task.CurrentInsight ?? string.Empty);
         command.Parameters.AddWithValue("$lastReminderStamp", task.LastReminderStamp ?? string.Empty);
         command.Parameters.AddWithValue("$createdAt", task.CreatedAtUtc == default
             ? nowUtc.ToString("O", CultureInfo.InvariantCulture)
             : task.CreatedAtUtc.ToString("O", CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$updatedAt", nowUtc.ToString("O", CultureInfo.InvariantCulture));
+    }
+
+    private static string NormalizeDayCsv(string? csv, int min, int max)
+    {
+        if (string.IsNullOrWhiteSpace(csv))
+        {
+            return string.Empty;
+        }
+
+        var days = csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(token => int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var day) ? day : -1)
+            .Where(day => day >= min && day <= max)
+            .Distinct()
+            .OrderBy(day => day)
+            .ToArray();
+
+        return days.Length == 0 ? string.Empty : string.Join(",", days);
+    }
+
+    private static string NormalizeCustomPattern(string? pattern)
+    {
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            return string.Empty;
+        }
+
+        var values = pattern.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(token => int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : (int?)null)
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .ToList();
+
+        if (values.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        if (values.Count > 1)
+        {
+            for (var i = 0; i < values.Count - 1; i++)
+            {
+                if (values[i] == -1)
+                {
+                    values.RemoveAt(i);
+                    i--;
+                }
+            }
+        }
+
+        return string.Join(",", values);
     }
 
     private static string SerializeWindowKeys(IReadOnlyCollection<string> windowKeys)
