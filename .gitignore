@@ -39,3 +39,6 @@ Data\*.db-*
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Local tool state
+.waylog/
