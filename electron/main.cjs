@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, powerMonitor } = require('electron');
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 
 const POLL_INTERVAL_MS = 1000;
@@ -8,14 +9,33 @@ const MAX_POWER_EVENTS = 5000;
 const DESKTOP_KEY = 'desktop';
 const DEFAULT_CATEGORY = '其他';
 const DESKTOP_CATEGORY = '休息';
+const DEFAULT_DISPLAY_MODE = '显示性质';
+
+const BROWSER_BRIDGE_PORT = 17321;
+const BROWSER_BRIDGE_ROUTE = '/browser-bridge';
+const BROWSER_BRIDGE_HEALTH_ROUTE = '/health';
+const BROWSER_BRIDGE_STALE_MS = 90 * 1000;
+const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain';
+
+const BROWSER_PROCESS_TO_ID = {
+  'chrome.exe': 'chrome',
+  'msedge.exe': 'edge',
+  'brave.exe': 'brave',
+  'firefox.exe': 'firefox',
+  'opera.exe': 'opera',
+  'vivaldi.exe': 'vivaldi',
+};
+const BROWSER_PROCESS_NAMES = new Set(Object.keys(BROWSER_PROCESS_TO_ID));
 
 let mainWindow = null;
 let monitorTimer = null;
 let saveTimer = null;
 let activeWinApi = null;
+let browserBridgeServer = null;
 
 /** @type {import('../src/types').AppState} */
 let appState = createEmptyState();
+
 let monitorCursor = {
   lastTickAt: null,
   activeSessionId: null,
@@ -23,8 +43,12 @@ let monitorCursor = {
   activeClassificationKey: null,
 };
 
+const browserBridgeState = {
+  /** @type {Map<string, {activeDomain: string | null, openDomains: string[], updatedAtMs: number, updatedAtIso: string}>} */
+  byBrowser: new Map(),
+};
+
 function createEmptyState() {
-  const now = new Date().toISOString();
   return {
     profiles: [],
     sessions: [],
@@ -44,7 +68,7 @@ function createEmptyState() {
     archives: [],
     powerEvents: [],
     currentFocusedWindow: null,
-    displayMode: '显示性质',
+    displayMode: DEFAULT_DISPLAY_MODE,
   };
 }
 
@@ -57,11 +81,71 @@ function makeId(prefix) {
 }
 
 function categoryFromExistingOrDefault(existingCategory, isDesktop) {
-  if (typeof existingCategory === 'string' && existingCategory.trim().length > 0) {
+  if (typeof existingCategory === 'string' && existingCategory.trim()) {
     return existingCategory;
   }
-
   return isDesktop ? DESKTOP_CATEGORY : DEFAULT_CATEGORY;
+}
+
+function normalizeDomain(input) {
+  if (typeof input !== 'string') {
+    return null;
+  }
+
+  const trimmed = input.trim().toLowerCase();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const hasProtocol = /^https?:\/\//.test(trimmed);
+    const url = new URL(hasProtocol ? trimmed : `https://${trimmed}`);
+    const hostname = url.hostname.replace(/^www\./, '').replace(/\.$/, '');
+    if (!hostname) {
+      return null;
+    }
+    return hostname;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeBrowserId(input) {
+  if (typeof input !== 'string') {
+    return null;
+  }
+
+  const normalized = input.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.includes('edge')) {
+    return 'edge';
+  }
+  if (normalized.includes('chrome')) {
+    return 'chrome';
+  }
+  if (normalized.includes('firefox')) {
+    return 'firefox';
+  }
+  if (normalized.includes('brave')) {
+    return 'brave';
+  }
+  if (normalized.includes('opera')) {
+    return 'opera';
+  }
+  if (normalized.includes('vivaldi')) {
+    return 'vivaldi';
+  }
+  return normalized;
+}
+
+function safeParseDomainFromUrl(maybeUrl) {
+  if (typeof maybeUrl !== 'string') {
+    return null;
+  }
+  return normalizeDomain(maybeUrl);
 }
 
 function readJsonSafe(filePath) {
@@ -103,26 +187,26 @@ function normalizeSavedState(input) {
 
   const raw = input;
   const rawProfiles = Array.isArray(raw.profiles) ? raw.profiles : [];
-  const normalizedProfiles = rawProfiles
-    .filter(profile => profile && typeof profile === 'object' && typeof profile.classificationKey === 'string')
-    .map(profile => ({
-      id: typeof profile.id === 'string' ? profile.id : makeId('profile'),
-      classificationKey: profile.classificationKey,
-      displayName: typeof profile.displayName === 'string' ? profile.displayName : profile.classificationKey,
-      objectType: profile.objectType === 'BrowserTab' || profile.objectType === 'Desktop' ? profile.objectType : 'AppWindow',
-      processName: typeof profile.processName === 'string' ? profile.processName : '',
-      browserName: typeof profile.browserName === 'string' ? profile.browserName : undefined,
-      normalizedTitle: typeof profile.normalizedTitle === 'string' ? profile.normalizedTitle : profile.classificationKey,
-      domain: typeof profile.domain === 'string' ? profile.domain : undefined,
-      category: categoryFromExistingOrDefault(profile.category, profile.objectType === 'Desktop'),
-      isBuiltIn: Boolean(profile.isBuiltIn),
-      updatedAt: typeof profile.updatedAt === 'string' ? profile.updatedAt : new Date().toISOString(),
+  const profiles = rawProfiles
+    .filter(item => item && typeof item === 'object' && typeof item.classificationKey === 'string')
+    .map(item => ({
+      id: typeof item.id === 'string' ? item.id : makeId('profile'),
+      classificationKey: item.classificationKey,
+      displayName: typeof item.displayName === 'string' ? item.displayName : item.classificationKey,
+      objectType: item.objectType === 'BrowserTab' || item.objectType === 'Desktop' ? item.objectType : 'AppWindow',
+      processName: typeof item.processName === 'string' ? item.processName : '',
+      browserName: typeof item.browserName === 'string' ? item.browserName : undefined,
+      normalizedTitle: typeof item.normalizedTitle === 'string' ? item.normalizedTitle : item.classificationKey,
+      domain: typeof item.domain === 'string' ? item.domain : undefined,
+      category: categoryFromExistingOrDefault(item.category, item.objectType === 'Desktop'),
+      isBuiltIn: Boolean(item.isBuiltIn),
+      updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString(),
     }));
 
   return {
     ...base,
     ...raw,
-    profiles: normalizedProfiles,
+    profiles,
     sessions: Array.isArray(raw.sessions) ? raw.sessions : [],
     windowStats: Array.isArray(raw.windowStats) ? raw.windowStats : [],
     subjects: Array.isArray(raw.subjects) ? raw.subjects : [],
@@ -131,7 +215,7 @@ function normalizeSavedState(input) {
     archives: Array.isArray(raw.archives) ? raw.archives : [],
     powerEvents: Array.isArray(raw.powerEvents) ? raw.powerEvents : [],
     currentFocusedWindow: raw.currentFocusedWindow ?? null,
-    displayMode: raw.displayMode === '显示窗口' ? '显示窗口' : '显示性质',
+    displayMode: typeof raw.displayMode === 'string' ? raw.displayMode : DEFAULT_DISPLAY_MODE,
     pomodoroSettings: {
       ...base.pomodoroSettings,
       ...(raw.pomodoroSettings ?? {}),
@@ -159,65 +243,96 @@ function isDesktopWindowTitle(title) {
   return normalized === 'program manager' || normalized === 'workerw';
 }
 
-function safeParseDomain(maybeUrl) {
-  if (!maybeUrl || typeof maybeUrl !== 'string') {
-    return undefined;
-  }
-
-  try {
-    const url = new URL(maybeUrl);
-    return url.hostname.replace(/^www\./, '');
-  } catch {
-    return undefined;
-  }
-}
-
 function normalizeProcessName(ownerPath, ownerName) {
   const fromPath = typeof ownerPath === 'string' ? path.basename(ownerPath) : '';
   if (fromPath) {
-    return fromPath;
+    return fromPath.toLowerCase();
   }
-  if (typeof ownerName === 'string' && ownerName.trim().length > 0) {
-    return ownerName;
+  if (typeof ownerName === 'string' && ownerName.trim()) {
+    return ownerName.trim().toLowerCase();
   }
   return 'unknown';
 }
 
-function inferObjectType(processName, title, maybeUrl) {
+function inferObjectType(processName, title, domain) {
   const lower = processName.toLowerCase();
-  const isDesktop =
-    lower === 'explorer.exe' &&
-    isDesktopWindowTitle(title);
-  if (isDesktop) {
+  if (lower === 'explorer.exe' && isDesktopWindowTitle(title)) {
     return 'Desktop';
   }
-
-  const browserProcesses = new Set([
-    'chrome.exe',
-    'msedge.exe',
-    'firefox.exe',
-    'brave.exe',
-    'vivaldi.exe',
-    'opera.exe',
-  ]);
-
-  if (browserProcesses.has(lower) || typeof maybeUrl === 'string') {
+  if (BROWSER_PROCESS_NAMES.has(lower) || domain) {
     return 'BrowserTab';
   }
-
   return 'AppWindow';
 }
 
-function buildClassificationKey({ objectType, processName, domain, normalizedTitle }) {
+function buildClassificationKey({ objectType, processName, normalizedTitle, domain }) {
   if (objectType === 'Desktop') {
     return DESKTOP_KEY;
   }
+
+  if (objectType === 'BrowserTab') {
+    if (domain) {
+      return `${BROWSER_DOMAIN_KEY_PREFIX}|${domain}`;
+    }
+    return `${BROWSER_DOMAIN_KEY_PREFIX}|${processName}|unknown`;
+  }
+
   const titlePart = (normalizedTitle || '').trim().toLowerCase();
-  const domainPart = (domain || '').trim().toLowerCase();
-  return [objectType, processName.toLowerCase(), domainPart, titlePart]
-    .filter(Boolean)
-    .join('|')
-    .slice(0, 300);
+  return [objectType, processName.toLowerCase(), titlePart].filter(Boolean).join('|').slice(0, 300);
+}
+
+function toBrowserDomainProfile(domain, processName = 'browser') {
+  const normalizedDomain = normalizeDomain(domain);
+  if (!normalizedDomain) {
+    return null;
+  }
+
+  return {
+    id: makeId('profile'),
+    classificationKey: `${BROWSER_DOMAIN_KEY_PREFIX}|${normalizedDomain}`,
+    displayName: normalizedDomain,
+    objectType: 'BrowserTab',
+    processName,
+    browserName: undefined,
+    normalizedTitle: normalizedDomain,
+    domain: normalizedDomain,
+    category: DEFAULT_CATEGORY,
+    isBuiltIn: false,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function getBridgeSnapshotForProcess(processName) {
+  const browserId = BROWSER_PROCESS_TO_ID[processName.toLowerCase()];
+  if (!browserId) {
+    return null;
+  }
+
+  const snapshot = browserBridgeState.byBrowser.get(browserId);
+  if (!snapshot) {
+    return null;
+  }
+
+  if (Date.now() - snapshot.updatedAtMs > BROWSER_BRIDGE_STALE_MS) {
+    return null;
+  }
+  return snapshot;
+}
+
+function getFreshBridgeOpenDomains() {
+  const now = Date.now();
+  const unionSet = new Set();
+
+  for (const snapshot of browserBridgeState.byBrowser.values()) {
+    if (now - snapshot.updatedAtMs > BROWSER_BRIDGE_STALE_MS) {
+      continue;
+    }
+    for (const domain of snapshot.openDomains) {
+      unionSet.add(domain);
+    }
+  }
+
+  return [...unionSet];
 }
 
 function toFocusedWindowProfile(rawWindow) {
@@ -236,29 +351,45 @@ function toFocusedWindowProfile(rawWindow) {
   }
 
   const processName = normalizeProcessName(rawWindow.owner?.path, rawWindow.owner?.name);
-  const normalizedTitle = (rawWindow.title || '').trim() || processName;
-  const domain = safeParseDomain(rawWindow.url);
-  const objectType = inferObjectType(processName, normalizedTitle, rawWindow.url);
-  const browserName = rawWindow.owner?.name || undefined;
-  const displayName = objectType === 'BrowserTab'
-    ? normalizedTitle
-    : normalizedTitle;
+  const title = (rawWindow.title || '').trim();
+  const browserSnapshot = getBridgeSnapshotForProcess(processName);
+  const domainFromActiveWin = safeParseDomainFromUrl(rawWindow.url);
+  const domain = domainFromActiveWin || browserSnapshot?.activeDomain || null;
+  const objectType = inferObjectType(processName, title, domain);
+
+  if (objectType === 'BrowserTab' && domain) {
+    return {
+      id: makeId('profile'),
+      classificationKey: `${BROWSER_DOMAIN_KEY_PREFIX}|${domain}`,
+      displayName: domain,
+      objectType: 'BrowserTab',
+      processName,
+      browserName: rawWindow.owner?.name || undefined,
+      normalizedTitle: domain,
+      domain,
+      category: DEFAULT_CATEGORY,
+      isBuiltIn: false,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  const normalizedTitle = title || processName;
   const classificationKey = buildClassificationKey({
     objectType,
     processName,
-    domain,
     normalizedTitle,
+    domain,
   });
 
   return {
     id: makeId('profile'),
     classificationKey,
-    displayName,
+    displayName: objectType === 'BrowserTab' ? `${rawWindow.owner?.name || processName}（未知域名）` : normalizedTitle,
     objectType,
     processName,
-    browserName,
+    browserName: rawWindow.owner?.name || undefined,
     normalizedTitle,
-    domain,
+    domain: domain || undefined,
     category: objectType === 'Desktop' ? DESKTOP_CATEGORY : DEFAULT_CATEGORY,
     isBuiltIn: objectType === 'Desktop',
     updatedAt: new Date().toISOString(),
@@ -266,7 +397,7 @@ function toFocusedWindowProfile(rawWindow) {
 }
 
 function ensureProfile(profileCandidate) {
-  const existing = appState.profiles.find(p => p.classificationKey === profileCandidate.classificationKey);
+  const existing = appState.profiles.find(item => item.classificationKey === profileCandidate.classificationKey);
   if (existing) {
     const merged = {
       ...existing,
@@ -278,7 +409,7 @@ function ensureProfile(profileCandidate) {
       domain: profileCandidate.domain,
       updatedAt: profileCandidate.updatedAt,
     };
-    appState.profiles = appState.profiles.map(p => (p.classificationKey === merged.classificationKey ? merged : p));
+    appState.profiles = appState.profiles.map(item => (item.classificationKey === merged.classificationKey ? merged : item));
     return merged;
   }
 
@@ -290,7 +421,7 @@ function ensureProfile(profileCandidate) {
   return toInsert;
 }
 
-function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, seenAt) {
+function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, seenAtIso) {
   const existing = appState.windowStats.find(item => item.classificationKey === profile.classificationKey);
   if (existing) {
     existing.displayName = profile.displayName;
@@ -300,7 +431,7 @@ function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, seenAt) {
     existing.category = profile.category;
     existing.totalVisibleSeconds += deltaSeconds;
     existing.focusSeconds += focusDeltaSeconds;
-    existing.lastSeenAt = seenAt;
+    existing.lastSeenAt = seenAtIso;
     return;
   }
 
@@ -313,15 +444,33 @@ function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, seenAt) {
     category: profile.category,
     totalVisibleSeconds: deltaSeconds,
     focusSeconds: focusDeltaSeconds,
-    lastSeenAt: seenAt,
+    lastSeenAt: seenAtIso,
   });
 }
 
-function syncOpenWindowsStats(openWindows, nowIso, deltaSeconds, focusedClassificationKey) {
+function syncOpenWindowsStats(openWindows, focusedProfile, nowIso, deltaSeconds) {
+  const bucket = new Map();
+
   for (const rawWindow of openWindows) {
     const candidate = toFocusedWindowProfile(rawWindow);
+    bucket.set(candidate.classificationKey, candidate);
+  }
+
+  bucket.set(focusedProfile.classificationKey, focusedProfile);
+
+  for (const domain of getFreshBridgeOpenDomains()) {
+    const browserDomainProfile = toBrowserDomainProfile(domain);
+    if (!browserDomainProfile) {
+      continue;
+    }
+    if (!bucket.has(browserDomainProfile.classificationKey)) {
+      bucket.set(browserDomainProfile.classificationKey, browserDomainProfile);
+    }
+  }
+
+  for (const [classificationKey, candidate] of bucket.entries()) {
     const profile = ensureProfile(candidate);
-    const focusDelta = profile.classificationKey === focusedClassificationKey ? deltaSeconds : 0;
+    const focusDelta = classificationKey === focusedProfile.classificationKey ? deltaSeconds : 0;
     upsertWindowStat(profile, deltaSeconds, focusDelta, nowIso);
   }
 }
@@ -386,6 +535,133 @@ function addPowerEvent(eventType, detail, markerColor) {
   emitState();
 }
 
+function parseBrowserBridgePayload(rawPayload) {
+  if (!rawPayload || typeof rawPayload !== 'object') {
+    return null;
+  }
+
+  const browserId = normalizeBrowserId(rawPayload.browser);
+  if (!browserId) {
+    return null;
+  }
+
+  const openDomainsSet = new Set();
+  if (Array.isArray(rawPayload.openDomains)) {
+    for (const item of rawPayload.openDomains) {
+      const domain = normalizeDomain(item);
+      if (domain) {
+        openDomainsSet.add(domain);
+      }
+    }
+  }
+  if (Array.isArray(rawPayload.openUrls)) {
+    for (const item of rawPayload.openUrls) {
+      const domain = safeParseDomainFromUrl(item);
+      if (domain) {
+        openDomainsSet.add(domain);
+      }
+    }
+  }
+
+  const activeDomain =
+    normalizeDomain(rawPayload.activeDomain) ||
+    safeParseDomainFromUrl(rawPayload.activeUrl) ||
+    null;
+  if (activeDomain) {
+    openDomainsSet.add(activeDomain);
+  }
+
+  return {
+    browserId,
+    activeDomain,
+    openDomains: [...openDomainsSet],
+    updatedAtMs: Date.now(),
+    updatedAtIso: new Date().toISOString(),
+  };
+}
+
+function sendJson(res, statusCode, payload) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+  });
+  res.end(JSON.stringify(payload));
+}
+
+function startBrowserBridgeServer() {
+  if (browserBridgeServer) {
+    return;
+  }
+
+  browserBridgeServer = http.createServer((req, res) => {
+    if (req.method === 'OPTIONS') {
+      return sendJson(res, 204, { ok: true });
+    }
+
+    if (req.method === 'GET' && req.url === BROWSER_BRIDGE_HEALTH_ROUTE) {
+      return sendJson(res, 200, { ok: true, port: BROWSER_BRIDGE_PORT });
+    }
+
+    if (req.method !== 'POST' || req.url !== BROWSER_BRIDGE_ROUTE) {
+      return sendJson(res, 404, { ok: false, error: 'not_found' });
+    }
+
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > 1024 * 256) {
+        req.destroy();
+      }
+    });
+
+    req.on('end', () => {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(body || '{}');
+      } catch {
+        return sendJson(res, 400, { ok: false, error: 'invalid_json' });
+      }
+
+      const normalized = parseBrowserBridgePayload(parsed);
+      if (!normalized) {
+        return sendJson(res, 400, { ok: false, error: 'invalid_payload' });
+      }
+
+      browserBridgeState.byBrowser.set(normalized.browserId, {
+        activeDomain: normalized.activeDomain,
+        openDomains: normalized.openDomains,
+        updatedAtMs: normalized.updatedAtMs,
+        updatedAtIso: normalized.updatedAtIso,
+      });
+
+      scheduleSave();
+      sendJson(res, 200, { ok: true });
+    });
+  });
+
+  browserBridgeServer.listen(BROWSER_BRIDGE_PORT, '127.0.0.1', () => {
+    // Browser extension can post tab-domain snapshots to this local endpoint.
+  });
+
+  browserBridgeServer.on('error', () => {
+    // Keep app running even if bridge port is occupied.
+  });
+}
+
+function stopBrowserBridgeServer() {
+  if (!browserBridgeServer) {
+    return;
+  }
+  try {
+    browserBridgeServer.close();
+  } catch {
+    // Ignore close errors.
+  }
+  browserBridgeServer = null;
+}
+
 async function getActiveWinApi() {
   if (!activeWinApi) {
     const mod = await import('active-win');
@@ -398,22 +674,17 @@ async function monitorTick() {
   const now = new Date();
   const nowIso = now.toISOString();
 
-  const last = monitorCursor.lastTickAt ? new Date(monitorCursor.lastTickAt).getTime() : now.getTime();
-  const deltaSeconds = Math.max(1, Math.floor((now.getTime() - last) / 1000) || 1);
+  const lastTickMs = monitorCursor.lastTickAt ? new Date(monitorCursor.lastTickAt).getTime() : now.getTime();
+  const deltaSeconds = Math.max(1, Math.floor((now.getTime() - lastTickMs) / 1000) || 1);
   monitorCursor.lastTickAt = nowIso;
 
   const activeWin = await getActiveWinApi();
-  const [focusedRaw, openWindows] = await Promise.all([
-    activeWin(),
-    activeWin.getOpenWindows(),
-  ]);
+  const [focusedRaw, openWindows] = await Promise.all([activeWin(), activeWin.getOpenWindows()]);
 
-  const focusedProfileCandidate = toFocusedWindowProfile(focusedRaw);
-  const focusedProfile = ensureProfile(focusedProfileCandidate);
+  const focusedProfile = ensureProfile(toFocusedWindowProfile(focusedRaw));
   appState.currentFocusedWindow = focusedProfile;
 
-  syncOpenWindowsStats(openWindows, nowIso, deltaSeconds, focusedProfile.classificationKey);
-  upsertWindowStat(focusedProfile, deltaSeconds, deltaSeconds, nowIso);
+  syncOpenWindowsStats(openWindows, focusedProfile, nowIso, deltaSeconds);
   upsertActiveSession(focusedProfile, nowIso);
 
   scheduleSave();
@@ -428,7 +699,7 @@ function startMonitoring() {
   monitorCursor.lastTickAt = new Date().toISOString();
   monitorTimer = setInterval(() => {
     monitorTick().catch(() => {
-      // Ignore single-tick sampling failures and retry next cycle.
+      // Ignore single-tick sampling failure.
     });
   }, POLL_INTERVAL_MS);
 
@@ -466,19 +737,20 @@ function mergeUserStateFromRenderer(partial) {
       ...next.pomodoroSettings,
     };
   }
-  if (next.displayMode === '显示窗口' || next.displayMode === '显示性质') {
+  if (typeof next.displayMode === 'string') {
     appState.displayMode = next.displayMode;
   }
 
   if (Array.isArray(next.profiles)) {
-    const incomingMap = new Map();
+    const incomingCategoryMap = new Map();
     for (const profile of next.profiles) {
       if (profile && typeof profile.classificationKey === 'string' && typeof profile.category === 'string') {
-        incomingMap.set(profile.classificationKey, profile.category);
+        incomingCategoryMap.set(profile.classificationKey, profile.category);
       }
     }
+
     appState.profiles = appState.profiles.map(profile => {
-      const incomingCategory = incomingMap.get(profile.classificationKey);
+      const incomingCategory = incomingCategoryMap.get(profile.classificationKey);
       if (!incomingCategory) {
         return profile;
       }
@@ -488,8 +760,9 @@ function mergeUserStateFromRenderer(partial) {
         updatedAt: new Date().toISOString(),
       };
     });
+
     appState.windowStats = appState.windowStats.map(item => {
-      const incomingCategory = incomingMap.get(item.classificationKey);
+      const incomingCategory = incomingCategoryMap.get(item.classificationKey);
       if (!incomingCategory) {
         return item;
       }
@@ -547,7 +820,9 @@ app.whenReady().then(() => {
   loadPersistedState();
   registerIpc();
   registerPowerEvents();
+  startBrowserBridgeServer();
   createWindow();
+
   addPowerEvent('开机', '应用启动并开始监测', '#22c55e');
   startMonitoring();
 
@@ -566,6 +841,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   stopMonitoring();
+  stopBrowserBridgeServer();
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;

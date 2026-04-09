@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mindful Bridge</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 12px;
+        width: 260px;
+        font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 8px;
+      }
+      p {
+        margin: 0 0 8px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: #94a3b8;
+      }
+      .status {
+        font-size: 12px;
+        margin-bottom: 8px;
+      }
+      button {
+        width: 100%;
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 10px;
+        color: #0f172a;
+        background: #38bdf8;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      code {
+        font-size: 11px;
+        color: #7dd3fc;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Mindful 浏览器桥接</h1>
+    <p>该插件只上报域名（忽略 URL 后缀路径、参数、锚点）。</p>
+    <div class="status" id="status">检测中...</div>
+    <button id="syncBtn">立即同步一次</button>
+    <p style="margin-top: 8px;">
+      桌面端接口：<code>http://127.0.0.1:17321</code>
+    </p>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Mindful Browser Bridge",
+  "version": "0.1.0",
+  "description": "将浏览器标签页域名同步到 Mindful Desktop（仅域名级别统计）。",
+  "permissions": [
+    "tabs",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Mindful Bridge",
+    "default_popup": "popup.html"
+  }
+}
