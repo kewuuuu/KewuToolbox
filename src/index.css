@@ -1,0 +1,77 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 225 15% 10%;
+    --foreground: 210 20% 90%;
+    --card: 225 15% 13%;
+    --card-foreground: 210 20% 90%;
+    --popover: 225 15% 15%;
+    --popover-foreground: 210 20% 90%;
+    --primary: 210 80% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 225 12% 18%;
+    --secondary-foreground: 210 15% 75%;
+    --muted: 225 12% 16%;
+    --muted-foreground: 215 12% 50%;
+    --accent: 225 15% 20%;
+    --accent-foreground: 210 20% 85%;
+    --destructive: 0 65% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 225 12% 20%;
+    --input: 225 12% 20%;
+    --ring: 210 80% 55%;
+    --radius: 0.625rem;
+
+    /* Category colors */
+    --cat-study: 210 80% 55%;
+    --cat-entertainment: 30 85% 55%;
+    --cat-social: 270 60% 60%;
+    --cat-rest: 145 55% 45%;
+    --cat-other: 220 10% 50%;
+
+    /* Sidebar */
+    --sidebar-background: 225 15% 8%;
+    --sidebar-foreground: 210 15% 70%;
+    --sidebar-primary: 210 80% 55%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 225 15% 14%;
+    --sidebar-accent-foreground: 210 20% 90%;
+    --sidebar-border: 225 12% 16%;
+    --sidebar-ring: 210 80% 55%;
+
+    /* Glow */
+    --glow-primary: 0 0 12px hsl(210 80% 55% / 0.15);
+    --glow-card: 0 0 20px hsl(225 15% 5% / 0.5);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: hsl(225 12% 25%); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(225 12% 35%); }
+
+/* Animations */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px hsl(210 80% 55% / 0.2); }
+  50% { box-shadow: 0 0 20px hsl(210 80% 55% / 0.4); }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}

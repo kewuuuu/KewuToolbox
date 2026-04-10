@@ -1,44 +1,26 @@
-# Build artifacts
-[Bb]in/
-[Oo]bj/
-[Dd]ebug/
-[Rr]elease/
-publish/
-publish-new/
-TestResults/
-.tmp/
-tmp/
-
-# Visual Studio
-.vs/
-*.user
-*.suo
-*.userosscache
-*.sln.docstates
-
-# Rider / VS Code
-.idea/
-.vscode/
-
-# Generated files
-*.cache
-*.pdb
-*.ilk
-*.ipdb
-*.iobj
+# Logs
+logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Runtime data/cache
-*.db
-*.db-shm
-*.db-wal
-Data\*.db
-Data\*.db-*
+node_modules
+dist
+dist-ssr
+release
+.waylog
+*.local
 
-# OS files
-Thumbs.db
-Desktop.ini
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
 .DS_Store
-
-# Local tool state
-.waylog/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

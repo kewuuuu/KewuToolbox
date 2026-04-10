@@ -1,64 +1,103 @@
-# 窗口专注助手（WPF / .NET 8）
+# Mindful Desktop
 
-一个 Windows 本地效率工具，包含番茄钟专注、窗口监测、统计分析和待办管理。
+一个仅 Windows 使用的本地效率工具，包含：
 
-## 功能概览
-- 分页式主界面：每页聚焦一个功能，顶部可快速切页。
-- 番茄钟专注：
-  - 可手动输入专注/休息时长和循环次数。
-  - 支持允许专注窗口选择、偏离阈值提醒（连续/累计）。
-  - 支持专注事项、专注队列、模板保存/加载。
-- 窗口与焦点监测：
-  - 记录窗口开启时长、焦点时长。
-  - 支持桌面识别与浏览器前台标签页识别。
-- 电源/会话事件：
-  - 记录系统启动、关机、挂起恢复、锁屏解锁等事件。
-- 数据统计：
-  - 支持进程性质映射（学习/娱乐/社交/休息/其他）。
-  - 扇形图、时间轴、热力图、柱状图。
-- 待办事项：
-  - 一次性/重复任务（每日、每周、每月、自定义）。
-  - 定时提醒、归档、心得自动保存。
+- 番茄钟与专注队列
+- 焦点窗口统计
+- 打开窗口时长统计
+- 开关机/锁屏/恢复事件记录
+- 待办与归档
+
+## 架构
+
+- 前端：`React + Vite + TypeScript + shadcn/ui`
+- 桌面壳：`Electron`
+- 系统监控：`active-win` + Electron `powerMonitor`
+- 浏览器域名识别：`browser-extension`（Chrome/Edge 插件）
+- 本地数据存储：`%AppData%/<应用目录>/app-state.json`
+
+说明：纯浏览器网页无法直接读取系统进程/窗口信息，本项目已采用 Electron 桌面架构。
 
 ## 环境要求
+
 - Windows 10/11
-- .NET 8 SDK
+- Node.js 18+（建议 20+）
+- npm 9+
 
-## 本地运行
-在项目目录执行：
+## 开发运行（桌面）
 
-```powershell
-dotnet restore
-dotnet run
+在项目根目录执行：
+
+```bash
+npm install
+npm run dev
 ```
 
-## 打包发布（EXE）
-在项目目录执行：
+会同时启动：
 
-```powershell
-.\publish.ps1
+- Vite 开发服务器：`http://localhost:8080`
+- Electron 桌面窗口
+
+## 仅前端预览（无系统监控）
+
+```bash
+npm run dev:renderer
 ```
 
-默认输出目录：
-`bin\Release\net8.0-windows\win-x64\publish`
+## 打包 EXE
 
-如果目标 EXE 被占用，脚本会自动回退到带时间戳的新目录。
-
-## 数据文件位置
-- 调试运行：`bin\Debug\net8.0-windows\data\app.db`
-- 发布运行：`publish` 目录下的 `data\app.db`
-
-## 常见问题
-### 双击 `publish.ps1` 只用记事本打开，没有执行
-请在 PowerShell 中进入项目目录后运行：
-
-```powershell
-.\publish.ps1
+```bash
+npm run build:desktop
 ```
 
-如果提示执行策略受限，可临时执行：
+输出目录：
+
+```text
+release/
+```
+
+安装包示例：
+
+`release/MindfulDesktop-0.1.0-setup.exe`
+
+## 浏览器插件（域名级别识别）
+
+插件目录：
+
+`browser-extension/`
+
+安装步骤（Chrome/Edge）：
+
+1. 打开 `chrome://extensions` 或 `edge://extensions`
+2. 打开“开发者模式”
+3. 点击“加载已解压的扩展程序”
+4. 选择 `browser-extension` 目录
+
+工作规则：
+
+- 只识别 URL 中的域名（例如 `https://www.bilibili.com/xxxx` 统一为 `bilibili.com`）
+- 忽略路径、参数、锚点
+- 同域名多个标签页算同一个事项（覆盖关系，不重复累计）
+
+桌面端监听地址：
+
+`http://127.0.0.1:17321/browser-bridge`
+
+## 常用命令
+
+```bash
+npm run lint
+npm run test
+npm run build
+```
+
+## 若安装依赖时遇到证书问题
+
+某些网络环境下 `npm install` 下载 Electron 依赖会失败，可临时使用：
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\publish.ps1
+$env:NODE_TLS_REJECT_UNAUTHORIZED='0'
+npm install
 ```
+
+完成后建议关闭该环境变量，避免长期关闭 TLS 校验。
