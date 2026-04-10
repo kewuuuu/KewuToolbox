@@ -30,12 +30,15 @@ const BROWSER_PROCESS_TO_ID = {
   'vivaldi.exe': 'vivaldi',
 };
 const BROWSER_PROCESS_NAMES = new Set(Object.keys(BROWSER_PROCESS_TO_ID));
+const PORTABLE_DATA_DIR_NAME = 'data';
+const STATE_FILE_NAME = 'app-state.json';
 
 let mainWindow = null;
 let monitorTimer = null;
 let saveTimer = null;
 let activeWinApi = null;
 let browserBridgeServer = null;
+let resolvedStatePath = null;
 
 /** @type {import('../src/types').AppState} */
 let appState = createEmptyState();
@@ -87,6 +90,7 @@ function createEmptyState() {
     preferences: {
       recordWindowThresholdSeconds: DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS,
       uiTheme: 'dark',
+      autoLaunchEnabled: false,
     },
     subjects: [],
     queue: [],
@@ -112,7 +116,51 @@ function createEmptyState() {
 }
 
 function getStatePath() {
-  return path.join(app.getPath('userData'), 'app-state.json');
+  if (resolvedStatePath) {
+    return resolvedStatePath;
+  }
+
+  const userDataStatePath = path.join(app.getPath('userData'), STATE_FILE_NAME);
+  if (!app.isPackaged) {
+    resolvedStatePath = userDataStatePath;
+    return resolvedStatePath;
+  }
+
+  const portableStatePath = path.join(path.dirname(process.execPath), PORTABLE_DATA_DIR_NAME, STATE_FILE_NAME);
+  const writablePath = ensureWritableStatePath(portableStatePath);
+  resolvedStatePath = writablePath ?? userDataStatePath;
+  return resolvedStatePath;
+}
+
+function resolveAppIconPath() {
+  const candidates = [
+    path.join(__dirname, '..', 'public', 'favicon.ico'),
+    path.join(__dirname, '..', 'dist', 'favicon.ico'),
+    path.join(process.resourcesPath || '', 'app.asar', 'dist', 'favicon.ico'),
+    path.join(process.resourcesPath || '', 'dist', 'favicon.ico'),
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function ensureWritableStatePath(targetPath) {
+  try {
+    const dir = path.dirname(targetPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const probePath = path.join(dir, '.write-probe');
+    fs.writeFileSync(probePath, 'ok', 'utf8');
+    fs.unlinkSync(probePath);
+    return targetPath;
+  } catch {
+    return null;
+  }
 }
 
 function makeId(prefix) {
@@ -136,6 +184,35 @@ function normalizeRecordWindowThresholdSeconds(input, fallback = DEFAULT_RECORD_
 
 function normalizeUiTheme(input, fallback = 'dark') {
   return input === 'light' ? 'light' : fallback;
+}
+
+function normalizeAutoLaunchEnabled(input, fallback = false) {
+  if (typeof input === 'boolean') {
+    return input;
+  }
+  return fallback;
+}
+
+function readSystemAutoLaunchEnabled() {
+  try {
+    return Boolean(app.getLoginItemSettings().openAtLogin);
+  } catch {
+    return false;
+  }
+}
+
+function applySystemAutoLaunchEnabled(enabled) {
+  const normalized = Boolean(enabled);
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: normalized,
+      path: process.execPath,
+      args: [],
+    });
+  } catch {
+    // Ignore and read back current status.
+  }
+  return readSystemAutoLaunchEnabled();
 }
 
 function normalizeDomain(input) {
@@ -193,11 +270,28 @@ function readJsonSafe(filePath) {
 }
 
 function writeJsonSafe(filePath, payload) {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  try {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
+    return true;
+  } catch {
+    return false;
   }
-  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
+}
+
+function persistState() {
+  const primaryPath = getStatePath();
+  if (writeJsonSafe(primaryPath, appState)) {
+    return;
+  }
+
+  const fallbackPath = path.join(app.getPath('userData'), STATE_FILE_NAME);
+  if (fallbackPath !== primaryPath && writeJsonSafe(fallbackPath, appState)) {
+    resolvedStatePath = fallbackPath;
+  }
 }
 
 function scheduleSave() {
@@ -206,7 +300,7 @@ function scheduleSave() {
   }
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    writeJsonSafe(getStatePath(), appState);
+    persistState();
   }, 300);
 }
 
@@ -271,6 +365,10 @@ function normalizeSavedState(input) {
         base.preferences.recordWindowThresholdSeconds,
       ),
       uiTheme: normalizeUiTheme(rawPreferences.uiTheme, base.preferences.uiTheme),
+      autoLaunchEnabled: normalizeAutoLaunchEnabled(
+        rawPreferences.autoLaunchEnabled,
+        base.preferences.autoLaunchEnabled,
+      ),
     },
     subjects: Array.isArray(raw.subjects) ? raw.subjects : [],
     queue: Array.isArray(raw.queue) ? raw.queue : [],
@@ -287,7 +385,20 @@ function normalizeSavedState(input) {
 }
 
 function loadPersistedState() {
-  appState = normalizeSavedState(readJsonSafe(getStatePath()));
+  const primaryPath = getStatePath();
+  let saved = readJsonSafe(primaryPath);
+
+  if (!saved) {
+    const fallbackPath = path.join(app.getPath('userData'), STATE_FILE_NAME);
+    if (fallbackPath !== primaryPath) {
+      saved = readJsonSafe(fallbackPath);
+      if (saved) {
+        writeJsonSafe(primaryPath, saved);
+      }
+    }
+  }
+
+  appState = normalizeSavedState(saved);
 }
 
 function resetRuntimeTrackingState() {
@@ -300,6 +411,7 @@ function resetRuntimeTrackingState() {
 
 function clearAllData() {
   appState = createEmptyState();
+  appState.preferences.autoLaunchEnabled = applySystemAutoLaunchEnabled(false);
   resetRuntimeTrackingState();
   scheduleSave();
   emitState();
@@ -922,6 +1034,14 @@ function mergeUserStateFromRenderer(partial) {
     appState.soundFiles = next.soundFiles;
   }
   if (next.preferences && typeof next.preferences === 'object') {
+    const requestedAutoLaunchEnabled = normalizeAutoLaunchEnabled(
+      next.preferences.autoLaunchEnabled,
+      appState.preferences.autoLaunchEnabled,
+    );
+    const resolvedAutoLaunchEnabled =
+      requestedAutoLaunchEnabled === appState.preferences.autoLaunchEnabled
+        ? appState.preferences.autoLaunchEnabled
+        : applySystemAutoLaunchEnabled(requestedAutoLaunchEnabled);
     appState.preferences = {
       ...appState.preferences,
       recordWindowThresholdSeconds: normalizeRecordWindowThresholdSeconds(
@@ -929,6 +1049,7 @@ function mergeUserStateFromRenderer(partial) {
         appState.preferences.recordWindowThresholdSeconds,
       ),
       uiTheme: normalizeUiTheme(next.preferences.uiTheme, appState.preferences.uiTheme),
+      autoLaunchEnabled: resolvedAutoLaunchEnabled,
     };
   }
   if (next.pomodoroSettings && typeof next.pomodoroSettings === 'object') {
@@ -1055,12 +1176,14 @@ function registerPowerEvents() {
 }
 
 function createWindow() {
+  const iconPath = resolveAppIconPath();
   mainWindow = new BrowserWindow({
     width: 1320,
     height: 860,
     minWidth: 1100,
     minHeight: 700,
     backgroundColor: '#111827',
+    icon: iconPath,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -1080,6 +1203,9 @@ function createWindow() {
 
 app.whenReady().then(() => {
   loadPersistedState();
+  appState.preferences.autoLaunchEnabled = applySystemAutoLaunchEnabled(
+    appState.preferences.autoLaunchEnabled,
+  );
   registerIpc();
   registerPowerEvents();
   startBrowserBridgeServer();
@@ -1107,5 +1233,5 @@ app.on('before-quit', () => {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  writeJsonSafe(getStatePath(), appState);
+  persistState();
 });

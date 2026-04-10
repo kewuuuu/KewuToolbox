@@ -14,6 +14,7 @@ export function createInitialState(): AppState {
     preferences: {
       recordWindowThresholdSeconds: 60,
       uiTheme: 'dark',
+      autoLaunchEnabled: false,
     },
     subjects: [],
     queue: [],

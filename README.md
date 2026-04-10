@@ -1,18 +1,18 @@
 # KewuToolbox
 
-一个仅 Windows 使用的本地效率工具，包含：
+仅 Windows 使用的本地效率工具，包含：
 
-- 番茄钟与专注队列
-- 进程管理（窗口/进程/焦点）
-- 系统事件（开关机、锁屏、恢复）
-- 待办与归档
+- 专注（番茄钟 + 专注事项）
+- 进程管理（历史记录 / 当前进程 / 标签管理）
+- 数据统计图表
+- 代办与归档
 
-## 技术架构
+## 技术栈
 
-- 前端：`React + Vite + TypeScript + shadcn/ui`
-- 桌面端：`Electron`
-- 系统监控：`active-win` + `powerMonitor`
-- 浏览器域名桥接：`browser-extension`（Chrome/Edge 扩展）
+- 前端：React + Vite + TypeScript + shadcn/ui
+- 桌面端：Electron
+- 系统监控：active-win + powerMonitor
+- 浏览器域名桥接：`browser-extension/`（Chrome / Edge）
 
 ## 开发运行
 
@@ -21,50 +21,41 @@ npm install
 npm run dev
 ```
 
-会同时启动：
+会同时启动 Vite 与 Electron。
 
-- `http://localhost:8080`（Vite）
-- Electron 桌面窗口
+## 打包
 
-## 仅前端预览（无系统监控能力）
-
-```bash
-npm run dev:renderer
-```
-
-## 打包 EXE
+### 1) 安装包（推荐普通用户）
 
 ```bash
 npm run build:desktop
 ```
 
-输出目录：
+输出示例：
 
-```text
-release/
+- `release/KewuToolbox-0.1.0-setup.exe`
+
+### 2) 便携单文件 EXE
+
+```bash
+npm run build:portable
 ```
 
-安装包示例：
+输出示例：
 
-`release/KewuToolbox-0.1.0-setup.exe`
+- `release/KewuToolbox-0.1.0-portable.exe`
 
-## 浏览器扩展（域名级识别）
+## 数据文件位置（关键）
 
-扩展目录：
+打包后的程序会优先将数据写入 **EXE 同目录**：
 
-`browser-extension/`
+- `.\data\app-state.json`
 
-安装方式（Chrome/Edge）：
+首次运行若不存在会自动创建。
 
-1. 打开 `chrome://extensions` 或 `edge://extensions`
-2. 打开“开发者模式”
-3. 点击“加载已解压的扩展程序”
-4. 选择 `browser-extension` 文件夹
+如果 EXE 所在目录无写权限（例如放在受限系统目录），会自动回退到：
 
-规则：
-
-- 只识别 URL 域名，忽略路径、参数、锚点
-- 同域名多个标签页按同一事项统计（覆盖关系，不重复累计）
+- `%APPDATA%/kewu-toolbox/app-state.json`
 
 ## 常用命令
 

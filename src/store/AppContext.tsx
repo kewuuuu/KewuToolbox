@@ -120,6 +120,8 @@ function normalizePreferences(
   return {
     recordWindowThresholdSeconds,
     uiTheme: input?.uiTheme === 'light' || input?.uiTheme === 'dark' ? input.uiTheme : fallback.uiTheme,
+    autoLaunchEnabled:
+      typeof input?.autoLaunchEnabled === 'boolean' ? input.autoLaunchEnabled : fallback.autoLaunchEnabled,
   };
 }
 

@@ -6,6 +6,7 @@ import { getSoundDisplayNameFromPath, playSoundById } from '@/lib/sound';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   AlertDialog,
@@ -56,6 +57,7 @@ export default function SettingsPage() {
       ),
     [state.soundFiles],
   );
+  const isElectronRuntime = Boolean(window.desktopApi?.isElectron);
 
   const handleTabChange = (nextTab: string) => {
     const normalized: SettingsTab = nextTab === 'sounds' ? 'sounds' : 'general';
@@ -99,6 +101,15 @@ export default function SettingsPage() {
     } finally {
       setIsClearingAllData(false);
     }
+  };
+
+  const handleAutoLaunchChange = (checked: boolean) => {
+    if (!isElectronRuntime) {
+      toast.info('当前环境不支持开机自启动');
+      return;
+    }
+    updatePreferences({ autoLaunchEnabled: checked });
+    toast.success(checked ? '已开启开机自启动' : '已关闭开机自启动');
   };
 
   const handlePickAudioFile = async () => {
@@ -242,6 +253,22 @@ export default function SettingsPage() {
                       亮色
                     </Button>
                   </div>
+                </div>
+
+                <div className="md:col-span-2 rounded-lg border border-border/70 p-3 flex items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-foreground">开机自启动</p>
+                    <p className="text-xs text-muted-foreground">
+                      {isElectronRuntime
+                        ? '开启后，Windows 登录时会自动启动本软件。'
+                        : '仅桌面版支持此功能。'}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={state.preferences.autoLaunchEnabled}
+                    onCheckedChange={handleAutoLaunchChange}
+                    disabled={!isElectronRuntime}
+                  />
                 </div>
               </div>
 

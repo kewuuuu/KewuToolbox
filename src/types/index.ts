@@ -106,6 +106,7 @@ export interface SoundFileItem {
 export interface AppPreferences {
   recordWindowThresholdSeconds: number;
   uiTheme: UiTheme;
+  autoLaunchEnabled: boolean;
 }
 
 export interface PomodoroSettings {
