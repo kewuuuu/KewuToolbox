@@ -7,6 +7,17 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import { FolderOpen, MoonStar, Play, Plus, Sun, Trash2 } from 'lucide-react';
 
@@ -21,10 +32,11 @@ function toFinite(value: string, fallback: number) {
 }
 
 export default function SettingsPage() {
-  const { state, updatePreferences, addSoundFile, updateSoundFile, deleteSoundFile } = useAppState();
+  const { state, updatePreferences, clearAllData, addSoundFile, updateSoundFile, deleteSoundFile } = useAppState();
   const [searchParams, setSearchParams] = useSearchParams();
   const [manualPath, setManualPath] = useState('');
   const [manualName, setManualName] = useState('');
+  const [isClearingAllData, setIsClearingAllData] = useState(false);
   const [thresholdInput, setThresholdInput] = useState(
     String(state.preferences.recordWindowThresholdSeconds),
   );
@@ -70,6 +82,22 @@ export default function SettingsPage() {
   const handleThresholdKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
       commitThresholdInput(thresholdInput);
+    }
+  };
+
+  const handleClearAllData = async () => {
+    if (isClearingAllData) {
+      return;
+    }
+
+    setIsClearingAllData(true);
+    try {
+      await clearAllData();
+      toast.success('已清除所有数据');
+    } catch {
+      toast.error('清除失败，请重试');
+    } finally {
+      setIsClearingAllData(false);
     }
   };
 
@@ -215,6 +243,39 @@ export default function SettingsPage() {
                     </Button>
                   </div>
                 </div>
+              </div>
+
+              <div className="pt-3 border-t border-border/70 flex items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-destructive">危险操作</p>
+                  <p className="text-xs text-muted-foreground">清空全部记录、专注计划、代办与设置，此操作不可撤销。</p>
+                </div>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button type="button" variant="destructive" className="gap-1.5" disabled={isClearingAllData}>
+                      <Trash2 className="w-4 h-4" />
+                      清除所有数据
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent className="bg-card border-border">
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>确认清除所有数据</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        此操作会删除所有本地数据，且无法恢复。请再次确认是否继续。
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>取消</AlertDialogCancel>
+                      <AlertDialogAction
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        disabled={isClearingAllData}
+                        onClick={() => void handleClearAllData()}
+                      >
+                        {isClearingAllData ? '清除中...' : '确认清除'}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               </div>
             </Card>
           </TabsContent>

@@ -290,6 +290,22 @@ function loadPersistedState() {
   appState = normalizeSavedState(readJsonSafe(getStatePath()));
 }
 
+function resetRuntimeTrackingState() {
+  monitorCursor.lastTickAt = null;
+  monitorCursor.activeSessionId = null;
+  monitorCursor.activeClassificationKey = null;
+  pendingWindowRuntime.clear();
+  browserBridgeState.byBrowser.clear();
+}
+
+function clearAllData() {
+  appState = createEmptyState();
+  resetRuntimeTrackingState();
+  scheduleSave();
+  emitState();
+  return appState;
+}
+
 function emitState() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
@@ -1011,6 +1027,7 @@ function registerIpc() {
     emitState();
     return { ok: true };
   });
+  ipcMain.handle('app:clear-all-data', () => clearAllData());
   ipcMain.handle('app:select-audio-file', async () => {
     const result = await dialog.showOpenDialog(mainWindow ?? undefined, {
       title: '选择提示音文件',

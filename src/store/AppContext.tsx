@@ -32,6 +32,7 @@ interface AppContextType {
   removeFromQueue: (id: string) => void;
   updateSettings: (s: Partial<PomodoroSettings>) => void;
   updatePreferences: (p: Partial<AppPreferences>) => void;
+  clearAllData: () => Promise<void>;
   addSoundFile: (name: string, filePath: string, defaultVolumeMultiplier?: number) => SoundFileItem | null;
   updateSoundFile: (file: SoundFileItem) => void;
   deleteSoundFile: (id: string) => void;
@@ -481,6 +482,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
+  const clearAllData = useCallback(async () => {
+    if (isElectronRuntime() && window.desktopApi?.clearAllData) {
+      const cleared = normalizeState(await window.desktopApi.clearAllData());
+      setState(cleared);
+      lastSavedUserStateRef.current = JSON.stringify(extractUserState(cleared));
+      return;
+    }
+
+    const initial = createInitialState();
+    setState(initial);
+    lastSavedUserStateRef.current = JSON.stringify(extractUserState(initial));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
+  }, []);
+
   const addSoundFile = useCallback((name: string, filePath: string, defaultVolumeMultiplier = 1) => {
     const trimmedName = name.trim();
     const trimmedPath = filePath.trim();
@@ -743,6 +758,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       removeFromQueue,
       updateSettings,
       updatePreferences,
+      clearAllData,
       addSoundFile,
       updateSoundFile,
       deleteSoundFile,
@@ -770,6 +786,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       removeFromQueue,
       updateSettings,
       updatePreferences,
+      clearAllData,
       addSoundFile,
       updateSoundFile,
       deleteSoundFile,
