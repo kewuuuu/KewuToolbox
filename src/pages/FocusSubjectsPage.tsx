@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
+import { FocusSubnav } from '@/components/focus/FocusSubnav';
 import { useAppState } from '@/store/AppContext';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -73,9 +74,29 @@ export default function FocusSubjectsPage() {
       .reduce((acc, sess) => acc + sess.durationSeconds, 0);
   };
 
+  const sortedProfiles = useMemo(() => {
+    const statLastSeenMap = new Map(
+      state.windowStats.map(stat => [
+        stat.classificationKey,
+        new Date(stat.lastSeenAt).getTime() || 0,
+      ]),
+    );
+    const collator = new Intl.Collator('zh-CN-u-co-pinyin', { sensitivity: 'base' });
+
+    return [...state.profiles].sort((a, b) => {
+      const lastSeenA = statLastSeenMap.get(a.classificationKey) ?? 0;
+      const lastSeenB = statLastSeenMap.get(b.classificationKey) ?? 0;
+      if (lastSeenA !== lastSeenB) {
+        return lastSeenB - lastSeenA;
+      }
+      return collator.compare(a.displayName, b.displayName);
+    });
+  }, [state.profiles, state.windowStats]);
+
   return (
     <DashboardLayout pageTitle="专注事项">
       <div className="max-w-5xl mx-auto">
+        <FocusSubnav />
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-foreground">专注事项列表</h2>
           <Button onClick={openCreate} size="sm" className="gap-1"><Plus className="w-3.5 h-3.5" /> 新建事项</Button>
@@ -136,7 +157,7 @@ export default function FocusSubjectsPage() {
               <div>
                 <label className="text-xs text-muted-foreground mb-2 block">窗口组</label>
                 <div className="max-h-48 overflow-auto space-y-1 border border-border rounded-lg p-2">
-                  {state.profiles.map(p => (
+                  {sortedProfiles.map(p => (
                     <label key={p.id} className="flex items-center gap-2 p-1.5 rounded hover:bg-secondary/50 cursor-pointer">
                       <Checkbox
                         checked={selectedWindows.some(w => w.classificationKey === p.classificationKey)}

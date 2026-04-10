@@ -6,6 +6,7 @@ declare global {
       isElectron: boolean;
       getState: () => Promise<AppState>;
       saveUserState: (partial: Partial<AppUserState>) => Promise<{ ok: boolean }>;
+      selectAudioFile: () => Promise<string | null>;
       onState: (callback: (nextState: AppState) => void) => () => void;
     };
   }

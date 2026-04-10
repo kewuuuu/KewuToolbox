@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, powerMonitor } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, powerMonitor } = require('electron');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
@@ -6,16 +6,20 @@ const path = require('node:path');
 const POLL_INTERVAL_MS = 1000;
 const MAX_SESSIONS = 60000;
 const MAX_POWER_EVENTS = 5000;
+const DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS = 60;
+
 const DESKTOP_KEY = 'desktop';
+const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain';
 const DEFAULT_CATEGORY = '其他';
 const DESKTOP_CATEGORY = '休息';
 const DEFAULT_DISPLAY_MODE = '显示性质';
+const BUILTIN_COMPLETION_SOUND_ID = 'builtin-completion';
+const BUILTIN_WARNING_SOUND_ID = 'builtin-warning';
 
 const BROWSER_BRIDGE_PORT = 17321;
 const BROWSER_BRIDGE_ROUTE = '/browser-bridge';
 const BROWSER_BRIDGE_HEALTH_ROUTE = '/health';
 const BROWSER_BRIDGE_STALE_MS = 90 * 1000;
-const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain';
 
 const BROWSER_PROCESS_TO_ID = {
   'chrome.exe': 'chrome',
@@ -36,10 +40,9 @@ let browserBridgeServer = null;
 /** @type {import('../src/types').AppState} */
 let appState = createEmptyState();
 
-let monitorCursor = {
+const monitorCursor = {
   lastTickAt: null,
   activeSessionId: null,
-  activeSessionStartAt: null,
   activeClassificationKey: null,
 };
 
@@ -48,11 +51,43 @@ const browserBridgeState = {
   byBrowser: new Map(),
 };
 
+const pendingWindowRuntime = new Map();
+
+function createDefaultSoundFiles(now = new Date().toISOString()) {
+  return [
+    {
+      id: BUILTIN_COMPLETION_SOUND_ID,
+      name: '系统提示音（到点）',
+      filePath: 'sounds/builtin_completion.wav',
+      defaultVolumeMultiplier: 1,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: BUILTIN_WARNING_SOUND_ID,
+      name: '系统警告音（偏离）',
+      filePath: 'sounds/builtin_warning.wav',
+      defaultVolumeMultiplier: 1,
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+}
+
 function createEmptyState() {
   return {
     profiles: [],
     sessions: [],
     windowStats: [],
+    currentProcessKeys: [],
+    processTags: [],
+    processTagAssignments: [],
+    processTagStats: [],
+    soundFiles: createDefaultSoundFiles(),
+    preferences: {
+      recordWindowThresholdSeconds: DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS,
+      uiTheme: 'dark',
+    },
     subjects: [],
     queue: [],
     pomodoroSettings: {
@@ -62,6 +97,10 @@ function createEmptyState() {
       distractionMode: '连续',
       notifyEnabled: true,
       soundEnabled: true,
+      completionSoundFileId: BUILTIN_COMPLETION_SOUND_ID,
+      completionVolumeMultiplier: 1,
+      distractionSoundFileId: BUILTIN_WARNING_SOUND_ID,
+      distractionVolumeMultiplier: 1,
       cycleCount: 0,
     },
     todos: [],
@@ -87,11 +126,22 @@ function categoryFromExistingOrDefault(existingCategory, isDesktop) {
   return isDesktop ? DESKTOP_CATEGORY : DEFAULT_CATEGORY;
 }
 
+function normalizeRecordWindowThresholdSeconds(input, fallback = DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS) {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(0, Math.floor(parsed));
+}
+
+function normalizeUiTheme(input, fallback = 'dark') {
+  return input === 'light' ? 'light' : fallback;
+}
+
 function normalizeDomain(input) {
   if (typeof input !== 'string') {
     return null;
   }
-
   const trimmed = input.trim().toLowerCase();
   if (!trimmed) {
     return null;
@@ -100,11 +150,8 @@ function normalizeDomain(input) {
   try {
     const hasProtocol = /^https?:\/\//.test(trimmed);
     const url = new URL(hasProtocol ? trimmed : `https://${trimmed}`);
-    const hostname = url.hostname.replace(/^www\./, '').replace(/\.$/, '');
-    if (!hostname) {
-      return null;
-    }
-    return hostname;
+    const host = url.hostname.replace(/^www\./, '').replace(/\.$/, '');
+    return host || null;
   } catch {
     return null;
   }
@@ -114,31 +161,17 @@ function normalizeBrowserId(input) {
   if (typeof input !== 'string') {
     return null;
   }
-
-  const normalized = input.trim().toLowerCase();
-  if (!normalized) {
+  const value = input.trim().toLowerCase();
+  if (!value) {
     return null;
   }
-
-  if (normalized.includes('edge')) {
-    return 'edge';
-  }
-  if (normalized.includes('chrome')) {
-    return 'chrome';
-  }
-  if (normalized.includes('firefox')) {
-    return 'firefox';
-  }
-  if (normalized.includes('brave')) {
-    return 'brave';
-  }
-  if (normalized.includes('opera')) {
-    return 'opera';
-  }
-  if (normalized.includes('vivaldi')) {
-    return 'vivaldi';
-  }
-  return normalized;
+  if (value.includes('edge')) return 'edge';
+  if (value.includes('chrome')) return 'chrome';
+  if (value.includes('firefox')) return 'firefox';
+  if (value.includes('brave')) return 'brave';
+  if (value.includes('opera')) return 'opera';
+  if (value.includes('vivaldi')) return 'vivaldi';
+  return value;
 }
 
 function safeParseDomainFromUrl(maybeUrl) {
@@ -153,8 +186,7 @@ function readJsonSafe(filePath) {
     if (!fs.existsSync(filePath)) {
       return null;
     }
-    const text = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(text);
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
   } catch {
     return null;
   }
@@ -172,7 +204,6 @@ function scheduleSave() {
   if (saveTimer) {
     clearTimeout(saveTimer);
   }
-
   saveTimer = setTimeout(() => {
     saveTimer = null;
     writeJsonSafe(getStatePath(), appState);
@@ -186,22 +217,40 @@ function normalizeSavedState(input) {
   }
 
   const raw = input;
-  const rawProfiles = Array.isArray(raw.profiles) ? raw.profiles : [];
-  const profiles = rawProfiles
-    .filter(item => item && typeof item === 'object' && typeof item.classificationKey === 'string')
-    .map(item => ({
-      id: typeof item.id === 'string' ? item.id : makeId('profile'),
-      classificationKey: item.classificationKey,
-      displayName: typeof item.displayName === 'string' ? item.displayName : item.classificationKey,
-      objectType: item.objectType === 'BrowserTab' || item.objectType === 'Desktop' ? item.objectType : 'AppWindow',
-      processName: typeof item.processName === 'string' ? item.processName : '',
-      browserName: typeof item.browserName === 'string' ? item.browserName : undefined,
-      normalizedTitle: typeof item.normalizedTitle === 'string' ? item.normalizedTitle : item.classificationKey,
-      domain: typeof item.domain === 'string' ? item.domain : undefined,
-      category: categoryFromExistingOrDefault(item.category, item.objectType === 'Desktop'),
-      isBuiltIn: Boolean(item.isBuiltIn),
-      updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString(),
-    }));
+  const profiles = Array.isArray(raw.profiles)
+    ? raw.profiles
+        .filter(item => item && typeof item === 'object' && typeof item.classificationKey === 'string')
+        .map(item => ({
+          id: typeof item.id === 'string' ? item.id : makeId('profile'),
+          classificationKey: item.classificationKey,
+          displayName: typeof item.displayName === 'string' ? item.displayName : item.classificationKey,
+          objectType: item.objectType === 'BrowserTab' || item.objectType === 'Desktop' ? item.objectType : 'AppWindow',
+          processName: typeof item.processName === 'string' ? item.processName : '',
+          browserName: typeof item.browserName === 'string' ? item.browserName : undefined,
+          normalizedTitle: typeof item.normalizedTitle === 'string' ? item.normalizedTitle : item.classificationKey,
+          domain: typeof item.domain === 'string' ? item.domain : undefined,
+          category: categoryFromExistingOrDefault(item.category, item.objectType === 'Desktop'),
+          isBuiltIn: Boolean(item.isBuiltIn),
+          updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString(),
+        }))
+    : [];
+
+  const processTags = Array.isArray(raw.processTags) ? raw.processTags : [];
+  const processTagAssignments = Array.isArray(raw.processTagAssignments) ? raw.processTagAssignments : [];
+  const validTagSet = new Set(processTags.map(tag => tag.id));
+  let soundFiles = Array.isArray(raw.soundFiles) ? raw.soundFiles : [];
+  const defaultSoundFiles = createDefaultSoundFiles();
+  if (soundFiles.length === 0) {
+    soundFiles = defaultSoundFiles;
+  } else {
+    const existingIds = new Set(soundFiles.map(item => item.id));
+    for (const builtin of defaultSoundFiles) {
+      if (!existingIds.has(builtin.id)) {
+        soundFiles.push(builtin);
+      }
+    }
+  }
+  const rawPreferences = raw.preferences && typeof raw.preferences === 'object' ? raw.preferences : {};
 
   return {
     ...base,
@@ -209,6 +258,20 @@ function normalizeSavedState(input) {
     profiles,
     sessions: Array.isArray(raw.sessions) ? raw.sessions : [],
     windowStats: Array.isArray(raw.windowStats) ? raw.windowStats : [],
+    currentProcessKeys: Array.isArray(raw.currentProcessKeys) ? raw.currentProcessKeys : [],
+    processTags,
+    processTagAssignments: processTagAssignments.filter(item => validTagSet.has(item.tagId)),
+    processTagStats: Array.isArray(raw.processTagStats)
+      ? raw.processTagStats.filter(item => validTagSet.has(item.tagId))
+      : [],
+    soundFiles,
+    preferences: {
+      recordWindowThresholdSeconds: normalizeRecordWindowThresholdSeconds(
+        rawPreferences.recordWindowThresholdSeconds,
+        base.preferences.recordWindowThresholdSeconds,
+      ),
+      uiTheme: normalizeUiTheme(rawPreferences.uiTheme, base.preferences.uiTheme),
+    },
     subjects: Array.isArray(raw.subjects) ? raw.subjects : [],
     queue: Array.isArray(raw.queue) ? raw.queue : [],
     todos: Array.isArray(raw.todos) ? raw.todos : [],
@@ -224,8 +287,7 @@ function normalizeSavedState(input) {
 }
 
 function loadPersistedState() {
-  const saved = readJsonSafe(getStatePath());
-  appState = normalizeSavedState(saved);
+  appState = normalizeSavedState(readJsonSafe(getStatePath()));
 }
 
 function emitState() {
@@ -233,14 +295,6 @@ function emitState() {
     return;
   }
   mainWindow.webContents.send('monitor:state', appState);
-}
-
-function isDesktopWindowTitle(title) {
-  const normalized = (title || '').trim().toLowerCase();
-  if (!normalized) {
-    return true;
-  }
-  return normalized === 'program manager' || normalized === 'workerw';
 }
 
 function normalizeProcessName(ownerPath, ownerName) {
@@ -254,52 +308,12 @@ function normalizeProcessName(ownerPath, ownerName) {
   return 'unknown';
 }
 
-function inferObjectType(processName, title, domain) {
-  const lower = processName.toLowerCase();
-  if (lower === 'explorer.exe' && isDesktopWindowTitle(title)) {
-    return 'Desktop';
-  }
-  if (BROWSER_PROCESS_NAMES.has(lower) || domain) {
-    return 'BrowserTab';
-  }
-  return 'AppWindow';
-}
-
-function buildClassificationKey({ objectType, processName, normalizedTitle, domain }) {
-  if (objectType === 'Desktop') {
-    return DESKTOP_KEY;
-  }
-
-  if (objectType === 'BrowserTab') {
-    if (domain) {
-      return `${BROWSER_DOMAIN_KEY_PREFIX}|${domain}`;
-    }
-    return `${BROWSER_DOMAIN_KEY_PREFIX}|${processName}|unknown`;
-  }
-
-  const titlePart = (normalizedTitle || '').trim().toLowerCase();
-  return [objectType, processName.toLowerCase(), titlePart].filter(Boolean).join('|').slice(0, 300);
-}
-
-function toBrowserDomainProfile(domain, processName = 'browser') {
-  const normalizedDomain = normalizeDomain(domain);
-  if (!normalizedDomain) {
-    return null;
-  }
-
-  return {
-    id: makeId('profile'),
-    classificationKey: `${BROWSER_DOMAIN_KEY_PREFIX}|${normalizedDomain}`,
-    displayName: normalizedDomain,
-    objectType: 'BrowserTab',
-    processName,
-    browserName: undefined,
-    normalizedTitle: normalizedDomain,
-    domain: normalizedDomain,
-    category: DEFAULT_CATEGORY,
-    isBuiltIn: false,
-    updatedAt: new Date().toISOString(),
-  };
+function isDesktopWindow(processName, title) {
+  const lowerTitle = (title || '').trim().toLowerCase();
+  return (
+    processName === 'explorer.exe' &&
+    (!lowerTitle || lowerTitle === 'program manager' || lowerTitle === 'workerw')
+  );
 }
 
 function getBridgeSnapshotForProcess(processName) {
@@ -307,32 +321,72 @@ function getBridgeSnapshotForProcess(processName) {
   if (!browserId) {
     return null;
   }
-
   const snapshot = browserBridgeState.byBrowser.get(browserId);
   if (!snapshot) {
     return null;
   }
-
   if (Date.now() - snapshot.updatedAtMs > BROWSER_BRIDGE_STALE_MS) {
     return null;
   }
   return snapshot;
 }
 
-function getFreshBridgeOpenDomains() {
-  const now = Date.now();
-  const unionSet = new Set();
-
-  for (const snapshot of browserBridgeState.byBrowser.values()) {
-    if (now - snapshot.updatedAtMs > BROWSER_BRIDGE_STALE_MS) {
-      continue;
-    }
-    for (const domain of snapshot.openDomains) {
-      unionSet.add(domain);
-    }
+function toDomainProfile(domain, processName = 'browser') {
+  const normalized = normalizeDomain(domain);
+  if (!normalized) {
+    return null;
   }
 
-  return [...unionSet];
+  return {
+    id: makeId('profile'),
+    classificationKey: `${BROWSER_DOMAIN_KEY_PREFIX}|${normalized}`,
+    displayName: normalized,
+    objectType: 'BrowserTab',
+    processName,
+    normalizedTitle: normalized,
+    domain: normalized,
+    category: DEFAULT_CATEGORY,
+    isBuiltIn: false,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function toNonBrowserProfile(rawWindow) {
+  const processName = normalizeProcessName(rawWindow.owner?.path, rawWindow.owner?.name);
+  const title = (rawWindow.title || '').trim();
+
+  if (isDesktopWindow(processName, title)) {
+    return {
+      id: makeId('profile'),
+      classificationKey: DESKTOP_KEY,
+      displayName: '桌面',
+      objectType: 'Desktop',
+      processName: 'explorer.exe',
+      normalizedTitle: '桌面',
+      category: DESKTOP_CATEGORY,
+      isBuiltIn: true,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  if (BROWSER_PROCESS_NAMES.has(processName)) {
+    return null;
+  }
+
+  const normalizedTitle = title || processName;
+  const classificationKey = ['AppWindow', processName, normalizedTitle.toLowerCase()].filter(Boolean).join('|').slice(0, 300);
+
+  return {
+    id: makeId('profile'),
+    classificationKey,
+    displayName: normalizedTitle,
+    objectType: 'AppWindow',
+    processName,
+    normalizedTitle,
+    category: DEFAULT_CATEGORY,
+    isBuiltIn: false,
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 function toFocusedWindowProfile(rawWindow) {
@@ -352,12 +406,30 @@ function toFocusedWindowProfile(rawWindow) {
 
   const processName = normalizeProcessName(rawWindow.owner?.path, rawWindow.owner?.name);
   const title = (rawWindow.title || '').trim();
-  const browserSnapshot = getBridgeSnapshotForProcess(processName);
-  const domainFromActiveWin = safeParseDomainFromUrl(rawWindow.url);
-  const domain = domainFromActiveWin || browserSnapshot?.activeDomain || null;
-  const objectType = inferObjectType(processName, title, domain);
 
-  if (objectType === 'BrowserTab' && domain) {
+  if (isDesktopWindow(processName, title)) {
+    return {
+      id: makeId('profile'),
+      classificationKey: DESKTOP_KEY,
+      displayName: '桌面',
+      objectType: 'Desktop',
+      processName: 'explorer.exe',
+      normalizedTitle: '桌面',
+      category: DESKTOP_CATEGORY,
+      isBuiltIn: true,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  if (BROWSER_PROCESS_NAMES.has(processName)) {
+    const bridgeSnapshot = getBridgeSnapshotForProcess(processName);
+    const bridgeDomain = bridgeSnapshot?.activeDomain || null;
+    const activeWinDomain = safeParseDomainFromUrl(rawWindow.url);
+    const domain = bridgeDomain || activeWinDomain;
+    if (!domain) {
+      // Ignore browser title noise; only use domain-based browser record.
+      return null;
+    }
     return {
       id: makeId('profile'),
       classificationKey: `${BROWSER_DOMAIN_KEY_PREFIX}|${domain}`,
@@ -373,27 +445,11 @@ function toFocusedWindowProfile(rawWindow) {
     };
   }
 
-  const normalizedTitle = title || processName;
-  const classificationKey = buildClassificationKey({
-    objectType,
-    processName,
-    normalizedTitle,
-    domain,
-  });
-
-  return {
-    id: makeId('profile'),
-    classificationKey,
-    displayName: objectType === 'BrowserTab' ? `${rawWindow.owner?.name || processName}（未知域名）` : normalizedTitle,
-    objectType,
-    processName,
-    browserName: rawWindow.owner?.name || undefined,
-    normalizedTitle,
-    domain: domain || undefined,
-    category: objectType === 'Desktop' ? DESKTOP_CATEGORY : DEFAULT_CATEGORY,
-    isBuiltIn: objectType === 'Desktop',
-    updatedAt: new Date().toISOString(),
-  };
+  const fallbackProfile = toNonBrowserProfile(rawWindow);
+  if (!fallbackProfile) {
+    return null;
+  }
+  return fallbackProfile;
 }
 
 function ensureProfile(profileCandidate) {
@@ -421,7 +477,7 @@ function ensureProfile(profileCandidate) {
   return toInsert;
 }
 
-function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, seenAtIso) {
+function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, nowIso) {
   const existing = appState.windowStats.find(item => item.classificationKey === profile.classificationKey);
   if (existing) {
     existing.displayName = profile.displayName;
@@ -431,7 +487,7 @@ function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, seenAtIso) {
     existing.category = profile.category;
     existing.totalVisibleSeconds += deltaSeconds;
     existing.focusSeconds += focusDeltaSeconds;
-    existing.lastSeenAt = seenAtIso;
+    existing.lastSeenAt = nowIso;
     return;
   }
 
@@ -444,43 +500,93 @@ function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, seenAtIso) {
     category: profile.category,
     totalVisibleSeconds: deltaSeconds,
     focusSeconds: focusDeltaSeconds,
-    lastSeenAt: seenAtIso,
+    lastSeenAt: nowIso,
   });
 }
 
-function syncOpenWindowsStats(openWindows, focusedProfile, nowIso, deltaSeconds) {
-  const bucket = new Map();
-
-  for (const rawWindow of openWindows) {
-    const candidate = toFocusedWindowProfile(rawWindow);
-    bucket.set(candidate.classificationKey, candidate);
-  }
-
-  bucket.set(focusedProfile.classificationKey, focusedProfile);
-
-  for (const domain of getFreshBridgeOpenDomains()) {
-    const browserDomainProfile = toBrowserDomainProfile(domain);
-    if (!browserDomainProfile) {
+function getFreshBridgeOpenDomains() {
+  const nowMs = Date.now();
+  const set = new Set();
+  for (const snapshot of browserBridgeState.byBrowser.values()) {
+    if (nowMs - snapshot.updatedAtMs > BROWSER_BRIDGE_STALE_MS) {
       continue;
     }
-    if (!bucket.has(browserDomainProfile.classificationKey)) {
-      bucket.set(browserDomainProfile.classificationKey, browserDomainProfile);
+    for (const domain of snapshot.openDomains) {
+      if (domain) {
+        set.add(domain);
+      }
+    }
+  }
+  return [...set];
+}
+
+function getProcessTagAssignmentMap() {
+  const validTagSet = new Set(appState.processTags.map(tag => tag.id));
+  const assignmentMap = new Map();
+  for (const assignment of appState.processTagAssignments) {
+    if (!validTagSet.has(assignment.tagId)) {
+      continue;
+    }
+    assignmentMap.set(assignment.classificationKey, assignment);
+  }
+  return assignmentMap;
+}
+
+function updateProcessTagStats(openKeys, focusedKey, deltaSeconds, nowIso) {
+  if (deltaSeconds <= 0) {
+    return;
+  }
+
+  const assignmentMap = getProcessTagAssignmentMap();
+  const visibleTagSet = new Set();
+
+  for (const classificationKey of openKeys) {
+    const assignment = assignmentMap.get(classificationKey);
+    if (!assignment) {
+      continue;
+    }
+    visibleTagSet.add(assignment.tagId);
+  }
+
+  const focusedTagId = focusedKey ? assignmentMap.get(focusedKey)?.tagId : undefined;
+  const statMap = new Map(appState.processTagStats.map(item => [item.tagId, item]));
+
+  for (const tagId of visibleTagSet) {
+    const existing = statMap.get(tagId);
+    if (existing) {
+      existing.totalVisibleSeconds += deltaSeconds;
+      existing.lastSeenAt = nowIso;
+    } else {
+      statMap.set(tagId, {
+        tagId,
+        totalVisibleSeconds: deltaSeconds,
+        focusSeconds: 0,
+        lastSeenAt: nowIso,
+      });
     }
   }
 
-  for (const [classificationKey, candidate] of bucket.entries()) {
-    const profile = ensureProfile(candidate);
-    const focusDelta = classificationKey === focusedProfile.classificationKey ? deltaSeconds : 0;
-    upsertWindowStat(profile, deltaSeconds, focusDelta, nowIso);
+  if (focusedTagId) {
+    const focusedStat = statMap.get(focusedTagId);
+    if (focusedStat) {
+      focusedStat.focusSeconds += deltaSeconds;
+      focusedStat.lastSeenAt = nowIso;
+    } else {
+      statMap.set(focusedTagId, {
+        tagId: focusedTagId,
+        totalVisibleSeconds: 0,
+        focusSeconds: deltaSeconds,
+        lastSeenAt: nowIso,
+      });
+    }
   }
+
+  const validTagSet = new Set(appState.processTags.map(tag => tag.id));
+  appState.processTagStats = [...statMap.values()].filter(item => validTagSet.has(item.tagId));
 }
 
 function upsertActiveSession(profile, nowIso) {
-  if (
-    monitorCursor.activeSessionId &&
-    monitorCursor.activeSessionStartAt &&
-    monitorCursor.activeClassificationKey === profile.classificationKey
-  ) {
+  if (monitorCursor.activeSessionId && monitorCursor.activeClassificationKey === profile.classificationKey) {
     appState.sessions = appState.sessions.map(session => {
       if (session.id !== monitorCursor.activeSessionId) {
         return session;
@@ -496,7 +602,6 @@ function upsertActiveSession(profile, nowIso) {
   }
 
   monitorCursor.activeSessionId = makeId('session');
-  monitorCursor.activeSessionStartAt = nowIso;
   monitorCursor.activeClassificationKey = profile.classificationKey;
 
   appState.sessions.push({
@@ -528,6 +633,7 @@ function addPowerEvent(eventType, detail, markerColor) {
     detail,
     markerColor,
   });
+
   if (appState.powerEvents.length > MAX_POWER_EVENTS) {
     appState.powerEvents = appState.powerEvents.slice(-MAX_POWER_EVENTS);
   }
@@ -545,12 +651,12 @@ function parseBrowserBridgePayload(rawPayload) {
     return null;
   }
 
-  const openDomainsSet = new Set();
+  const openDomainSet = new Set();
   if (Array.isArray(rawPayload.openDomains)) {
     for (const item of rawPayload.openDomains) {
       const domain = normalizeDomain(item);
       if (domain) {
-        openDomainsSet.add(domain);
+        openDomainSet.add(domain);
       }
     }
   }
@@ -558,7 +664,7 @@ function parseBrowserBridgePayload(rawPayload) {
     for (const item of rawPayload.openUrls) {
       const domain = safeParseDomainFromUrl(item);
       if (domain) {
-        openDomainsSet.add(domain);
+        openDomainSet.add(domain);
       }
     }
   }
@@ -568,13 +674,13 @@ function parseBrowserBridgePayload(rawPayload) {
     safeParseDomainFromUrl(rawPayload.activeUrl) ||
     null;
   if (activeDomain) {
-    openDomainsSet.add(activeDomain);
+    openDomainSet.add(activeDomain);
   }
 
   return {
     browserId,
     activeDomain,
-    openDomains: [...openDomainsSet],
+    openDomains: [...openDomainSet],
     updatedAtMs: Date.now(),
     updatedAtIso: new Date().toISOString(),
   };
@@ -599,11 +705,9 @@ function startBrowserBridgeServer() {
     if (req.method === 'OPTIONS') {
       return sendJson(res, 204, { ok: true });
     }
-
     if (req.method === 'GET' && req.url === BROWSER_BRIDGE_HEALTH_ROUTE) {
       return sendJson(res, 200, { ok: true, port: BROWSER_BRIDGE_PORT });
     }
-
     if (req.method !== 'POST' || req.url !== BROWSER_BRIDGE_ROUTE) {
       return sendJson(res, 404, { ok: false, error: 'not_found' });
     }
@@ -636,17 +740,13 @@ function startBrowserBridgeServer() {
         updatedAtIso: normalized.updatedAtIso,
       });
 
-      scheduleSave();
       sendJson(res, 200, { ok: true });
     });
   });
 
-  browserBridgeServer.listen(BROWSER_BRIDGE_PORT, '127.0.0.1', () => {
-    // Browser extension can post tab-domain snapshots to this local endpoint.
-  });
-
+  browserBridgeServer.listen(BROWSER_BRIDGE_PORT, '127.0.0.1');
   browserBridgeServer.on('error', () => {
-    // Keep app running even if bridge port is occupied.
+    // Ignore bridge binding failures.
   });
 }
 
@@ -673,7 +773,6 @@ async function getActiveWinApi() {
 async function monitorTick() {
   const now = new Date();
   const nowIso = now.toISOString();
-
   const lastTickMs = monitorCursor.lastTickAt ? new Date(monitorCursor.lastTickAt).getTime() : now.getTime();
   const deltaSeconds = Math.max(1, Math.floor((now.getTime() - lastTickMs) / 1000) || 1);
   monitorCursor.lastTickAt = nowIso;
@@ -681,11 +780,84 @@ async function monitorTick() {
   const activeWin = await getActiveWinApi();
   const [focusedRaw, openWindows] = await Promise.all([activeWin(), activeWin.getOpenWindows()]);
 
-  const focusedProfile = ensureProfile(toFocusedWindowProfile(focusedRaw));
-  appState.currentFocusedWindow = focusedProfile;
+  const bucket = new Map();
+  for (const rawWindow of openWindows) {
+    const candidate = toNonBrowserProfile(rawWindow);
+    if (!candidate) {
+      continue;
+    }
+    bucket.set(candidate.classificationKey, candidate);
+  }
 
-  syncOpenWindowsStats(openWindows, focusedProfile, nowIso, deltaSeconds);
-  upsertActiveSession(focusedProfile, nowIso);
+  for (const domain of getFreshBridgeOpenDomains()) {
+    const candidate = toDomainProfile(domain);
+    if (!candidate) {
+      continue;
+    }
+    bucket.set(candidate.classificationKey, candidate);
+  }
+
+  const focusedCandidate = toFocusedWindowProfile(focusedRaw);
+  let focusedProfile = null;
+  let currentFocusedWindow = null;
+
+  if (focusedCandidate) {
+    bucket.set(focusedCandidate.classificationKey, focusedCandidate);
+  }
+
+  const recordedKeys = new Set(appState.windowStats.map(item => item.classificationKey));
+  const openKeys = new Set(bucket.keys());
+  const recordThresholdSeconds = normalizeRecordWindowThresholdSeconds(
+    appState.preferences?.recordWindowThresholdSeconds,
+    DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS,
+  );
+
+  for (const [key, candidate] of bucket.entries()) {
+    const focusDelta = focusedCandidate && key === focusedCandidate.classificationKey ? deltaSeconds : 0;
+    const profile = ensureProfile(candidate);
+    const existingPending = pendingWindowRuntime.get(key);
+    const pending = existingPending ?? {
+      totalVisibleSeconds: 0,
+      totalFocusSeconds: 0,
+      recorded: recordedKeys.has(key),
+    };
+    pending.totalVisibleSeconds += deltaSeconds;
+    pending.totalFocusSeconds += focusDelta;
+
+    const isRecordEligible = pending.recorded || pending.totalVisibleSeconds >= recordThresholdSeconds;
+    if (isRecordEligible) {
+      const visibleDelta = pending.recorded ? deltaSeconds : pending.totalVisibleSeconds;
+      const focusDeltaToApply = pending.recorded ? focusDelta : pending.totalFocusSeconds;
+      upsertWindowStat(profile, visibleDelta, focusDeltaToApply, nowIso);
+      pending.recorded = true;
+      if (focusedCandidate && key === focusedCandidate.classificationKey) {
+        focusedProfile = profile;
+        currentFocusedWindow = profile;
+      }
+    } else if (focusedCandidate && key === focusedCandidate.classificationKey) {
+      currentFocusedWindow = profile;
+    }
+
+    pendingWindowRuntime.set(key, pending);
+  }
+
+  for (const key of [...pendingWindowRuntime.keys()]) {
+    if (!openKeys.has(key)) {
+      pendingWindowRuntime.delete(key);
+    }
+  }
+
+  appState.currentProcessKeys = [...bucket.keys()];
+  appState.currentFocusedWindow = currentFocusedWindow;
+
+  updateProcessTagStats(new Set(appState.currentProcessKeys), focusedProfile?.classificationKey, deltaSeconds, nowIso);
+
+  if (focusedProfile) {
+    upsertActiveSession(focusedProfile, nowIso);
+  } else {
+    monitorCursor.activeSessionId = null;
+    monitorCursor.activeClassificationKey = null;
+  }
 
   scheduleSave();
   emitState();
@@ -695,11 +867,10 @@ function startMonitoring() {
   if (monitorTimer) {
     clearInterval(monitorTimer);
   }
-
   monitorCursor.lastTickAt = new Date().toISOString();
   monitorTimer = setInterval(() => {
     monitorTick().catch(() => {
-      // Ignore single-tick sampling failure.
+      // Ignore single-tick failure.
     });
   }, POLL_INTERVAL_MS);
 
@@ -731,6 +902,19 @@ function mergeUserStateFromRenderer(partial) {
   if (Array.isArray(next.archives)) {
     appState.archives = next.archives;
   }
+  if (Array.isArray(next.soundFiles)) {
+    appState.soundFiles = next.soundFiles;
+  }
+  if (next.preferences && typeof next.preferences === 'object') {
+    appState.preferences = {
+      ...appState.preferences,
+      recordWindowThresholdSeconds: normalizeRecordWindowThresholdSeconds(
+        next.preferences.recordWindowThresholdSeconds,
+        appState.preferences.recordWindowThresholdSeconds,
+      ),
+      uiTheme: normalizeUiTheme(next.preferences.uiTheme, appState.preferences.uiTheme),
+    };
+  }
   if (next.pomodoroSettings && typeof next.pomodoroSettings === 'object') {
     appState.pomodoroSettings = {
       ...appState.pomodoroSettings,
@@ -741,36 +925,81 @@ function mergeUserStateFromRenderer(partial) {
     appState.displayMode = next.displayMode;
   }
 
+  if (Array.isArray(next.processTags)) {
+    appState.processTags = next.processTags;
+  }
+
+  const validTagSet = new Set(appState.processTags.map(tag => tag.id));
+  if (Array.isArray(next.processTagAssignments)) {
+    appState.processTagAssignments = next.processTagAssignments.filter(item => validTagSet.has(item.tagId));
+  } else {
+    appState.processTagAssignments = appState.processTagAssignments.filter(item => validTagSet.has(item.tagId));
+  }
+  appState.processTagStats = appState.processTagStats.filter(item => validTagSet.has(item.tagId));
+
   if (Array.isArray(next.profiles)) {
-    const incomingCategoryMap = new Map();
-    for (const profile of next.profiles) {
-      if (profile && typeof profile.classificationKey === 'string' && typeof profile.category === 'string') {
-        incomingCategoryMap.set(profile.classificationKey, profile.category);
+    const incomingProfiles = next.profiles.filter(
+      profile =>
+        profile &&
+        typeof profile.classificationKey === 'string' &&
+        typeof profile.category === 'string',
+    );
+    const incomingKeySet = new Set(incomingProfiles.map(profile => profile.classificationKey));
+    const incomingCategoryMap = new Map(
+      incomingProfiles.map(profile => [profile.classificationKey, profile.category]),
+    );
+    const nowIso = new Date().toISOString();
+
+    const existingProfileMap = new Map(appState.profiles.map(profile => [profile.classificationKey, profile]));
+    appState.profiles = incomingProfiles.map(profile => {
+      const existing = existingProfileMap.get(profile.classificationKey);
+      if (!existing) {
+        return {
+          ...profile,
+          updatedAt: nowIso,
+        };
+      }
+      return {
+        ...existing,
+        category: incomingCategoryMap.get(profile.classificationKey) ?? existing.category,
+        updatedAt: nowIso,
+      };
+    });
+
+    appState.windowStats = appState.windowStats
+      .filter(item => incomingKeySet.has(item.classificationKey))
+      .map(item => ({
+        ...item,
+        category: incomingCategoryMap.get(item.classificationKey) ?? item.category,
+      }));
+
+    appState.sessions = appState.sessions.filter(session => incomingKeySet.has(session.classificationKey));
+    appState.currentProcessKeys = appState.currentProcessKeys.filter(key => incomingKeySet.has(key));
+    appState.processTagAssignments = appState.processTagAssignments.filter(
+      assignment =>
+        validTagSet.has(assignment.tagId) && incomingKeySet.has(assignment.classificationKey),
+    );
+
+    for (const key of [...pendingWindowRuntime.keys()]) {
+      if (!incomingKeySet.has(key)) {
+        pendingWindowRuntime.delete(key);
       }
     }
 
-    appState.profiles = appState.profiles.map(profile => {
-      const incomingCategory = incomingCategoryMap.get(profile.classificationKey);
-      if (!incomingCategory) {
-        return profile;
-      }
-      return {
-        ...profile,
-        category: incomingCategory,
-        updatedAt: new Date().toISOString(),
-      };
-    });
+    if (
+      appState.currentFocusedWindow &&
+      !incomingKeySet.has(appState.currentFocusedWindow.classificationKey)
+    ) {
+      appState.currentFocusedWindow = null;
+    }
 
-    appState.windowStats = appState.windowStats.map(item => {
-      const incomingCategory = incomingCategoryMap.get(item.classificationKey);
-      if (!incomingCategory) {
-        return item;
-      }
-      return {
-        ...item,
-        category: incomingCategory,
-      };
-    });
+    if (
+      monitorCursor.activeClassificationKey &&
+      !incomingKeySet.has(monitorCursor.activeClassificationKey)
+    ) {
+      monitorCursor.activeClassificationKey = null;
+      monitorCursor.activeSessionId = null;
+    }
   }
 }
 
@@ -781,6 +1010,22 @@ function registerIpc() {
     scheduleSave();
     emitState();
     return { ok: true };
+  });
+  ipcMain.handle('app:select-audio-file', async () => {
+    const result = await dialog.showOpenDialog(mainWindow ?? undefined, {
+      title: '选择提示音文件',
+      properties: ['openFile'],
+      filters: [
+        {
+          name: 'Audio',
+          extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'],
+        },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+    return result.filePaths[0];
   });
 }
 
@@ -822,7 +1067,6 @@ app.whenReady().then(() => {
   registerPowerEvents();
   startBrowserBridgeServer();
   createWindow();
-
   addPowerEvent('开机', '应用启动并开始监测', '#22c55e');
   startMonitoring();
 

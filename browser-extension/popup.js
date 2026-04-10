@@ -7,10 +7,10 @@ async function refreshStatus() {
     if (!response.ok) {
       throw new Error('health check failed');
     }
-    statusEl.textContent = '状态：已连接桌面端';
+    statusEl.textContent = '状态：已连接 KewuToolbox';
     statusEl.style.color = '#22c55e';
   } catch {
-    statusEl.textContent = '状态：未连接（请先启动桌面软件）';
+    statusEl.textContent = '状态：未连接（请先启动 KewuToolbox）';
     statusEl.style.color = '#f59e0b';
   }
 }
