@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Mindful Browser Bridge",
+  "name": "KewuToolbox Browser Bridge",
   "version": "0.1.0",
-  "description": "将浏览器标签页域名同步到 Mindful Desktop（仅域名级别统计）。",
+  "description": "Sync browser domains to KewuToolbox (domain-level only).",
   "permissions": [
     "tabs",
     "alarms"
@@ -16,7 +16,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Mindful Bridge",
+    "default_title": "KewuToolbox Bridge",
     "default_popup": "popup.html"
   }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "mindful-desktop",
+  "name": "kewu-toolbox",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -98,8 +98,8 @@
     "wait-on": "^8.0.3"
   },
   "build": {
-    "appId": "com.mindful.desktop",
-    "productName": "MindfulDesktop",
+    "appId": "com.kewu.toolbox",
+    "productName": "KewuToolbox",
     "directories": {
       "output": "release"
     },
@@ -114,7 +114,7 @@
         "nsis"
       ],
       "signAndEditExecutable": false,
-      "artifactName": "MindfulDesktop-${version}-setup.${ext}"
+      "artifactName": "KewuToolbox-${version}-setup.${ext}"
     },
     "nsis": {
       "oneClick": false,

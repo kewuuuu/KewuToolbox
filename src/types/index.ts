@@ -4,6 +4,7 @@ export type DistractionMode = string;
 export type TaskType = string;
 export type RepeatMode = string;
 export type FocusQueueItemType = 'Subject' | 'AdHocWindowGroup';
+export type UiTheme = 'dark' | 'light';
 
 export interface WindowClassificationProfile {
   id: string;
@@ -47,6 +48,27 @@ export interface WindowRuntimeStat {
   lastSeenAt: string;
 }
 
+export interface ProcessTag {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProcessTagAssignment {
+  classificationKey: string;
+  tagId: string;
+  assignedAt: string;
+  updatedAt: string;
+}
+
+export interface ProcessTagRuntimeStat {
+  tagId: string;
+  totalVisibleSeconds: number;
+  focusSeconds: number;
+  lastSeenAt: string;
+}
+
 export interface WindowGroupItem {
   classificationKey: string;
   displayName: string;
@@ -72,6 +94,20 @@ export interface FocusQueueItem {
   orderIndex: number;
 }
 
+export interface SoundFileItem {
+  id: string;
+  name: string;
+  filePath: string;
+  defaultVolumeMultiplier: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AppPreferences {
+  recordWindowThresholdSeconds: number;
+  uiTheme: UiTheme;
+}
+
 export interface PomodoroSettings {
   focusMinutes: number;
   breakMinutes: number;
@@ -80,6 +116,10 @@ export interface PomodoroSettings {
   distractionMode: DistractionMode;
   notifyEnabled: boolean;
   soundEnabled: boolean;
+  completionSoundFileId: string;
+  completionVolumeMultiplier: number;
+  distractionSoundFileId: string;
+  distractionVolumeMultiplier: number;
   cycleCount: number;
 }
 
@@ -128,6 +168,12 @@ export interface AppState {
   profiles: WindowClassificationProfile[];
   sessions: FocusSession[];
   windowStats: WindowRuntimeStat[];
+  currentProcessKeys: string[];
+  processTags: ProcessTag[];
+  processTagAssignments: ProcessTagAssignment[];
+  processTagStats: ProcessTagRuntimeStat[];
+  soundFiles: SoundFileItem[];
+  preferences: AppPreferences;
   subjects: FocusSubject[];
   queue: FocusQueueItem[];
   pomodoroSettings: PomodoroSettings;
@@ -140,5 +186,15 @@ export interface AppState {
 
 export type AppUserState = Pick<
   AppState,
-  'profiles' | 'subjects' | 'queue' | 'pomodoroSettings' | 'todos' | 'archives' | 'displayMode'
+  | 'profiles'
+  | 'processTags'
+  | 'processTagAssignments'
+  | 'soundFiles'
+  | 'preferences'
+  | 'subjects'
+  | 'queue'
+  | 'pomodoroSettings'
+  | 'todos'
+  | 'archives'
+  | 'displayMode'
 >;

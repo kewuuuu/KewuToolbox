@@ -1,20 +1,20 @@
 import { NavLink } from 'react-router-dom';
-import { Timer, Target, BarChart3, ListTodo, Archive, Monitor } from 'lucide-react';
+import { Timer, BarChart3, ListTodo, Archive, Monitor, Settings2 } from 'lucide-react';
 
 const navItems = [
-  { to: '/pomodoro', icon: Timer, label: '番茄钟' },
-  { to: '/focus-subjects', icon: Target, label: '专注事项' },
+  { to: '/focus', icon: Timer, label: '专注' },
   { to: '/analytics', icon: BarChart3, label: '数据统计' },
   { to: '/todos', icon: ListTodo, label: '待办列表' },
   { to: '/archives', icon: Archive, label: '归档列表' },
-  { to: '/monitoring', icon: Monitor, label: '原始监控' },
+  { to: '/monitoring', icon: Monitor, label: '进程管理' },
+  { to: '/settings', icon: Settings2, label: '设置' },
 ];
 
 export function AppSidebar() {
   return (
     <aside className="w-52 bg-sidebar border-r border-sidebar-border flex flex-col shrink-0">
       <div className="h-12 flex items-center px-4 border-b border-sidebar-border">
-        <span className="text-sm font-bold text-sidebar-primary">⚡ 个人效率助手</span>
+        <span className="text-sm font-bold text-sidebar-primary">可无的工具箱</span>
       </div>
       <nav className="flex-1 py-2 px-2 space-y-0.5">
         {navItems.map(item => (

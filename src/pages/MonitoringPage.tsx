@@ -1,132 +1,701 @@
-import { useState, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { useAppState } from '@/store/AppContext';
-import { getCategoryColor } from '@/lib/categories';
+import { CATEGORIES, getCategoryColor } from '@/lib/categories';
 import { Card } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
+import { toast } from 'sonner';
+import { ChevronDown, ChevronRight, Edit2, Plus, Trash2 } from 'lucide-react';
+
+type ProcessRow = {
+  classificationKey: string;
+  profileId: string;
+  displayName: string;
+  objectType: string;
+  processName: string;
+  totalVisible: number;
+  focusTime: number;
+  lastSeen: string;
+  category: string;
+  tagId?: string;
+};
+
+type SortKey =
+  | 'displayName'
+  | 'objectType'
+  | 'processName'
+  | 'category'
+  | 'tag'
+  | 'totalVisible'
+  | 'focusTime'
+  | 'lastSeen';
+
+type SortDirection = 'asc' | 'desc';
+
+type SortState = {
+  key: SortKey;
+  direction: SortDirection;
+};
+
+const DESKTOP_KEY = 'desktop';
+const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain|';
+
+function parseCurrentKeyFallback(classificationKey: string) {
+  if (classificationKey === DESKTOP_KEY) {
+    return {
+      displayName: '桌面',
+      objectType: 'Desktop',
+      processName: 'explorer.exe',
+      category: '休息',
+    };
+  }
+
+  if (classificationKey.startsWith(BROWSER_DOMAIN_KEY_PREFIX)) {
+    const domain = classificationKey.slice(BROWSER_DOMAIN_KEY_PREFIX.length) || 'browser';
+    return {
+      displayName: domain,
+      objectType: 'BrowserTab',
+      processName: 'browser',
+      category: '其他',
+    };
+  }
+
+  const appMatch = classificationKey.match(/^AppWindow\|([^|]+)\|(.*)$/);
+  if (appMatch) {
+    const processName = appMatch[1] || 'unknown';
+    const title = appMatch[2] || processName;
+    return {
+      displayName: title,
+      objectType: 'AppWindow',
+      processName,
+      category: '其他',
+    };
+  }
+
+  return {
+    displayName: classificationKey,
+    objectType: 'AppWindow',
+    processName: 'unknown',
+    category: '其他',
+  };
+}
+
+const DEFAULT_SORT_DIRECTION: Record<SortKey, SortDirection> = {
+  displayName: 'asc',
+  objectType: 'asc',
+  processName: 'asc',
+  category: 'asc',
+  tag: 'asc',
+  totalVisible: 'desc',
+  focusTime: 'desc',
+  lastSeen: 'desc',
+};
+
+const DEFAULT_HISTORY_SORT: SortState = {
+  key: 'lastSeen',
+  direction: 'desc',
+};
+
+const DEFAULT_CURRENT_SORT: SortState = {
+  key: 'lastSeen',
+  direction: 'desc',
+};
 
 export default function MonitoringPage() {
-  const { state } = useAppState();
+  const {
+    state,
+    updateProfile,
+    deleteMonitoringRecords,
+    addProcessTag,
+    updateProcessTag,
+    deleteProcessTag,
+    setProcessTagForProfile,
+  } = useAppState();
 
-  // All windows with aggregated stats
-  const windowStats = useMemo(() => {
-    if (state.windowStats.length > 0) {
-      return [...state.windowStats].map(item => ({
-        displayName: item.displayName,
-        objectType: item.objectType,
-        processName: item.processName,
-        totalVisible: item.totalVisibleSeconds,
-        focusTime: item.focusSeconds,
-        lastSeen: item.lastSeenAt,
-      }));
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState('history');
+
+  const [historySort, setHistorySort] = useState<SortState>(DEFAULT_HISTORY_SORT);
+  const [currentSort, setCurrentSort] = useState<SortState>(DEFAULT_CURRENT_SORT);
+
+  const [expandedTagIds, setExpandedTagIds] = useState<Set<string>>(new Set());
+  const [creatingTag, setCreatingTag] = useState(false);
+  const [newTagName, setNewTagName] = useState('');
+  const [editingTagId, setEditingTagId] = useState<string | null>(null);
+  const [editingTagName, setEditingTagName] = useState('');
+
+  const collator = useMemo(
+    () => new Intl.Collator('zh-CN-u-co-pinyin', { sensitivity: 'base' }),
+    [],
+  );
+
+  const profileMap = useMemo(
+    () => new Map(state.profiles.map(profile => [profile.classificationKey, profile])),
+    [state.profiles],
+  );
+  const tagMap = useMemo(
+    () => new Map(state.processTags.map(tag => [tag.id, tag])),
+    [state.processTags],
+  );
+  const assignmentMap = useMemo(
+    () => new Map(state.processTagAssignments.map(item => [item.classificationKey, item])),
+    [state.processTagAssignments],
+  );
+  const tagStatsMap = useMemo(
+    () => new Map(state.processTagStats.map(item => [item.tagId, item])),
+    [state.processTagStats],
+  );
+
+  const historyRowsRaw = useMemo<ProcessRow[]>(() => {
+    return state.windowStats.map(stat => {
+      const profile = profileMap.get(stat.classificationKey);
+      const assignment = assignmentMap.get(stat.classificationKey);
+      return {
+        classificationKey: stat.classificationKey,
+        profileId: profile?.id ?? stat.classificationKey,
+        displayName: stat.displayName,
+        objectType: stat.objectType,
+        processName: stat.processName,
+        totalVisible: stat.totalVisibleSeconds,
+        focusTime: stat.focusSeconds,
+        lastSeen: stat.lastSeenAt,
+        category: profile?.category ?? stat.category,
+        tagId: assignment?.tagId,
+      };
+    });
+  }, [assignmentMap, profileMap, state.windowStats]);
+
+  const currentRowsRaw = useMemo<ProcessRow[]>(() => {
+    const statMap = new Map(
+      state.windowStats.map(stat => [stat.classificationKey, stat]),
+    );
+    return state.currentProcessKeys.map(classificationKey => {
+      const stat = statMap.get(classificationKey);
+      const profile = profileMap.get(classificationKey);
+      const assignment = assignmentMap.get(classificationKey);
+      const fallback = parseCurrentKeyFallback(classificationKey);
+
+      return {
+        classificationKey,
+        profileId: profile?.id ?? classificationKey,
+        displayName: stat?.displayName ?? profile?.displayName ?? fallback.displayName,
+        objectType: stat?.objectType ?? profile?.objectType ?? fallback.objectType,
+        processName: stat?.processName ?? profile?.processName ?? fallback.processName,
+        totalVisible: stat?.totalVisibleSeconds ?? 0,
+        focusTime: stat?.focusSeconds ?? 0,
+        lastSeen: stat?.lastSeenAt ?? profile?.updatedAt ?? new Date(0).toISOString(),
+        category: profile?.category ?? stat?.category ?? fallback.category,
+        tagId: assignment?.tagId,
+      };
+    });
+  }, [assignmentMap, profileMap, state.currentProcessKeys, state.windowStats]);
+
+  const compareString = useCallback(
+    (a: string, b: string) => collator.compare(a || '', b || ''),
+    [collator],
+  );
+
+  const getRowTagName = useCallback(
+    (row: ProcessRow) => {
+      if (!row.tagId) {
+        return '';
+      }
+      return tagMap.get(row.tagId)?.name || '';
+    },
+    [tagMap],
+  );
+
+  const compareRows = useCallback(
+    (a: ProcessRow, b: ProcessRow, sort: SortState) => {
+      let result = 0;
+      switch (sort.key) {
+        case 'displayName':
+          result = compareString(a.displayName, b.displayName);
+          break;
+        case 'objectType':
+          result = compareString(a.objectType, b.objectType);
+          break;
+        case 'processName':
+          result = compareString(a.processName, b.processName);
+          break;
+        case 'category':
+          result = compareString(a.category, b.category);
+          break;
+        case 'tag':
+          result = compareString(getRowTagName(a), getRowTagName(b));
+          break;
+        case 'totalVisible':
+          result = a.totalVisible - b.totalVisible;
+          break;
+        case 'focusTime':
+          result = a.focusTime - b.focusTime;
+          break;
+        case 'lastSeen':
+          result = new Date(a.lastSeen).getTime() - new Date(b.lastSeen).getTime();
+          break;
+        default:
+          result = 0;
+      }
+
+      if (result === 0) {
+        result = compareString(a.displayName, b.displayName);
+      }
+      if (result === 0) {
+        result = compareString(a.classificationKey, b.classificationKey);
+      }
+
+      return sort.direction === 'asc' ? result : -result;
+    },
+    [compareString, getRowTagName],
+  );
+
+  const historyRows = useMemo(
+    () => [...historyRowsRaw].sort((a, b) => compareRows(a, b, historySort)),
+    [compareRows, historyRowsRaw, historySort],
+  );
+  const currentRows = useMemo(
+    () => [...currentRowsRaw].sort((a, b) => compareRows(a, b, currentSort)),
+    [compareRows, currentRowsRaw, currentSort],
+  );
+
+  const historyGroups = useMemo(() => {
+    const tagged = new Map<string, ProcessRow[]>();
+    const untagged: ProcessRow[] = [];
+
+    for (const row of historyRows) {
+      if (!row.tagId || !tagMap.has(row.tagId)) {
+        untagged.push(row);
+        continue;
+      }
+
+      const list = tagged.get(row.tagId) ?? [];
+      list.push(row);
+      tagged.set(row.tagId, list);
     }
 
-    const map = new Map<string, { displayName: string; objectType: string; processName: string; totalVisible: number; focusTime: number; lastSeen: string }>();
-    state.sessions.forEach(s => {
-      const existing = map.get(s.classificationKey);
-      if (existing) {
-        existing.totalVisible += s.durationSeconds;
-        existing.focusTime += s.durationSeconds;
-        if (s.endAt > existing.lastSeen) existing.lastSeen = s.endAt;
-      } else {
-        map.set(s.classificationKey, {
-          displayName: s.displayName,
-          objectType: s.objectType,
-          processName: s.processName,
-          totalVisible: s.durationSeconds,
-          focusTime: s.durationSeconds,
-          lastSeen: s.endAt,
-        });
-      }
-    });
-    return Array.from(map.values());
-  }, [state.sessions, state.windowStats]);
+    const groups = [...tagged.entries()]
+      .map(([tagId, rows]) => ({
+        tagId,
+        rows,
+        tagName: tagMap.get(tagId)?.name || '',
+        stat: tagStatsMap.get(tagId),
+      }))
+      .sort((a, b) => {
+        let result = 0;
+        if (historySort.key === 'totalVisible') {
+          result = (a.stat?.totalVisibleSeconds || 0) - (b.stat?.totalVisibleSeconds || 0);
+        } else if (historySort.key === 'focusTime') {
+          result = (a.stat?.focusSeconds || 0) - (b.stat?.focusSeconds || 0);
+        } else if (historySort.key === 'lastSeen') {
+          result =
+            new Date(a.stat?.lastSeenAt || 0).getTime() - new Date(b.stat?.lastSeenAt || 0).getTime();
+        } else {
+          result = compareString(a.tagName, b.tagName);
+        }
 
-  const focusRanking = [...windowStats].sort((a, b) => b.focusTime - a.focusTime);
+        if (result === 0) {
+          result = compareString(a.tagId, b.tagId);
+        }
+        return historySort.direction === 'asc' ? result : -result;
+      });
 
-  const formatDuration = (s: number) => {
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    return h > 0 ? `${h}时${m}分` : `${m}分`;
+    return { groups, untagged };
+  }, [compareString, historyRows, historySort, tagMap, tagStatsMap]);
+
+  const rowsForSelection = activeTab === 'current' ? currentRows : historyRows;
+  const allSelected = rowsForSelection.length > 0 && selectedKeys.size === rowsForSelection.length;
+  const partialSelected = selectedKeys.size > 0 && !allSelected;
+
+  const formatDuration = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
   };
 
-  const fw = state.currentFocusedWindow;
+  const toggleRow = (classificationKey: string, checked: boolean) => {
+    setSelectedKeys(prev => {
+      const next = new Set(prev);
+      if (checked) {
+        next.add(classificationKey);
+      } else {
+        next.delete(classificationKey);
+      }
+      return next;
+    });
+  };
+
+  const toggleAllInverse = () => {
+    setSelectedKeys(prev => {
+      const inverted = new Set<string>();
+      for (const row of rowsForSelection) {
+        if (!prev.has(row.classificationKey)) {
+          inverted.add(row.classificationKey);
+        }
+      }
+      return inverted;
+    });
+  };
+
+  const handleDeleteAction = () => {
+    if (!selectionMode) {
+      setSelectionMode(true);
+      setSelectedKeys(new Set());
+      return;
+    }
+
+    const keys = [...selectedKeys];
+    if (keys.length > 0) {
+      deleteMonitoringRecords(keys);
+      toast.success(`已删除 ${keys.length} 条记录`);
+    }
+
+    setSelectionMode(false);
+    setSelectedKeys(new Set());
+  };
+
+  const handleSort = (scope: 'history' | 'current', key: SortKey) => {
+    const setter = scope === 'history' ? setHistorySort : setCurrentSort;
+    setter(prev => {
+      if (prev.key === key) {
+        return {
+          key,
+          direction: prev.direction === 'asc' ? 'desc' : 'asc',
+        };
+      }
+      return {
+        key,
+        direction: DEFAULT_SORT_DIRECTION[key],
+      };
+    });
+  };
+
+  const getSortArrow = (scope: 'history' | 'current', key: SortKey) => {
+    const sort = scope === 'history' ? historySort : currentSort;
+    if (sort.key !== key) {
+      return '';
+    }
+    return sort.direction === 'asc' ? ' ↑' : ' ↓';
+  };
+
+  const renderSortHeader = (
+    scope: 'history' | 'current',
+    key: SortKey,
+    label: string,
+    className: string,
+  ) => (
+    <th className={className}>
+      <button
+        className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+        onClick={() => handleSort(scope, key)}
+      >
+        <span>{label}</span>
+        <span>{getSortArrow(scope, key)}</span>
+      </button>
+    </th>
+  );
+
+  const renderProcessRows = (rows: ProcessRow[], withTagColumn: boolean) =>
+    rows.map(row => {
+      const checked = selectedKeys.has(row.classificationKey);
+      const tagValue = row.tagId && tagMap.has(row.tagId) ? row.tagId : '__none__';
+      return (
+        <tr key={row.classificationKey} className="border-b border-border/50 hover:bg-secondary/30">
+          {selectionMode && (
+            <td className="py-1.5 px-2">
+              <Checkbox
+                checked={checked}
+                onCheckedChange={value => toggleRow(row.classificationKey, Boolean(value))}
+              />
+            </td>
+          )}
+          <td className="py-1.5 px-2 text-foreground">{row.displayName}</td>
+          <td className="py-1.5 px-2 text-muted-foreground">{row.objectType}</td>
+          <td className="py-1.5 px-2 text-muted-foreground">{row.processName}</td>
+          <td className="py-1.5 px-2">
+            <Select value={row.category} onValueChange={value => updateProfile(row.profileId, value)}>
+              <SelectTrigger className="h-7 w-24 text-[11px]" style={{ borderColor: `${getCategoryColor(row.category)}55` }}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CATEGORIES.map(category => (
+                  <SelectItem key={category} value={category}>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: getCategoryColor(category) }} />
+                      <span>{category}</span>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </td>
+          {withTagColumn && (
+            <td className="py-1.5 px-2">
+              <Select value={tagValue} onValueChange={value => setProcessTagForProfile(row.classificationKey, value === '__none__' ? undefined : value)}>
+                <SelectTrigger className="h-7 w-36 text-[11px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">未分配</SelectItem>
+                  {state.processTags.map(tag => (
+                    <SelectItem key={tag.id} value={tag.id}>
+                      {tag.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </td>
+          )}
+          <td className="py-1.5 px-2 text-right text-muted-foreground">{formatDuration(row.totalVisible)}</td>
+          <td className="py-1.5 px-2 text-right text-primary">{formatDuration(row.focusTime)}</td>
+          <td className="py-1.5 px-2 text-right text-muted-foreground">
+            {new Date(row.lastSeen).toLocaleString('zh-CN')}
+          </td>
+        </tr>
+      );
+    });
+
+  const renderHistoryGroupedRows = () => {
+    const blocks: JSX.Element[] = [];
+
+    for (const group of historyGroups.groups) {
+      const expanded = expandedTagIds.has(group.tagId);
+      blocks.push(
+        <tr key={`tag-${group.tagId}`} className="border-b border-border bg-secondary/40">
+          {selectionMode && <td className="py-2 px-2" />}
+          <td className="py-2 px-2 text-foreground font-medium" colSpan={3}>
+            <button
+              className="inline-flex items-center gap-1.5"
+              onClick={() => {
+                setExpandedTagIds(prev => {
+                  const next = new Set(prev);
+                  if (next.has(group.tagId)) {
+                    next.delete(group.tagId);
+                  } else {
+                    next.add(group.tagId);
+                  }
+                  return next;
+                });
+              }}
+            >
+              {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+              <span>{group.tagName}</span>
+              <span className="text-[10px] text-muted-foreground">({group.rows.length})</span>
+            </button>
+          </td>
+          <td className="py-2 px-2 text-muted-foreground">标签</td>
+          <td className="py-2 px-2 text-right text-muted-foreground">
+            {formatDuration(group.stat?.totalVisibleSeconds ?? 0)}
+          </td>
+          <td className="py-2 px-2 text-right text-primary">
+            {formatDuration(group.stat?.focusSeconds ?? 0)}
+          </td>
+          <td className="py-2 px-2 text-right text-muted-foreground">
+            {group.stat?.lastSeenAt ? new Date(group.stat.lastSeenAt).toLocaleString('zh-CN') : '-'}
+          </td>
+        </tr>,
+      );
+
+      if (expanded) {
+        blocks.push(...renderProcessRows(group.rows, false));
+      }
+    }
+
+    if (historyGroups.untagged.length > 0) {
+      blocks.push(...renderProcessRows(historyGroups.untagged, false));
+    }
+
+    return blocks;
+  };
+
+  const confirmCreateTag = () => {
+    const trimmed = newTagName.trim();
+    if (!trimmed) {
+      setCreatingTag(false);
+      setNewTagName('');
+      return;
+    }
+    addProcessTag(trimmed);
+    setCreatingTag(false);
+    setNewTagName('');
+  };
+
+  const confirmEditTag = () => {
+    if (!editingTagId) {
+      return;
+    }
+    const trimmed = editingTagName.trim();
+    if (!trimmed) {
+      setEditingTagId(null);
+      setEditingTagName('');
+      return;
+    }
+    updateProcessTag(editingTagId, trimmed);
+    setEditingTagId(null);
+    setEditingTagName('');
+  };
 
   return (
-    <DashboardLayout pageTitle="原始监控">
+    <DashboardLayout pageTitle="进程管理">
       <div className="max-w-6xl mx-auto">
-        <Tabs defaultValue="all" className="space-y-4">
-          <TabsList className="bg-secondary">
-            <TabsTrigger value="all">全部窗口</TabsTrigger>
-            <TabsTrigger value="ranking">焦点排行</TabsTrigger>
-            <TabsTrigger value="events">系统事件</TabsTrigger>
-            <TabsTrigger value="debug">识别调试</TabsTrigger>
-          </TabsList>
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <TabsList className="bg-secondary">
+              <TabsTrigger value="history">历史记录</TabsTrigger>
+              <TabsTrigger value="current">当前进程</TabsTrigger>
+              <TabsTrigger value="tags">标签管理</TabsTrigger>
+              <TabsTrigger value="events">系统事件</TabsTrigger>
+              <TabsTrigger value="debug">识别调试</TabsTrigger>
+            </TabsList>
+            {(activeTab === 'history' || activeTab === 'current') && (
+              <Button size="sm" variant={selectionMode ? 'destructive' : 'outline'} onClick={handleDeleteAction}>
+                {selectionMode ? '确认删除' : '删除记录'}
+              </Button>
+            )}
+          </div>
 
-          <TabsContent value="all">
+          <TabsContent value="history">
             <Card className="p-4 bg-card border-border overflow-auto">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-border text-muted-foreground">
-                    <th className="text-left py-2 px-2">名称</th>
-                    <th className="text-left py-2 px-2">类型</th>
-                    <th className="text-left py-2 px-2">进程</th>
-                    <th className="text-right py-2 px-2">总可见时长</th>
-                    <th className="text-right py-2 px-2">焦点时长</th>
-                    <th className="text-right py-2 px-2">最后出现</th>
+                    {selectionMode && (
+                      <th className="text-left py-2 px-2 w-10">
+                        <Checkbox
+                          checked={allSelected ? true : partialSelected ? 'indeterminate' : false}
+                          onCheckedChange={() => toggleAllInverse()}
+                        />
+                      </th>
+                    )}
+                    {renderSortHeader('history', 'displayName', '名称', 'text-left py-2 px-2')}
+                    {renderSortHeader('history', 'objectType', '类型', 'text-left py-2 px-2')}
+                    {renderSortHeader('history', 'processName', '进程', 'text-left py-2 px-2')}
+                    {renderSortHeader('history', 'category', '分类', 'text-left py-2 px-2')}
+                    {renderSortHeader('history', 'totalVisible', '总可见时长', 'text-right py-2 px-2')}
+                    {renderSortHeader('history', 'focusTime', '焦点时长', 'text-right py-2 px-2')}
+                    {renderSortHeader('history', 'lastSeen', '最后出现', 'text-right py-2 px-2')}
                   </tr>
                 </thead>
-                <tbody>
-                  {windowStats.map((w, i) => (
-                    <tr key={i} className="border-b border-border/50 hover:bg-secondary/30">
-                      <td className="py-1.5 px-2 text-foreground">{w.displayName}</td>
-                      <td className="py-1.5 px-2 text-muted-foreground">{w.objectType}</td>
-                      <td className="py-1.5 px-2 text-muted-foreground">{w.processName}</td>
-                      <td className="py-1.5 px-2 text-right text-muted-foreground">{formatDuration(w.totalVisible)}</td>
-                      <td className="py-1.5 px-2 text-right text-primary">{formatDuration(w.focusTime)}</td>
-                      <td className="py-1.5 px-2 text-right text-muted-foreground">{new Date(w.lastSeen).toLocaleTimeString('zh-CN', { hour12: false })}</td>
-                    </tr>
-                  ))}
-                </tbody>
+                <tbody>{renderHistoryGroupedRows()}</tbody>
               </table>
             </Card>
           </TabsContent>
 
-          <TabsContent value="ranking">
+          <TabsContent value="current">
             <Card className="p-4 bg-card border-border overflow-auto">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-border text-muted-foreground">
-                    <th className="text-left py-2 px-2">#</th>
-                    <th className="text-left py-2 px-2">窗口</th>
-                    <th className="text-left py-2 px-2">类型</th>
-                    <th className="text-right py-2 px-2">焦点时长</th>
-                    <th className="text-left py-2 px-2">占比</th>
+                    {selectionMode && (
+                      <th className="text-left py-2 px-2 w-10">
+                        <Checkbox
+                          checked={allSelected ? true : partialSelected ? 'indeterminate' : false}
+                          onCheckedChange={() => toggleAllInverse()}
+                        />
+                      </th>
+                    )}
+                    {renderSortHeader('current', 'displayName', '名称', 'text-left py-2 px-2')}
+                    {renderSortHeader('current', 'objectType', '类型', 'text-left py-2 px-2')}
+                    {renderSortHeader('current', 'processName', '进程', 'text-left py-2 px-2')}
+                    {renderSortHeader('current', 'category', '分类', 'text-left py-2 px-2')}
+                    {renderSortHeader('current', 'tag', '标签', 'text-left py-2 px-2')}
+                    {renderSortHeader('current', 'totalVisible', '总可见时长', 'text-right py-2 px-2')}
+                    {renderSortHeader('current', 'focusTime', '焦点时长', 'text-right py-2 px-2')}
+                    {renderSortHeader('current', 'lastSeen', '最后出现', 'text-right py-2 px-2')}
                   </tr>
                 </thead>
-                <tbody>
-                  {focusRanking.map((w, i) => {
-                    const totalFocus = focusRanking.reduce((a, b) => a + b.focusTime, 0);
-                    const pct = totalFocus > 0 ? (w.focusTime / totalFocus * 100) : 0;
-                    return (
-                      <tr key={i} className="border-b border-border/50 hover:bg-secondary/30">
-                        <td className="py-1.5 px-2 text-primary font-medium">{i + 1}</td>
-                        <td className="py-1.5 px-2 text-foreground">{w.displayName}</td>
-                        <td className="py-1.5 px-2 text-muted-foreground">{w.objectType}</td>
-                        <td className="py-1.5 px-2 text-right text-foreground">{formatDuration(w.focusTime)}</td>
-                        <td className="py-1.5 px-2 w-32">
-                          <div className="flex items-center gap-2">
-                            <div className="flex-1 h-1.5 rounded-full bg-secondary overflow-hidden">
-                              <div className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
-                            </div>
-                            <span className="text-muted-foreground w-10 text-right">{pct.toFixed(1)}%</span>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
+                <tbody>{renderProcessRows(currentRows, true)}</tbody>
               </table>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="tags">
+            <Card className="p-4 bg-card border-border space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-foreground">标签管理</h3>
+                {!creatingTag && (
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setCreatingTag(true);
+                      setNewTagName('');
+                    }}
+                    className="gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    新增标签
+                  </Button>
+                )}
+              </div>
+
+              {creatingTag && (
+                <div className="flex items-center gap-2 p-2 rounded-lg border border-border bg-secondary/20">
+                  <Input
+                    value={newTagName}
+                    onChange={event => setNewTagName(event.target.value)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        confirmCreateTag();
+                      }
+                      if (event.key === 'Escape') {
+                        setCreatingTag(false);
+                        setNewTagName('');
+                      }
+                    }}
+                    placeholder="输入标签名，回车确认"
+                    autoFocus
+                  />
+                  <Button size="sm" onClick={confirmCreateTag}>确认</Button>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {state.processTags.map(tag => {
+                  const inEdit = editingTagId === tag.id;
+                  return (
+                    <div key={tag.id} className="flex items-center gap-2 p-2 rounded-lg border border-border">
+                      {inEdit ? (
+                        <Input
+                          value={editingTagName}
+                          onChange={event => setEditingTagName(event.target.value)}
+                          onKeyDown={event => {
+                            if (event.key === 'Enter') {
+                              confirmEditTag();
+                            }
+                            if (event.key === 'Escape') {
+                              setEditingTagId(null);
+                              setEditingTagName('');
+                            }
+                          }}
+                          autoFocus
+                        />
+                      ) : (
+                        <span className="text-sm text-foreground flex-1">{tag.name}</span>
+                      )}
+                      {inEdit ? (
+                        <Button size="sm" onClick={confirmEditTag}>确认</Button>
+                      ) : (
+                        <Button size="icon" variant="ghost" onClick={() => {
+                          setEditingTagId(tag.id);
+                          setEditingTagName(tag.name);
+                        }}>
+                          <Edit2 className="w-4 h-4" />
+                        </Button>
+                      )}
+                      <Button size="icon" variant="ghost" className="text-destructive" onClick={() => deleteProcessTag(tag.id)}>
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  );
+                })}
+                {state.processTags.length === 0 && (
+                  <p className="text-xs text-muted-foreground py-4 text-center">暂无标签</p>
+                )}
+              </div>
             </Card>
           </TabsContent>
 
@@ -135,16 +704,16 @@ export default function MonitoringPage() {
               <div className="space-y-1.5">
                 {[...state.powerEvents]
                   .sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime())
-                  .map(e => (
-                  <div key={e.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-secondary/30 border border-border/50">
-                    <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: e.markerColor }} />
-                    <span className="text-xs font-medium text-foreground w-12">{e.eventType}</span>
-                    <span className="text-xs text-muted-foreground flex-1">{e.detail}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {new Date(e.occurredAt).toLocaleString('zh-CN')}
-                    </span>
-                  </div>
-                ))}
+                  .map(event => (
+                    <div key={event.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-secondary/30 border border-border/50">
+                      <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: event.markerColor }} />
+                      <span className="text-xs font-medium text-foreground w-12">{event.eventType}</span>
+                      <span className="text-xs text-muted-foreground flex-1">{event.detail}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(event.occurredAt).toLocaleString('zh-CN')}
+                      </span>
+                    </div>
+                  ))}
               </div>
             </Card>
           </TabsContent>
@@ -153,44 +722,44 @@ export default function MonitoringPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Card className="p-4 bg-card border-border">
                 <h3 className="text-sm font-semibold text-foreground mb-3">当前焦点对象</h3>
-                {fw ? (
+                {state.currentFocusedWindow ? (
                   <div className="space-y-2 text-xs">
-                    <div className="flex justify-between"><span className="text-muted-foreground">显示名称</span><span className="text-foreground">{fw.displayName}</span></div>
-                    <div className="flex justify-between"><span className="text-muted-foreground">分类键</span><span className="text-foreground">{fw.classificationKey}</span></div>
-                    <div className="flex justify-between"><span className="text-muted-foreground">对象类型</span><span className="text-foreground">{fw.objectType}</span></div>
-                    <div className="flex justify-between"><span className="text-muted-foreground">进程名</span><span className="text-foreground">{fw.processName}</span></div>
-                    <div className="flex justify-between"><span className="text-muted-foreground">域名</span><span className="text-foreground">{fw.domain || '-'}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">显示名称</span><span className="text-foreground">{state.currentFocusedWindow.displayName}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">分类键</span><span className="text-foreground">{state.currentFocusedWindow.classificationKey}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">对象类型</span><span className="text-foreground">{state.currentFocusedWindow.objectType}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">进程名</span><span className="text-foreground">{state.currentFocusedWindow.processName}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">域名</span><span className="text-foreground">{state.currentFocusedWindow.domain || '-'}</span></div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">分类</span>
-                      <span className="px-1.5 py-0.5 rounded" style={{ backgroundColor: getCategoryColor(fw.category) + '22', color: getCategoryColor(fw.category) }}>
-                        {fw.category}
+                      <span className="px-1.5 py-0.5 rounded" style={{ backgroundColor: `${getCategoryColor(state.currentFocusedWindow.category)}22`, color: getCategoryColor(state.currentFocusedWindow.category) }}>
+                        {state.currentFocusedWindow.category}
                       </span>
                     </div>
                   </div>
                 ) : (
-                  <p className="text-xs text-muted-foreground">无焦点窗口</p>
+                  <p className="text-xs text-muted-foreground">当前未识别到焦点窗口（浏览器未上报域名时会被忽略）。</p>
                 )}
               </Card>
 
               <Card className="p-4 bg-card border-border">
-                <h3 className="text-sm font-semibold text-foreground mb-3">识别模拟</h3>
+                <h3 className="text-sm font-semibold text-foreground mb-3">识别调试</h3>
                 <div className="space-y-3 text-xs">
                   <div className="p-2 rounded-lg bg-secondary/50 border border-border">
-                    <p className="text-muted-foreground mb-1">浏览器标签识别</p>
+                    <p className="text-muted-foreground mb-1">浏览器域名识别</p>
                     <p className="text-foreground">
-                      {fw?.objectType === 'BrowserTab' ? `✅ 检测到 ${fw.browserName} 标签: ${fw.normalizedTitle}` : '⬜ 当前非浏览器标签'}
+                      {state.currentFocusedWindow?.objectType === 'BrowserTab'
+                        ? `已使用域名识别：${state.currentFocusedWindow.domain || state.currentFocusedWindow.normalizedTitle}`
+                        : '当前不是浏览器标签页'}
                     </p>
                   </div>
                   <div className="p-2 rounded-lg bg-secondary/50 border border-border">
-                    <p className="text-muted-foreground mb-1">桌面识别</p>
-                    <p className="text-foreground">
-                      {fw?.objectType === 'Desktop' ? '✅ 当前为桌面' : '⬜ 当前非桌面'}
-                    </p>
+                    <p className="text-muted-foreground mb-1">当前打开进程数</p>
+                    <p className="text-foreground">{state.currentProcessKeys.length}</p>
                   </div>
                   <div className="p-2 rounded-lg bg-secondary/50 border border-border">
-                    <p className="text-muted-foreground mb-1">原始窗口信息</p>
+                    <p className="text-muted-foreground mb-1">焦点原始信息</p>
                     <pre className="text-[10px] text-muted-foreground overflow-auto">
-                      {JSON.stringify(fw, null, 2)}
+                      {JSON.stringify(state.currentFocusedWindow, null, 2)}
                     </pre>
                   </div>
                 </div>

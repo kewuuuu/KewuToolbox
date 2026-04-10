@@ -48,6 +48,40 @@
     --glow-primary: 0 0 12px hsl(210 80% 55% / 0.15);
     --glow-card: 0 0 20px hsl(225 15% 5% / 0.5);
   }
+
+  .theme-light {
+    --background: 210 35% 98%;
+    --foreground: 222 30% 18%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 30% 18%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 30% 18%;
+    --primary: 212 90% 46%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 28% 94%;
+    --secondary-foreground: 222 25% 28%;
+    --muted: 210 24% 95%;
+    --muted-foreground: 220 12% 40%;
+    --accent: 210 24% 92%;
+    --accent-foreground: 222 30% 20%;
+    --destructive: 0 72% 46%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 22% 86%;
+    --input: 214 22% 86%;
+    --ring: 212 90% 46%;
+
+    --sidebar-background: 210 30% 96%;
+    --sidebar-foreground: 222 20% 30%;
+    --sidebar-primary: 212 90% 46%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 210 28% 90%;
+    --sidebar-accent-foreground: 222 30% 20%;
+    --sidebar-border: 214 20% 84%;
+    --sidebar-ring: 212 90% 46%;
+
+    --glow-primary: 0 0 12px hsl(212 90% 46% / 0.16);
+    --glow-card: 0 0 20px hsl(210 25% 80% / 0.45);
+  }
 }
 
 @layer base {
