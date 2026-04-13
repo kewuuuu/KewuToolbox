@@ -33,6 +33,7 @@ const BROWSER_PROCESS_NAMES = new Set(Object.keys(BROWSER_PROCESS_TO_ID));
 const PORTABLE_DATA_DIR_NAME = 'data';
 const STATE_FILE_NAME = 'app-state.json';
 const STORAGE_CONFIG_FILE_NAME = 'storage-config.json';
+const PACKAGED_RUNTIME_DIR_NAME = 'electron-runtime';
 
 let mainWindow = null;
 let monitorTimer = null;
@@ -125,7 +126,101 @@ function createEmptyState() {
 }
 
 function getStorageConfigPath() {
+  if (app.isPackaged) {
+    return path.join(getPackagedDataDir(), STORAGE_CONFIG_FILE_NAME);
+  }
   return path.join(app.getPath('userData'), STORAGE_CONFIG_FILE_NAME);
+}
+
+function resolvePackagedExecutableDir() {
+  const candidates = [
+    process.env.PORTABLE_EXECUTABLE_DIR,
+    typeof process.env.PORTABLE_EXECUTABLE_FILE === 'string'
+      ? path.dirname(process.env.PORTABLE_EXECUTABLE_FILE)
+      : null,
+    (() => {
+      try {
+        const exePath = app.getPath('exe');
+        return exePath ? path.dirname(exePath) : null;
+      } catch {
+        return null;
+      }
+    })(),
+    process.execPath ? path.dirname(process.execPath) : null,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') {
+      continue;
+    }
+    const trimmed = candidate.trim();
+    if (!trimmed) {
+      continue;
+    }
+    return path.resolve(trimmed);
+  }
+
+  return path.resolve(process.cwd());
+}
+
+function getPackagedDataDir() {
+  return path.join(resolvePackagedExecutableDir(), PORTABLE_DATA_DIR_NAME);
+}
+
+function getPackagedRuntimeDir() {
+  return path.join(getPackagedDataDir(), PACKAGED_RUNTIME_DIR_NAME);
+}
+
+function ensureDir(dirPath) {
+  try {
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+    }
+  } catch {
+    // Ignore path creation errors here; downstream logic will handle failures.
+  }
+}
+
+function configurePackagedRuntimePaths() {
+  if (!app.isPackaged) {
+    return;
+  }
+
+  const runtimeBaseDir = getPackagedRuntimeDir();
+  const userDataDir = path.join(runtimeBaseDir, 'user-data');
+  const sessionDataDir = path.join(runtimeBaseDir, 'session-data');
+  const crashDumpsDir = path.join(runtimeBaseDir, 'crash-dumps');
+  const logsDir = path.join(runtimeBaseDir, 'logs');
+
+  ensureDir(runtimeBaseDir);
+  ensureDir(userDataDir);
+  ensureDir(sessionDataDir);
+  ensureDir(crashDumpsDir);
+  ensureDir(logsDir);
+
+  try {
+    app.setPath('userData', userDataDir);
+  } catch {
+    // Ignore and keep Electron defaults.
+  }
+
+  try {
+    app.setPath('sessionData', sessionDataDir);
+  } catch {
+    // Ignore and keep Electron defaults.
+  }
+
+  try {
+    app.setPath('crashDumps', crashDumpsDir);
+  } catch {
+    // Ignore and keep Electron defaults.
+  }
+
+  try {
+    app.setAppLogsPath(logsDir);
+  } catch {
+    // Ignore and keep Electron defaults.
+  }
 }
 
 function resolveStatePathInput(inputPath) {
@@ -148,15 +243,14 @@ function resolveStatePathInput(inputPath) {
   return looksLikeDirectory ? path.join(candidate, STATE_FILE_NAME) : candidate;
 }
 
+configurePackagedRuntimePaths();
+
 function getDefaultStatePath() {
-  const userDataStatePath = path.join(app.getPath('userData'), STATE_FILE_NAME);
   if (!app.isPackaged) {
-    return userDataStatePath;
+    return path.join(app.getPath('userData'), STATE_FILE_NAME);
   }
 
-  const portableStatePath = path.join(path.dirname(process.execPath), PORTABLE_DATA_DIR_NAME, STATE_FILE_NAME);
-  const writablePath = ensureWritableStatePath(portableStatePath);
-  return writablePath ?? userDataStatePath;
+  return path.join(getPackagedDataDir(), STATE_FILE_NAME);
 }
 
 function loadStorageConfig() {
@@ -497,6 +591,10 @@ function persistState() {
     return;
   }
 
+  if (app.isPackaged) {
+    return;
+  }
+
   const fallbackPath = path.join(app.getPath('userData'), STATE_FILE_NAME);
   if (fallbackPath !== primaryPath && writeJsonSafe(fallbackPath, appState)) {
     applyStatePath(fallbackPath);
@@ -611,7 +709,7 @@ function loadPersistedState() {
   const primaryPath = getStatePath();
   let saved = readJsonSafe(primaryPath);
 
-  if (!saved && !preferredStatePath) {
+  if (!saved && !preferredStatePath && !app.isPackaged) {
     const fallbackPath = path.join(app.getPath('userData'), STATE_FILE_NAME);
     if (fallbackPath !== primaryPath) {
       saved = readJsonSafe(fallbackPath);

@@ -104,13 +104,20 @@ npm run dev
 2. 秒表记录：重命名、删除、查看详情与复制导出。
 3. 倒计时：新建任务、开始/暂停、到点提醒、按设置保留或删除。
 
-#### 4.4 待办与归档
+#### 4.4 计算器
+
+1. 进入“计算器 > 算数计算机”。
+2. 输入表达式后实时返回结果，或返回 `NaN` / “除数不能为零” / “式子不合法”。
+3. 支持 `+ - * / % ^`、括号、`log/ln/lg/sqrt/abs`、常量 `pi/e`。
+4. 输入一元方程（含 `=`，未知数为 `x`）时会自动求解并返回解集或无解。
+
+#### 4.5 待办与归档
 
 1. 在“待办列表”新建任务（一次性/重复、可选定时提醒）。
 2. 点击卡片进入详情，填写心得（自动保存）。
 3. 勾选完成后进入归档列表，在归档详情查看历史快照。
 
-#### 4.5 数据统计
+#### 4.6 数据统计
 
 1. 进入“数据统计”页面。
 2. 切换显示维度（性质/窗口）和统计日期。
@@ -196,11 +203,15 @@ npm run build:deliver
 
 运行策略：
 - 开发环境默认在用户目录（`%APPDATA%\kewu-toolbox\app-state.json`）。
-- 打包后优先使用 EXE 同目录下：`.\data\app-state.json`。
-- 若 EXE 目录不可写，则自动回退到：`%APPDATA%\kewu-toolbox\app-state.json`。
+- 打包后固定使用 EXE 同级目录：`.\data\app-state.json`（不再回退到 `%APPDATA%`）。
 
 附加文件：
-- `storage-config.json`：保存你在“设置”里改过的数据文件路径。
+- `.\data\storage-config.json`：保存你在“设置”里改过的数据文件路径。
+- 打包版 Electron 运行期文件（缓存/会话/日志/崩溃转储）也会写入：
+  - `.\data\electron-runtime\user-data\`
+  - `.\data\electron-runtime\session-data\`
+  - `.\data\electron-runtime\logs\`
+  - `.\data\electron-runtime\crash-dumps\`
 
 ### 6. 浏览器扩展版本
 

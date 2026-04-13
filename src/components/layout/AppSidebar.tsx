@@ -1,9 +1,10 @@
 import { NavLink } from 'react-router-dom';
-import { Timer, Clock3, BarChart3, ListTodo, Archive, Monitor, Settings2 } from 'lucide-react';
+import { Timer, Clock3, Calculator, BarChart3, ListTodo, Archive, Monitor, Settings2 } from 'lucide-react';
 
 const navItems = [
   { to: '/focus', icon: Timer, label: '专注' },
   { to: '/clock', icon: Clock3, label: '时钟' },
+  { to: '/calculator', icon: Calculator, label: '计算器' },
   { to: '/analytics', icon: BarChart3, label: '数据统计' },
   { to: '/todos', icon: ListTodo, label: '待办列表' },
   { to: '/archives', icon: Archive, label: '归档列表' },

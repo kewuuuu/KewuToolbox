@@ -15,6 +15,7 @@ import MonitoringPage from './pages/MonitoringPage';
 import SettingsPage from './pages/SettingsPage';
 import ClockPage from './pages/ClockPage';
 import StopwatchRecordDetailPage from './pages/StopwatchRecordDetailPage';
+import CalculatorPage from './pages/CalculatorPage';
 import NotFound from './pages/NotFound';
 
 const queryClient = new QueryClient();
@@ -33,6 +34,7 @@ const App = () => (
             <Route path="/focus-subjects" element={<FocusSubjectsPage />} />
             <Route path="/clock" element={<ClockPage />} />
             <Route path="/clock/records/:recordId" element={<StopwatchRecordDetailPage />} />
+            <Route path="/calculator" element={<CalculatorPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route path="/todos" element={<TodoListPage />} />
             <Route path="/todos/:id" element={<TodoDetailPage />} />
