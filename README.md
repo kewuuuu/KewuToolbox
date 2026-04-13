@@ -1,6 +1,6 @@
 # KewuToolbox（可无的工具箱）
 
-Windows 本地效率工具，核心目标是“真实记录窗口行为 + 专注管理 + 任务管理 + 本地数据分析”。
+本地效率工具，核心目标是“真实记录窗口行为 + 专注管理 + 任务管理 + 本地数据分析”。
 
 技术栈：
 - 前端：React + Vite + TypeScript + Tailwind + shadcn/ui
@@ -43,7 +43,7 @@ Windows 本地效率工具，核心目标是“真实记录窗口行为 + 专注
 
 #### 1.2 开发模式
 
-1. 准备环境：Windows 10/11，Node.js 18+（建议 Node 20 LTS）。
+1. 准备环境：Node.js 18+（建议 Node 20 LTS）。
 2. 在项目根目录安装依赖：
 
 ```bash
@@ -148,7 +148,10 @@ npm run build:desktop
 # 打便携版单文件 EXE
 npm run build:portable
 
-# 一键交付构建（只保留 portable + 浏览器扩展）
+# 打 macOS 便携版 ZIP（需在 macOS 上执行）
+npm run build:mac:portable
+
+# 一键交付构建（按当前系统打包便携版 + 浏览器扩展）
 npm run build:deliver
 ```
 
@@ -160,6 +163,7 @@ npm run build:deliver
 - `build.win.icon`: `public/favicon.ico`
 - `build.win.target`: `nsis`
 - `build.portable.artifactName`: `KewuToolbox-${version}-portable.${ext}`
+- `build.mac.artifactName`: `KewuToolbox-${version}-mac-portable.${ext}`
 
 ### 4. 构建产物说明
 
@@ -181,6 +185,15 @@ npm run build:portable
 输出示例：
 - `release/KewuToolbox-<version>-portable.exe`
 
+#### macOS 便携版构建
+
+```bash
+npm run build:mac:portable
+```
+
+输出示例：
+- `release/KewuToolbox-<version>-mac-portable.zip`
+
 #### 交付构建（推荐给分发）
 
 ```bash
@@ -189,12 +202,16 @@ npm run build:deliver
 
 `build-deliver.ps1` 会执行：
 1. 清空 `release`（避免上次残留）。
-2. 构建 portable。
-3. 复制 portable EXE + `browser-extension/` 到 `release/deliver/`。
-4. 删除其他非交付文件。
+2. 构建前端 `dist`。
+3. 按当前系统构建便携包：
+   - Windows 主机：构建 `portable.exe`
+   - macOS 主机：构建 `mac-portable.zip`
+4. 复制便携包 + `browser-extension/` 到 `release/deliver/`。
+5. 删除其他非交付文件。
 
 最终只保留：
-- `release/deliver/KewuToolbox-<version>-portable.exe`
+- `release/deliver/KewuToolbox-<version>-portable.exe`（Windows 构建时）
+- `release/deliver/KewuToolbox-<version>-mac-portable.zip`（macOS 构建时）
 - `release/deliver/browser-extension/`
 
 ### 5. 数据文件与路径机制

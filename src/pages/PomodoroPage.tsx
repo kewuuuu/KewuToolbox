@@ -36,6 +36,7 @@ export default function PomodoroPage() {
   const [currentCycle, setCurrentCycle] = useState(1);
   const [currentQueueIdx, setCurrentQueueIdx] = useState(0);
   const [offTargetSeconds, setOffTargetSeconds] = useState(0);
+  const prevQueueIdxRef = useRef(0);
   const timerEndsAtRef = useRef<number | null>(null);
   const distractionAlertedRef = useRef(false);
   const offTargetMsRef = useRef(0);
@@ -286,6 +287,10 @@ export default function PomodoroPage() {
   }, [currentQueueIdx, state.queue.length]);
 
   useEffect(() => {
+    if (prevQueueIdxRef.current === currentQueueIdx) {
+      return;
+    }
+    prevQueueIdxRef.current = currentQueueIdx;
     if (isRunning) {
       return;
     }
