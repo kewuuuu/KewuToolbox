@@ -5,6 +5,7 @@ export type TaskType = string;
 export type RepeatMode = string;
 export type FocusQueueItemType = 'Subject' | 'AdHocWindowGroup';
 export type UiTheme = 'dark' | 'light';
+export type CountdownCompletedTaskBehavior = 'keep' | 'delete';
 
 export interface WindowClassificationProfile {
   id: string;
@@ -103,10 +104,29 @@ export interface SoundFileItem {
   updatedAt: string;
 }
 
+export interface UrlWhitelistRule {
+  id: string;
+  pattern: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProcessBlacklistRule {
+  id: string;
+  namePattern?: string;
+  typePattern?: string;
+  processPattern?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AppPreferences {
   recordWindowThresholdSeconds: number;
   uiTheme: UiTheme;
   autoLaunchEnabled: boolean;
+  urlWhitelist: UrlWhitelistRule[];
+  processBlacklist: ProcessBlacklistRule[];
+  countdownCompletedTaskBehavior: CountdownCompletedTaskBehavior;
 }
 
 export interface PomodoroSettings {
@@ -121,7 +141,42 @@ export interface PomodoroSettings {
   completionVolumeMultiplier: number;
   distractionSoundFileId: string;
   distractionVolumeMultiplier: number;
+  countdownSoundFileId: string;
+  countdownVolumeMultiplier: number;
   cycleCount: number;
+}
+
+export interface StopwatchLap {
+  id: string;
+  elapsedMs: number;
+  splitMs: number;
+  note: string;
+  createdAt: string;
+}
+
+export interface StopwatchRecord {
+  id: string;
+  name: string;
+  startedAt: string;
+  endedAt: string;
+  totalElapsedMs: number;
+  laps: StopwatchLap[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CountdownTask {
+  id: string;
+  title: string;
+  durationSeconds: number;
+  remainingSeconds: number;
+  isRunning: boolean;
+  completed: boolean;
+  runStartedAt?: string;
+  runInitialRemainingSeconds?: number;
+  completedAt?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface TodoTask {
@@ -178,6 +233,8 @@ export interface AppState {
   subjects: FocusSubject[];
   queue: FocusQueueItem[];
   pomodoroSettings: PomodoroSettings;
+  stopwatchRecords: StopwatchRecord[];
+  countdownTasks: CountdownTask[];
   todos: TodoTask[];
   archives: TodoArchiveRecord[];
   powerEvents: PowerEventRecord[];
@@ -195,6 +252,8 @@ export type AppUserState = Pick<
   | 'subjects'
   | 'queue'
   | 'pomodoroSettings'
+  | 'stopwatchRecords'
+  | 'countdownTasks'
   | 'todos'
   | 'archives'
   | 'displayMode'

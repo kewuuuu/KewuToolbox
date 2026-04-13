@@ -2,11 +2,13 @@ import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from
 import { useSearchParams } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { useAppState } from '@/store/AppContext';
+import { ProcessBlacklistRule, UrlWhitelistRule } from '@/types';
 import { getSoundDisplayNameFromPath, playSoundById } from '@/lib/sound';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   AlertDialog,
@@ -23,6 +25,7 @@ import { toast } from 'sonner';
 import { FolderOpen, MoonStar, Play, Plus, Sun, Trash2 } from 'lucide-react';
 
 type SettingsTab = 'general' | 'sounds';
+const NONE_SOUND_ID = '__none__';
 
 function toFinite(value: string, fallback: number) {
   const parsed = Number(value);
@@ -32,11 +35,22 @@ function toFinite(value: string, fallback: number) {
   return parsed;
 }
 
+function makeRuleId(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export default function SettingsPage() {
-  const { state, updatePreferences, clearAllData, addSoundFile, updateSoundFile, deleteSoundFile } = useAppState();
+  const { state, updatePreferences, updateSettings, clearAllData, addSoundFile, updateSoundFile, deleteSoundFile } = useAppState();
   const [searchParams, setSearchParams] = useSearchParams();
   const [manualPath, setManualPath] = useState('');
   const [manualName, setManualName] = useState('');
+  const [urlPatternInput, setUrlPatternInput] = useState('');
+  const [blacklistNameInput, setBlacklistNameInput] = useState('');
+  const [blacklistTypeInput, setBlacklistTypeInput] = useState('');
+  const [blacklistProcessInput, setBlacklistProcessInput] = useState('');
+  const [dataFilePathInput, setDataFilePathInput] = useState('');
+  const [pendingCreatePath, setPendingCreatePath] = useState('');
+  const [isChangingDataPath, setIsChangingDataPath] = useState(false);
   const [isClearingAllData, setIsClearingAllData] = useState(false);
   const [thresholdInput, setThresholdInput] = useState(
     String(state.preferences.recordWindowThresholdSeconds),
@@ -46,6 +60,32 @@ export default function SettingsPage() {
   useEffect(() => {
     setThresholdInput(String(state.preferences.recordWindowThresholdSeconds));
   }, [state.preferences.recordWindowThresholdSeconds]);
+
+  useEffect(() => {
+    if (!window.desktopApi?.isElectron) {
+      return;
+    }
+
+    let disposed = false;
+    const loadPath = async () => {
+      try {
+        const currentPath = await window.desktopApi!.getDataFilePath();
+        if (disposed) {
+          return;
+        }
+        setDataFilePathInput(currentPath);
+      } catch {
+        if (!disposed) {
+          toast.error('读取数据文件路径失败');
+        }
+      }
+    };
+
+    void loadPath();
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   const tabParam = searchParams.get('tab');
   const tab: SettingsTab = tabParam === 'sounds' ? 'sounds' : 'general';
@@ -87,6 +127,13 @@ export default function SettingsPage() {
     }
   };
 
+  const handleSelectSound = (
+    key: 'completionSoundFileId' | 'distractionSoundFileId' | 'countdownSoundFileId',
+    value: string,
+  ) => {
+    updateSettings({ [key]: value === NONE_SOUND_ID ? '' : value });
+  };
+
   const handleClearAllData = async () => {
     if (isClearingAllData) {
       return;
@@ -110,6 +157,157 @@ export default function SettingsPage() {
     }
     updatePreferences({ autoLaunchEnabled: checked });
     toast.success(checked ? '已开启开机自启动' : '已关闭开机自启动');
+  };
+
+  const handlePickDataFilePath = async () => {
+    if (!window.desktopApi?.isElectron) {
+      toast.info('当前环境不支持选择数据文件路径');
+      return;
+    }
+    const pickedPath = await window.desktopApi.selectDataFilePath();
+    if (!pickedPath) {
+      return;
+    }
+    setDataFilePathInput(pickedPath);
+  };
+
+  const commitDataFilePath = async (createIfMissing: boolean) => {
+    const targetPath = dataFilePathInput.trim();
+    if (!targetPath) {
+      toast.error('请输入数据文件路径');
+      return;
+    }
+    if (!window.desktopApi?.isElectron) {
+      toast.info('当前环境不支持修改数据文件路径');
+      return;
+    }
+    if (isChangingDataPath) {
+      return;
+    }
+
+    setIsChangingDataPath(true);
+    try {
+      const result = await window.desktopApi.setDataFilePath({
+        targetPath,
+        createIfMissing,
+      });
+
+      if (result.ok && result.path) {
+        setDataFilePathInput(result.path);
+        setPendingCreatePath('');
+        toast.success(result.created ? '已创建并加载新数据文件' : '已加载数据文件');
+        return;
+      }
+
+      if (result.requiresCreate && result.path) {
+        setPendingCreatePath(result.path);
+        return;
+      }
+
+      if (result.error === 'invalid_json') {
+        toast.error('目标文件不是有效的 JSON 数据文件');
+      } else if (result.error === 'path_not_writable') {
+        toast.error('该路径不可写，请更换路径');
+      } else if (result.error === 'create_failed') {
+        toast.error('创建数据文件失败');
+      } else {
+        toast.error('修改数据文件路径失败');
+      }
+    } catch {
+      toast.error('修改数据文件路径失败');
+    } finally {
+      setIsChangingDataPath(false);
+    }
+  };
+
+  const addUrlWhitelistRule = () => {
+    const pattern = urlPatternInput.trim();
+    if (!pattern) {
+      toast.error('请输入白名单网址模式');
+      return;
+    }
+    const now = new Date().toISOString();
+    const nextRule: UrlWhitelistRule = {
+      id: makeRuleId('wl'),
+      pattern,
+      createdAt: now,
+      updatedAt: now,
+    };
+    updatePreferences({ urlWhitelist: [nextRule, ...state.preferences.urlWhitelist] });
+    setUrlPatternInput('');
+  };
+
+  const updateUrlWhitelistRule = (ruleId: string, pattern: string) => {
+    const normalizedPattern = pattern.trim();
+    if (!normalizedPattern) {
+      updatePreferences({ urlWhitelist: state.preferences.urlWhitelist.filter(rule => rule.id !== ruleId) });
+      return;
+    }
+    const now = new Date().toISOString();
+    updatePreferences({
+      urlWhitelist: state.preferences.urlWhitelist.map(rule =>
+        rule.id === ruleId ? { ...rule, pattern: normalizedPattern, updatedAt: now } : rule,
+      ),
+    });
+  };
+
+  const deleteUrlWhitelistRule = (ruleId: string) => {
+    updatePreferences({ urlWhitelist: state.preferences.urlWhitelist.filter(rule => rule.id !== ruleId) });
+  };
+
+  const addProcessBlacklistRule = () => {
+    const namePattern = blacklistNameInput.trim();
+    const typePattern = blacklistTypeInput.trim();
+    const processPattern = blacklistProcessInput.trim();
+    if (!namePattern && !typePattern && !processPattern) {
+      toast.error('至少填写名称、类型、进程中的一个');
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const nextRule: ProcessBlacklistRule = {
+      id: makeRuleId('bl'),
+      namePattern: namePattern || undefined,
+      typePattern: typePattern || undefined,
+      processPattern: processPattern || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+    updatePreferences({ processBlacklist: [nextRule, ...state.preferences.processBlacklist] });
+    setBlacklistNameInput('');
+    setBlacklistTypeInput('');
+    setBlacklistProcessInput('');
+  };
+
+  const updateProcessBlacklistRule = (
+    ruleId: string,
+    key: 'namePattern' | 'typePattern' | 'processPattern',
+    value: string,
+  ) => {
+    const now = new Date().toISOString();
+    const trimmedValue = value.trim();
+    const nextRules = state.preferences.processBlacklist
+      .map(rule => {
+        if (rule.id !== ruleId) {
+          return rule;
+        }
+        const nextRule: ProcessBlacklistRule = {
+          ...rule,
+          [key]: trimmedValue || undefined,
+          updatedAt: now,
+        };
+        if (!nextRule.namePattern && !nextRule.typePattern && !nextRule.processPattern) {
+          return null;
+        }
+        return nextRule;
+      })
+      .filter((rule): rule is ProcessBlacklistRule => Boolean(rule));
+
+    updatePreferences({ processBlacklist: nextRules });
+  };
+
+  const deleteProcessBlacklistRule = (ruleId: string) => {
+    updatePreferences({ processBlacklist: state.preferences.processBlacklist.filter(rule => rule.id !== ruleId) });
   };
 
   const handlePickAudioFile = async () => {
@@ -270,7 +468,233 @@ export default function SettingsPage() {
                     disabled={!isElectronRuntime}
                   />
                 </div>
+
+                <div className="md:col-span-2 rounded-lg border border-border/70 p-3 space-y-2">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-foreground">倒计时完成后处理</p>
+                    <p className="text-xs text-muted-foreground">
+                      选择倒计时到点后是自动删除任务，还是保留在列表并以删除线显示（点击即可删除）。
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant={state.preferences.countdownCompletedTaskBehavior === 'keep' ? 'default' : 'outline'}
+                      onClick={() => updatePreferences({ countdownCompletedTaskBehavior: 'keep' })}
+                    >
+                      手动点击后删除
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={state.preferences.countdownCompletedTaskBehavior === 'delete' ? 'default' : 'outline'}
+                      onClick={() => updatePreferences({ countdownCompletedTaskBehavior: 'delete' })}
+                    >
+                      完成即删除
+                    </Button>
+                  </div>
+                </div>
               </div>
+
+              <div className="space-y-3 rounded-lg border border-border/70 p-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">数据文件路径</p>
+                  <p className="text-xs text-muted-foreground">
+                    当前数据库（数据文件）路径如下。修改后若目标文件存在会直接加载；若不存在会提示是否创建新文件。
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={dataFilePathInput}
+                      onChange={event => setDataFilePathInput(event.target.value)}
+                      placeholder="输入新的数据文件路径（可填目录或 .json 文件）"
+                      className="h-8 font-mono text-[11px]"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="gap-1 shrink-0"
+                      onClick={() => void handlePickDataFilePath()}
+                      disabled={!isElectronRuntime || isChangingDataPath}
+                    >
+                      <FolderOpen className="w-3.5 h-3.5" />
+                      选择
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => void commitDataFilePath(false)}
+                      disabled={!isElectronRuntime || isChangingDataPath}
+                    >
+                      {isChangingDataPath ? '应用中...' : '应用'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3 rounded-lg border border-border/70 p-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">网页白名单（支持通配符）</p>
+                  <p className="text-xs text-muted-foreground">
+                    命中白名单的网址将按“独立页面”统计，不再按域名合并。示例：`https://leetcode.com/problemset/*`
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={urlPatternInput}
+                    onChange={event => setUrlPatternInput(event.target.value)}
+                    placeholder="输入网址模式，如 https://example.com/path/*"
+                    className="h-8"
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        addUrlWhitelistRule();
+                      }
+                    }}
+                  />
+                  <Button type="button" size="sm" onClick={addUrlWhitelistRule}>
+                    添加
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {state.preferences.urlWhitelist.map(rule => (
+                    <div key={rule.id} className="flex items-center gap-2">
+                      <Input
+                        defaultValue={rule.pattern}
+                        className="h-8"
+                        onBlur={event => updateUrlWhitelistRule(rule.id, event.target.value)}
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="text-destructive"
+                        onClick={() => deleteUrlWhitelistRule(rule.id)}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  ))}
+                  {state.preferences.urlWhitelist.length === 0 && (
+                    <p className="text-xs text-muted-foreground">暂无白名单规则</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3 rounded-lg border border-border/70 p-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">进程黑名单（支持通配符）</p>
+                  <p className="text-xs text-muted-foreground">
+                    名称 / 类型 / 进程可填一项或多项，全部匹配即忽略。类型可填：`AppWindow`、`BrowserTab`、`Desktop`。
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-[1fr_160px_1fr_auto] gap-2 items-end">
+                  <Input
+                    value={blacklistNameInput}
+                    onChange={event => setBlacklistNameInput(event.target.value)}
+                    placeholder="名称模式，如 *设置*"
+                    className="h-8"
+                  />
+                  <Input
+                    value={blacklistTypeInput}
+                    onChange={event => setBlacklistTypeInput(event.target.value)}
+                    placeholder="类型模式，如 AppWindow"
+                    className="h-8"
+                  />
+                  <Input
+                    value={blacklistProcessInput}
+                    onChange={event => setBlacklistProcessInput(event.target.value)}
+                    placeholder="进程模式，如 code.exe"
+                    className="h-8"
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        addProcessBlacklistRule();
+                      }
+                    }}
+                  />
+                  <Button type="button" size="sm" onClick={addProcessBlacklistRule}>
+                    添加
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {state.preferences.processBlacklist.map(rule => (
+                    <div
+                      key={rule.id}
+                      className="grid grid-cols-1 md:grid-cols-[1fr_160px_1fr_auto] gap-2 items-center"
+                    >
+                      <Input
+                        defaultValue={rule.namePattern ?? ''}
+                        className="h-8"
+                        placeholder="名称模式"
+                        onBlur={event =>
+                          updateProcessBlacklistRule(rule.id, 'namePattern', event.target.value)
+                        }
+                      />
+                      <Input
+                        defaultValue={rule.typePattern ?? ''}
+                        className="h-8"
+                        placeholder="类型模式"
+                        onBlur={event =>
+                          updateProcessBlacklistRule(rule.id, 'typePattern', event.target.value)
+                        }
+                      />
+                      <Input
+                        defaultValue={rule.processPattern ?? ''}
+                        className="h-8"
+                        placeholder="进程模式"
+                        onBlur={event =>
+                          updateProcessBlacklistRule(rule.id, 'processPattern', event.target.value)
+                        }
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="text-destructive"
+                        onClick={() => deleteProcessBlacklistRule(rule.id)}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  ))}
+                  {state.preferences.processBlacklist.length === 0 && (
+                    <p className="text-xs text-muted-foreground">暂无黑名单规则</p>
+                  )}
+                </div>
+              </div>
+
+              <AlertDialog
+                open={Boolean(pendingCreatePath)}
+                onOpenChange={open => {
+                  if (!open) {
+                    setPendingCreatePath('');
+                  }
+                }}
+              >
+                <AlertDialogContent className="bg-card border-border">
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>目标数据文件不存在</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      将在以下路径创建新的数据文件并切换：
+                      <span className="block mt-1 font-mono text-[11px] break-all">{pendingCreatePath}</span>
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>取消</AlertDialogCancel>
+                    <AlertDialogAction
+                      disabled={isChangingDataPath}
+                      onClick={() => {
+                        if (pendingCreatePath) {
+                          setDataFilePathInput(pendingCreatePath);
+                          void commitDataFilePath(true);
+                        }
+                      }}
+                    >
+                      {isChangingDataPath ? '创建中...' : '创建并切换'}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
 
               <div className="pt-3 border-t border-border/70 flex items-center justify-between gap-3">
                 <div className="space-y-1">
@@ -315,6 +739,131 @@ export default function SettingsPage() {
                   <Plus className="w-3.5 h-3.5" />
                   添加文件
                 </Button>
+              </div>
+
+              <div className="space-y-3 rounded-lg border border-border/70 p-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">事件提示音配置</p>
+                  <p className="text-xs text-muted-foreground">
+                    可为“番茄钟到点 / 偏离提醒 / 倒计时到点”分别设置声音；选择“无”表示不播放。
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_120px_auto] gap-2 items-center">
+                    <span className="text-xs text-muted-foreground">番茄钟到点</span>
+                    <Select
+                      value={state.pomodoroSettings.completionSoundFileId || NONE_SOUND_ID}
+                      onValueChange={value => handleSelectSound('completionSoundFileId', value)}
+                    >
+                      <SelectTrigger className="h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NONE_SOUND_ID}>无</SelectItem>
+                        {sortedSoundFiles.map(sound => (
+                          <SelectItem key={sound.id} value={sound.id}>
+                            {sound.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      value={state.pomodoroSettings.completionVolumeMultiplier}
+                      onChange={event =>
+                        updateSettings({ completionVolumeMultiplier: toFinite(event.target.value, 1) })
+                      }
+                      className="h-8"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void handlePreview(state.pomodoroSettings.completionSoundFileId)}
+                      disabled={!state.pomodoroSettings.completionSoundFileId}
+                    >
+                      试听
+                    </Button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_120px_auto] gap-2 items-center">
+                    <span className="text-xs text-muted-foreground">偏离提醒</span>
+                    <Select
+                      value={state.pomodoroSettings.distractionSoundFileId || NONE_SOUND_ID}
+                      onValueChange={value => handleSelectSound('distractionSoundFileId', value)}
+                    >
+                      <SelectTrigger className="h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NONE_SOUND_ID}>无</SelectItem>
+                        {sortedSoundFiles.map(sound => (
+                          <SelectItem key={sound.id} value={sound.id}>
+                            {sound.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      value={state.pomodoroSettings.distractionVolumeMultiplier}
+                      onChange={event =>
+                        updateSettings({ distractionVolumeMultiplier: toFinite(event.target.value, 1) })
+                      }
+                      className="h-8"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void handlePreview(state.pomodoroSettings.distractionSoundFileId)}
+                      disabled={!state.pomodoroSettings.distractionSoundFileId}
+                    >
+                      试听
+                    </Button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_120px_auto] gap-2 items-center">
+                    <span className="text-xs text-muted-foreground">倒计时到点</span>
+                    <Select
+                      value={state.pomodoroSettings.countdownSoundFileId || NONE_SOUND_ID}
+                      onValueChange={value => handleSelectSound('countdownSoundFileId', value)}
+                    >
+                      <SelectTrigger className="h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NONE_SOUND_ID}>无</SelectItem>
+                        {sortedSoundFiles.map(sound => (
+                          <SelectItem key={sound.id} value={sound.id}>
+                            {sound.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      value={state.pomodoroSettings.countdownVolumeMultiplier}
+                      onChange={event =>
+                        updateSettings({ countdownVolumeMultiplier: toFinite(event.target.value, 1) })
+                      }
+                      className="h-8"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void handlePreview(state.pomodoroSettings.countdownSoundFileId)}
+                      disabled={!state.pomodoroSettings.countdownSoundFileId}
+                    >
+                      试听
+                    </Button>
+                  </div>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-[1fr_220px_auto] gap-2 items-end">

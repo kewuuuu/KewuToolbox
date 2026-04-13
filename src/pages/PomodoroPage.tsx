@@ -10,14 +10,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Play, Pause, RotateCcw, SkipForward, Trash2, GripVertical, Settings2, ChevronDown } from 'lucide-react';
+import { Play, Pause, RotateCcw, SkipForward, Trash2, GripVertical, Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 
-type TimerMode = '专注' | '休息';
-
-const DEFAULT_BREAK_MINUTES = 5;
 const FALLBACK_FOCUS_MINUTES = 25;
-const NONE_SOUND_ID = '__none__';
 
 function clampMinutes(input: number, fallback: number) {
   if (!Number.isFinite(input)) {
@@ -26,20 +22,11 @@ function clampMinutes(input: number, fallback: number) {
   return Math.max(1, Math.min(240, Math.floor(input)));
 }
 
-function toFinite(value: number | string, fallback: number) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-  return parsed;
-}
-
 export default function PomodoroPage() {
   const { state, updateSettings, removeFromQueue, addToQueue, setQueue } = useAppState();
   const navigate = useNavigate();
   const settings = state.pomodoroSettings;
 
-  const [mode, setMode] = useState<TimerMode>('专注');
   const [secondsLeft, setSecondsLeft] = useState(() => {
     const firstQueueItem = state.queue[0];
     const focusMinutes = clampMinutes(firstQueueItem?.durationMinutes ?? FALLBACK_FOCUS_MINUTES, FALLBACK_FOCUS_MINUTES);
@@ -49,9 +36,11 @@ export default function PomodoroPage() {
   const [currentCycle, setCurrentCycle] = useState(1);
   const [currentQueueIdx, setCurrentQueueIdx] = useState(0);
   const [offTargetSeconds, setOffTargetSeconds] = useState(0);
-  const [soundSettingsExpanded, setSoundSettingsExpanded] = useState(false);
-  const intervalRef = useRef<number>();
+  const timerEndsAtRef = useRef<number | null>(null);
   const distractionAlertedRef = useRef(false);
+  const offTargetMsRef = useRef(0);
+  const distractionLastTickAtRef = useRef<number | null>(null);
+  const focusedClassificationKeyRef = useRef<string | undefined>(state.currentFocusedWindow?.classificationKey);
 
   const getFocusSecondsForIndex = useCallback(
     (queueIndex: number) => {
@@ -62,58 +51,105 @@ export default function PomodoroPage() {
     [state.queue],
   );
 
-  const getBreakSeconds = useCallback(() => DEFAULT_BREAK_MINUTES * 60, []);
-
-  const totalSeconds = mode === '专注' ? getFocusSecondsForIndex(currentQueueIdx) : getBreakSeconds();
+  const totalSeconds = getFocusSecondsForIndex(currentQueueIdx);
   const progress = totalSeconds > 0 ? ((totalSeconds - secondsLeft) / totalSeconds) * 100 : 0;
 
   const playCompletionSound = useCallback(() => {
     void playSoundById(state.soundFiles, {
-      enabled: settings.soundEnabled,
+      enabled: true,
       soundFileId: settings.completionSoundFileId,
       eventVolumeMultiplier: settings.completionVolumeMultiplier,
     });
   }, [
     settings.completionSoundFileId,
     settings.completionVolumeMultiplier,
-    settings.soundEnabled,
     state.soundFiles,
   ]);
 
   const playDistractionSound = useCallback(() => {
     void playSoundById(state.soundFiles, {
-      enabled: settings.soundEnabled,
+      enabled: true,
       soundFileId: settings.distractionSoundFileId,
       eventVolumeMultiplier: settings.distractionVolumeMultiplier,
     });
   }, [
     settings.distractionSoundFileId,
     settings.distractionVolumeMultiplier,
-    settings.soundEnabled,
     state.soundFiles,
   ]);
 
+  useEffect(() => {
+    focusedClassificationKeyRef.current = state.currentFocusedWindow?.classificationKey;
+  }, [state.currentFocusedWindow?.classificationKey]);
+
+  const resetDistractionTracking = useCallback(() => {
+    distractionAlertedRef.current = false;
+    offTargetMsRef.current = 0;
+    distractionLastTickAtRef.current = null;
+    setOffTargetSeconds(0);
+  }, []);
+
+  const pushSystemNotification = useCallback(
+    async (title: string, body: string) => {
+      if (!settings.notifyEnabled) {
+        return;
+      }
+
+      if (window.desktopApi?.notify) {
+        try {
+          await window.desktopApi.notify({ title, body });
+          return;
+        } catch {
+          // Fall through to renderer notification.
+        }
+      }
+
+      if (!('Notification' in window)) {
+        return;
+      }
+
+      const notify = () => {
+        try {
+          new Notification(title, { body });
+        } catch {
+          // Ignore notification errors.
+        }
+      };
+
+      if (Notification.permission === 'granted') {
+        notify();
+        return;
+      }
+      if (Notification.permission === 'default') {
+        const permission = await Notification.requestPermission();
+        if (permission === 'granted') {
+          notify();
+        }
+      }
+    },
+    [settings.notifyEnabled],
+  );
+
   const handleTimerEnd = useCallback((triggeredByTimeout = false) => {
     setIsRunning(false);
-    distractionAlertedRef.current = false;
-    setOffTargetSeconds(0);
+    timerEndsAtRef.current = null;
+    resetDistractionTracking();
+
+    const currentItem = state.queue[currentQueueIdx];
 
     if (triggeredByTimeout) {
       playCompletionSound();
+      toast.success('专注到点');
+      void pushSystemNotification(
+        '专注到点提醒',
+        currentItem ? `${currentItem.title} 已到点` : '当前专注计划已到点',
+      );
     }
 
     if (state.queue.length === 0) {
-      setMode('专注');
       setCurrentCycle(1);
       setCurrentQueueIdx(0);
       setSecondsLeft(FALLBACK_FOCUS_MINUTES * 60);
-      return;
-    }
-
-    if (mode === '专注') {
-      toast.success('专注完成，进入短休息');
-      setMode('休息');
-      setSecondsLeft(getBreakSeconds());
       return;
     }
 
@@ -124,98 +160,121 @@ export default function PomodoroPage() {
       if (nextQueueIndex < state.queue.length) {
         setCurrentQueueIdx(nextQueueIndex);
         setCurrentCycle(1);
-        setMode('专注');
         setSecondsLeft(getFocusSecondsForIndex(nextQueueIndex));
-        toast.success('当前计划完成，已切换到下一项');
+        toast.success('当前专注计划完成，已切换到下一个');
         return;
       }
 
       toast.success('队列全部完成');
       setCurrentQueueIdx(0);
       setCurrentCycle(1);
-      setMode('专注');
       setSecondsLeft(getFocusSecondsForIndex(0));
       return;
     }
 
     setCurrentCycle(cycle => cycle + 1);
-    setMode('专注');
     setSecondsLeft(getFocusSecondsForIndex(currentQueueIdx));
-    toast.info('休息结束，开始下一轮专注');
+    toast.info('开始下一轮专注');
   }, [
     currentCycle,
     currentQueueIdx,
-    getBreakSeconds,
     getFocusSecondsForIndex,
-    mode,
     playCompletionSound,
+    pushSystemNotification,
+    resetDistractionTracking,
     settings.cycleCount,
-    state.queue.length,
+    state.queue,
   ]);
 
   useEffect(() => {
-    if (!isRunning) return;
-    intervalRef.current = window.setInterval(() => {
-      setSecondsLeft(prev => {
-        if (prev <= 1) {
+    if (!isRunning) {
+      return;
+    }
+    if (timerEndsAtRef.current == null) {
+      timerEndsAtRef.current = Date.now() + Math.max(0, secondsLeft) * 1000;
+    }
+    if (distractionLastTickAtRef.current == null) {
+      distractionLastTickAtRef.current = Date.now();
+    }
+
+    const tick = () => {
+      const nowMs = Date.now();
+      const timerEndsAt = timerEndsAtRef.current;
+      if (timerEndsAt != null) {
+        const remainingMs = timerEndsAt - nowMs;
+        if (remainingMs <= 0) {
+          setSecondsLeft(0);
           handleTimerEnd(true);
-          return 0;
+          return;
         }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(intervalRef.current);
-  }, [handleTimerEnd, isRunning]);
+        const nextSeconds = Math.ceil(remainingMs / 1000);
+        setSecondsLeft(prev => (prev === nextSeconds ? prev : nextSeconds));
+      }
 
-  useEffect(() => {
-    if (!isRunning || mode !== '专注') {
-      return;
-    }
+      const currentTickAt = distractionLastTickAtRef.current ?? nowMs;
+      const deltaMs = Math.max(0, nowMs - currentTickAt);
+      distractionLastTickAtRef.current = nowMs;
+      if (deltaMs <= 0) {
+        return;
+      }
 
-    const currentItem = state.queue[currentQueueIdx];
-    if (!currentItem) {
-      return;
-    }
-    const focusedClassificationKey = state.currentFocusedWindow?.classificationKey;
-    const targetClassificationKeys = new Set(currentItem.windowGroup.map(item => item.classificationKey));
+      const currentItem = state.queue[currentQueueIdx];
+      const hasTargetWindows = Boolean(currentItem && currentItem.windowGroup.length > 0);
+      if (!hasTargetWindows) {
+        if (offTargetMsRef.current !== 0 || distractionAlertedRef.current) {
+          resetDistractionTracking();
+        }
+        return;
+      }
 
-    const tick = window.setInterval(() => {
-      const onTarget = focusedClassificationKey ? targetClassificationKeys.has(focusedClassificationKey) : false;
+      const focusedClassificationKey = focusedClassificationKeyRef.current;
+      const targetClassificationKeys = new Set(currentItem.windowGroup.map(item => item.classificationKey));
+      const onTarget = Boolean(focusedClassificationKey && targetClassificationKeys.has(focusedClassificationKey));
 
-      setOffTargetSeconds(prev => {
-        let next = prev;
-        if (onTarget) {
-          if (settings.distractionMode === '连续') {
-            next = 0;
-            distractionAlertedRef.current = false;
+      if (onTarget) {
+        if (settings.distractionMode === '连续') {
+          if (offTargetMsRef.current !== 0) {
+            offTargetMsRef.current = 0;
+            setOffTargetSeconds(0);
           }
-        } else {
-          next = prev + 1;
+          distractionAlertedRef.current = false;
         }
+        return;
+      }
 
-        const thresholdSeconds = Math.max(1, settings.distractionThresholdMinutes) * 60;
-        if (!onTarget && settings.notifyEnabled && next >= thresholdSeconds && !distractionAlertedRef.current) {
-          toast.warning('你已偏离专注窗口', {
-            description: `已偏离 ${Math.floor(next / 60)} 分 ${next % 60} 秒`,
-          });
-          playDistractionSound();
-          distractionAlertedRef.current = true;
-        }
+      offTargetMsRef.current += deltaMs;
+      const nextOffTargetSeconds = Math.floor(offTargetMsRef.current / 1000);
+      setOffTargetSeconds(prev => (prev === nextOffTargetSeconds ? prev : nextOffTargetSeconds));
 
-        return next;
+      const thresholdSeconds = Math.max(1, Math.floor(Number(settings.distractionThresholdMinutes) || 1)) * 60;
+      if (!settings.notifyEnabled || nextOffTargetSeconds < thresholdSeconds || distractionAlertedRef.current) {
+        return;
+      }
+
+      toast.warning('你已偏离专注窗口', {
+        description: `已偏离 ${Math.floor(nextOffTargetSeconds / 60)} 分 ${nextOffTargetSeconds % 60} 秒`,
       });
-    }, 1000);
+      playDistractionSound();
+      void pushSystemNotification(
+        '偏离提醒',
+        currentItem ? `当前计划「${currentItem.title}」已偏离阈值` : '当前专注已偏离阈值',
+      );
+      distractionAlertedRef.current = true;
+    };
 
-    return () => clearInterval(tick);
+    tick();
+    const timer = window.setInterval(tick, 250);
+    return () => clearInterval(timer);
   }, [
     currentQueueIdx,
+    handleTimerEnd,
     isRunning,
-    mode,
     playDistractionSound,
+    pushSystemNotification,
+    resetDistractionTracking,
     settings.distractionMode,
     settings.distractionThresholdMinutes,
     settings.notifyEnabled,
-    state.currentFocusedWindow?.classificationKey,
     state.queue,
   ]);
 
@@ -230,29 +289,35 @@ export default function PomodoroPage() {
     if (isRunning) {
       return;
     }
-
-    if (mode === '专注') {
-      setSecondsLeft(getFocusSecondsForIndex(currentQueueIdx));
-      return;
-    }
-
-    setSecondsLeft(getBreakSeconds());
-  }, [currentQueueIdx, getBreakSeconds, getFocusSecondsForIndex, isRunning, mode]);
+    timerEndsAtRef.current = null;
+    distractionLastTickAtRef.current = null;
+    setSecondsLeft(getFocusSecondsForIndex(currentQueueIdx));
+  }, [currentQueueIdx, getFocusSecondsForIndex, isRunning]);
 
   const handleStart = () => {
-    if (mode === '专注' && state.queue.length === 0) {
+    if (state.queue.length === 0) {
       toast.error('请先添加专注计划');
       return;
     }
+    timerEndsAtRef.current = Date.now() + Math.max(0, secondsLeft) * 1000;
+    distractionLastTickAtRef.current = Date.now();
     setIsRunning(true);
   };
 
-  const handlePause = () => setIsRunning(false);
+  const handlePause = () => {
+    if (timerEndsAtRef.current != null) {
+      const remainingSeconds = Math.max(0, Math.ceil((timerEndsAtRef.current - Date.now()) / 1000));
+      setSecondsLeft(remainingSeconds);
+    }
+    timerEndsAtRef.current = null;
+    distractionLastTickAtRef.current = null;
+    setIsRunning(false);
+  };
   const handleReset = () => {
     setIsRunning(false);
-    setSecondsLeft(mode === '专注' ? getFocusSecondsForIndex(currentQueueIdx) : getBreakSeconds());
-    distractionAlertedRef.current = false;
-    setOffTargetSeconds(0);
+    timerEndsAtRef.current = null;
+    setSecondsLeft(getFocusSecondsForIndex(currentQueueIdx));
+    resetDistractionTracking();
   };
   const handleSkip = () => {
     setIsRunning(false);
@@ -267,8 +332,9 @@ export default function PomodoroPage() {
 
   const fw = state.currentFocusedWindow;
   const currentItem = state.queue[currentQueueIdx];
-  const isOnTarget = currentItem && fw
-    ? currentItem.windowGroup.some(w => w.classificationKey === fw?.classificationKey)
+  const hasTargetWindows = Boolean(currentItem && currentItem.windowGroup.length > 0);
+  const isOnTarget = hasTargetWindows && fw
+    ? currentItem.windowGroup.some(w => w.classificationKey === fw.classificationKey)
     : false;
 
   const handleAddSubjectToQueue = (subjectId: string) => {
@@ -302,48 +368,6 @@ export default function PomodoroPage() {
     updateSettings({ distractionMode: nextMode });
   };
 
-  const handleSelectCompletionSound = (value: string) => {
-    updateSettings({ completionSoundFileId: value === NONE_SOUND_ID ? '' : value });
-  };
-
-  const handleSelectDistractionSound = (value: string) => {
-    updateSettings({ distractionSoundFileId: value === NONE_SOUND_ID ? '' : value });
-  };
-
-  const handleTestCompletionSound = async () => {
-    if (!settings.completionSoundFileId) {
-      toast.info('请先选择到点提示音');
-      return;
-    }
-    try {
-      await playSoundById(state.soundFiles, {
-        enabled: true,
-        soundFileId: settings.completionSoundFileId,
-        eventVolumeMultiplier: settings.completionVolumeMultiplier,
-      });
-    } catch {
-      toast.error('试听失败，请检查音频文件');
-    }
-  };
-
-  const handleTestDistractionSound = async () => {
-    if (!settings.distractionSoundFileId) {
-      toast.info('请先选择偏离警告音');
-      return;
-    }
-    try {
-      await playSoundById(state.soundFiles, {
-        enabled: true,
-        soundFileId: settings.distractionSoundFileId,
-        eventVolumeMultiplier: settings.distractionVolumeMultiplier,
-      });
-    } catch {
-      toast.error('试听失败，请检查音频文件');
-    }
-  };
-
-  const hasAnySound = state.soundFiles.length > 0;
-
   return (
     <DashboardLayout pageTitle="番茄钟">
       <div className="max-w-6xl mx-auto space-y-4">
@@ -353,9 +377,9 @@ export default function PomodoroPage() {
             <div className="text-center space-y-4">
               <div className="flex items-center justify-center gap-2">
                 <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                  mode === '专注' ? 'bg-primary/20 text-primary' : 'bg-cat-rest/20 text-cat-rest'
+                  isRunning ? 'bg-primary/20 text-primary' : 'bg-secondary text-muted-foreground'
                 }`}>
-                  {mode}
+                  {isRunning ? '专注中' : '待开始'}
                 </span>
                 <span className="text-xs text-muted-foreground">
                   周期 {currentCycle}/{settings.cycleCount <= 0 ? '∞' : settings.cycleCount}
@@ -370,7 +394,7 @@ export default function PomodoroPage() {
                     cy="50"
                     r="45"
                     fill="none"
-                    stroke={mode === '专注' ? 'hsl(var(--primary))' : 'hsl(var(--cat-rest))'}
+                    stroke="hsl(var(--primary))"
                     strokeWidth="3"
                     strokeDasharray={`${progress * 2.827} ${282.7 - progress * 2.827}`}
                     strokeLinecap="round"
@@ -385,9 +409,6 @@ export default function PomodoroPage() {
                     <span className="text-xs text-muted-foreground mt-1 max-w-[160px] truncate">
                       {currentItem.title}
                     </span>
-                  )}
-                  {mode === '休息' && (
-                    <span className="text-[10px] text-muted-foreground mt-1">固定休息 {DEFAULT_BREAK_MINUTES} 分钟</span>
                   )}
                 </div>
               </div>
@@ -451,32 +472,11 @@ export default function PomodoroPage() {
                 </Button>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">偏离提醒</span>
+                <span className="text-xs text-muted-foreground">系统通知</span>
                 <Switch checked={settings.notifyEnabled} onCheckedChange={value => updateSettings({ notifyEnabled: value })} />
               </div>
-              <div className="rounded-lg border border-border/70 bg-secondary/20 p-2">
-                <button
-                  type="button"
-                  className="w-full flex items-center justify-between text-left"
-                  onClick={() => setSoundSettingsExpanded(prev => !prev)}
-                >
-                  <span className="text-xs font-medium text-foreground">提示音</span>
-                  <ChevronDown
-                    className={`w-4 h-4 text-muted-foreground transition-transform ${
-                      soundSettingsExpanded ? 'rotate-180' : ''
-                    }`}
-                  />
-                </button>
-
-                {soundSettingsExpanded && (
-                  <div className="space-y-3 pt-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">提示音总开关</span>
-                <Switch checked={settings.soundEnabled} onCheckedChange={value => updateSettings({ soundEnabled: value })} />
-              </div>
-
-              <div className="flex items-center justify-between pt-1">
-                <span className="text-xs font-medium text-foreground">提示音</span>
+              <div className="flex items-center justify-between rounded-lg border border-border/70 bg-secondary/20 p-2">
+                <span className="text-xs font-medium text-foreground">提示音配置</span>
                 <Button
                   type="button"
                   variant="outline"
@@ -487,79 +487,6 @@ export default function PomodoroPage() {
                   <Settings2 className="w-3.5 h-3.5" />
                   设置
                 </Button>
-              </div>
-
-              {hasAnySound ? (
-                <div className="space-y-3">
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-muted-foreground">到点提示音</label>
-                    <div className="flex items-center gap-2">
-                      <Select
-                        value={settings.completionSoundFileId || NONE_SOUND_ID}
-                        onValueChange={handleSelectCompletionSound}
-                      >
-                        <SelectTrigger className="h-8">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={NONE_SOUND_ID}>不播放</SelectItem>
-                          {state.soundFiles.map(sound => (
-                            <SelectItem key={sound.id} value={sound.id}>
-                              {sound.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Input
-                        type="number"
-                        step="0.1"
-                        value={settings.completionVolumeMultiplier}
-                        onChange={event => updateSettings({ completionVolumeMultiplier: toFinite(event.target.value, 1) })}
-                        className="h-8 w-24"
-                      />
-                      <Button type="button" variant="outline" size="sm" onClick={() => void handleTestCompletionSound()}>
-                        试听
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-muted-foreground">偏离警告音</label>
-                    <div className="flex items-center gap-2">
-                      <Select
-                        value={settings.distractionSoundFileId || NONE_SOUND_ID}
-                        onValueChange={handleSelectDistractionSound}
-                      >
-                        <SelectTrigger className="h-8">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={NONE_SOUND_ID}>不播放</SelectItem>
-                          {state.soundFiles.map(sound => (
-                            <SelectItem key={sound.id} value={sound.id}>
-                              {sound.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Input
-                        type="number"
-                        step="0.1"
-                        value={settings.distractionVolumeMultiplier}
-                        onChange={event => updateSettings({ distractionVolumeMultiplier: toFinite(event.target.value, 1) })}
-                        className="h-8 w-24"
-                      />
-                      <Button type="button" variant="outline" size="sm" onClick={() => void handleTestDistractionSound()}>
-                        试听
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">暂无提示音文件，请先进入“提示音管理”添加。</p>
-              )}
-                  </div>
-                )}
               </div>
             </div>
 
@@ -576,11 +503,23 @@ export default function PomodoroPage() {
                     {fw.category}
                   </span>
                 </div>
-                {isRunning && mode === '专注' && (
+                {isRunning && (
                   <div className="mt-2 flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${isOnTarget ? 'bg-cat-rest' : 'bg-destructive animate-pulse'}`} />
+                    <div
+                      className={`w-2 h-2 rounded-full ${
+                        !hasTargetWindows
+                          ? 'bg-muted-foreground'
+                          : isOnTarget
+                            ? 'bg-cat-rest'
+                            : 'bg-destructive animate-pulse'
+                      }`}
+                    />
                     <span className="text-xs text-muted-foreground">
-                      {isOnTarget ? '当前在目标窗口' : `已偏离 ${Math.floor(offTargetSeconds / 60)} 分 ${offTargetSeconds % 60} 秒`}
+                      {!hasTargetWindows
+                        ? '当前计划未指定窗口，不检测偏离'
+                        : isOnTarget
+                          ? '当前在目标窗口'
+                          : `已偏离 ${Math.floor(offTargetSeconds / 60)} 分 ${offTargetSeconds % 60} 秒`}
                     </span>
                   </div>
                 )}

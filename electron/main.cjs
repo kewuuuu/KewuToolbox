@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, powerMonitor } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, powerMonitor, Notification } = require('electron');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
@@ -32,6 +32,7 @@ const BROWSER_PROCESS_TO_ID = {
 const BROWSER_PROCESS_NAMES = new Set(Object.keys(BROWSER_PROCESS_TO_ID));
 const PORTABLE_DATA_DIR_NAME = 'data';
 const STATE_FILE_NAME = 'app-state.json';
+const STORAGE_CONFIG_FILE_NAME = 'storage-config.json';
 
 let mainWindow = null;
 let monitorTimer = null;
@@ -39,6 +40,7 @@ let saveTimer = null;
 let activeWinApi = null;
 let browserBridgeServer = null;
 let resolvedStatePath = null;
+let preferredStatePath = null;
 
 /** @type {import('../src/types').AppState} */
 let appState = createEmptyState();
@@ -50,7 +52,7 @@ const monitorCursor = {
 };
 
 const browserBridgeState = {
-  /** @type {Map<string, {activeDomain: string | null, openDomains: string[], updatedAtMs: number, updatedAtIso: string}>} */
+  /** @type {Map<string, {activeDomain: string | null, activeUrl: string | null, openDomains: string[], openUrls: string[], updatedAtMs: number, updatedAtIso: string}>} */
   byBrowser: new Map(),
 };
 
@@ -91,6 +93,9 @@ function createEmptyState() {
       recordWindowThresholdSeconds: DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS,
       uiTheme: 'dark',
       autoLaunchEnabled: false,
+      urlWhitelist: [],
+      processBlacklist: [],
+      countdownCompletedTaskBehavior: 'keep',
     },
     subjects: [],
     queue: [],
@@ -105,8 +110,12 @@ function createEmptyState() {
       completionVolumeMultiplier: 1,
       distractionSoundFileId: BUILTIN_WARNING_SOUND_ID,
       distractionVolumeMultiplier: 1,
+      countdownSoundFileId: BUILTIN_COMPLETION_SOUND_ID,
+      countdownVolumeMultiplier: 1,
       cycleCount: 0,
     },
+    stopwatchRecords: [],
+    countdownTasks: [],
     todos: [],
     archives: [],
     powerEvents: [],
@@ -115,20 +124,62 @@ function createEmptyState() {
   };
 }
 
+function getStorageConfigPath() {
+  return path.join(app.getPath('userData'), STORAGE_CONFIG_FILE_NAME);
+}
+
+function resolveStatePathInput(inputPath) {
+  if (typeof inputPath !== 'string') {
+    return null;
+  }
+  let candidate = inputPath.trim();
+  if (!candidate) {
+    return null;
+  }
+  if (!path.isAbsolute(candidate)) {
+    candidate = path.resolve(candidate);
+  }
+
+  const looksLikeDirectory =
+    candidate.endsWith(path.sep) ||
+    candidate.endsWith('/') ||
+    candidate.endsWith('\\') ||
+    path.extname(candidate).trim() === '';
+  return looksLikeDirectory ? path.join(candidate, STATE_FILE_NAME) : candidate;
+}
+
+function getDefaultStatePath() {
+  const userDataStatePath = path.join(app.getPath('userData'), STATE_FILE_NAME);
+  if (!app.isPackaged) {
+    return userDataStatePath;
+  }
+
+  const portableStatePath = path.join(path.dirname(process.execPath), PORTABLE_DATA_DIR_NAME, STATE_FILE_NAME);
+  const writablePath = ensureWritableStatePath(portableStatePath);
+  return writablePath ?? userDataStatePath;
+}
+
+function loadStorageConfig() {
+  const config = readJsonSafe(getStorageConfigPath());
+  const configuredPath = resolveStatePathInput(config?.stateFilePath);
+  preferredStatePath = configuredPath;
+  return configuredPath;
+}
+
+function persistStorageConfig() {
+  const payload = {
+    stateFilePath: preferredStatePath || '',
+    updatedAt: new Date().toISOString(),
+  };
+  writeJsonSafe(getStorageConfigPath(), payload);
+}
+
 function getStatePath() {
   if (resolvedStatePath) {
     return resolvedStatePath;
   }
 
-  const userDataStatePath = path.join(app.getPath('userData'), STATE_FILE_NAME);
-  if (!app.isPackaged) {
-    resolvedStatePath = userDataStatePath;
-    return resolvedStatePath;
-  }
-
-  const portableStatePath = path.join(path.dirname(process.execPath), PORTABLE_DATA_DIR_NAME, STATE_FILE_NAME);
-  const writablePath = ensureWritableStatePath(portableStatePath);
-  resolvedStatePath = writablePath ?? userDataStatePath;
+  resolvedStatePath = preferredStatePath || getDefaultStatePath();
   return resolvedStatePath;
 }
 
@@ -191,6 +242,10 @@ function normalizeAutoLaunchEnabled(input, fallback = false) {
     return input;
   }
   return fallback;
+}
+
+function normalizeCountdownCompletedTaskBehavior(input, fallback = 'keep') {
+  return input === 'delete' ? 'delete' : fallback;
 }
 
 function readSystemAutoLaunchEnabled() {
@@ -269,6 +324,18 @@ function readJsonSafe(filePath) {
   }
 }
 
+function readJsonWithStatus(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return { exists: false, data: null, error: null };
+  }
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    return { exists: true, data: JSON.parse(content), error: null };
+  } catch (error) {
+    return { exists: true, data: null, error };
+  }
+}
+
 function writeJsonSafe(filePath, payload) {
   try {
     const dir = path.dirname(filePath);
@@ -282,6 +349,148 @@ function writeJsonSafe(filePath, payload) {
   }
 }
 
+function normalizeWebUrl(input) {
+  if (typeof input !== 'string') {
+    return null;
+  }
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const hasProtocol = /^https?:\/\//i.test(trimmed);
+    const parsed = new URL(hasProtocol ? trimmed : `https://${trimmed}`);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+
+    const host = parsed.hostname.replace(/^www\./i, '').replace(/\.$/, '').toLowerCase();
+    if (!host) {
+      return null;
+    }
+
+    let pathname = parsed.pathname || '/';
+    if (!pathname.startsWith('/')) {
+      pathname = `/${pathname}`;
+    }
+    if (pathname.length > 1 && pathname.endsWith('/')) {
+      pathname = pathname.slice(0, -1);
+    }
+
+    return `${parsed.protocol}//${host}${pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+function normalizePatternInput(input) {
+  return typeof input === 'string' ? input.trim() : '';
+}
+
+function normalizeUrlWhitelistRules(raw, fallback = []) {
+  if (!Array.isArray(raw)) {
+    return fallback;
+  }
+  return raw
+    .filter(item => item && typeof item === 'object')
+    .map(item => {
+      const pattern = normalizePatternInput(item.pattern);
+      if (!pattern) {
+        return null;
+      }
+      const now = new Date().toISOString();
+      return {
+        id: typeof item.id === 'string' && item.id.trim() ? item.id : makeId('wl'),
+        pattern,
+        createdAt: typeof item.createdAt === 'string' ? item.createdAt : now,
+        updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : now,
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeProcessBlacklistRules(raw, fallback = []) {
+  if (!Array.isArray(raw)) {
+    return fallback;
+  }
+  return raw
+    .filter(item => item && typeof item === 'object')
+    .map(item => {
+      const namePattern = normalizePatternInput(item.namePattern);
+      const typePattern = normalizePatternInput(item.typePattern);
+      const processPattern = normalizePatternInput(item.processPattern);
+      if (!namePattern && !typePattern && !processPattern) {
+        return null;
+      }
+      const now = new Date().toISOString();
+      return {
+        id: typeof item.id === 'string' && item.id.trim() ? item.id : makeId('bl'),
+        namePattern: namePattern || undefined,
+        typePattern: typePattern || undefined,
+        processPattern: processPattern || undefined,
+        createdAt: typeof item.createdAt === 'string' ? item.createdAt : now,
+        updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : now,
+      };
+    })
+    .filter(Boolean);
+}
+
+function wildcardToRegExp(pattern) {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  const regexBody = escaped.replace(/\*/g, '.*').replace(/\?/g, '.');
+  return new RegExp(`^${regexBody}$`, 'i');
+}
+
+function wildcardMatch(pattern, value) {
+  const normalizedPattern = normalizePatternInput(pattern);
+  if (!normalizedPattern || typeof value !== 'string' || !value) {
+    return false;
+  }
+  try {
+    return wildcardToRegExp(normalizedPattern).test(value);
+  } catch {
+    return false;
+  }
+}
+
+function isUrlWhitelisted(url) {
+  const normalizedUrl = normalizeWebUrl(url);
+  if (!normalizedUrl) {
+    return false;
+  }
+  const withoutProtocol = normalizedUrl.replace(/^https?:\/\//i, '');
+  const rules = appState.preferences?.urlWhitelist ?? [];
+  return rules.some(rule => wildcardMatch(rule.pattern, normalizedUrl) || wildcardMatch(rule.pattern, withoutProtocol));
+}
+
+function shouldIgnoreByBlacklist(profile) {
+  if (!profile) {
+    return false;
+  }
+  const rules = appState.preferences?.processBlacklist ?? [];
+  for (const rule of rules) {
+    const hasName = Boolean(rule.namePattern && rule.namePattern.trim());
+    const hasType = Boolean(rule.typePattern && rule.typePattern.trim());
+    const hasProcess = Boolean(rule.processPattern && rule.processPattern.trim());
+    if (!hasName && !hasType && !hasProcess) {
+      continue;
+    }
+
+    if (hasName && !wildcardMatch(rule.namePattern, profile.displayName || profile.normalizedTitle || '')) {
+      continue;
+    }
+    if (hasType && !wildcardMatch(rule.typePattern, profile.objectType || '')) {
+      continue;
+    }
+    if (hasProcess && !wildcardMatch(rule.processPattern, profile.processName || '')) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 function persistState() {
   const primaryPath = getStatePath();
   if (writeJsonSafe(primaryPath, appState)) {
@@ -290,7 +499,7 @@ function persistState() {
 
   const fallbackPath = path.join(app.getPath('userData'), STATE_FILE_NAME);
   if (fallbackPath !== primaryPath && writeJsonSafe(fallbackPath, appState)) {
-    resolvedStatePath = fallbackPath;
+    applyStatePath(fallbackPath);
   }
 }
 
@@ -369,9 +578,23 @@ function normalizeSavedState(input) {
         rawPreferences.autoLaunchEnabled,
         base.preferences.autoLaunchEnabled,
       ),
+      urlWhitelist: normalizeUrlWhitelistRules(
+        rawPreferences.urlWhitelist,
+        base.preferences.urlWhitelist,
+      ),
+      processBlacklist: normalizeProcessBlacklistRules(
+        rawPreferences.processBlacklist,
+        base.preferences.processBlacklist,
+      ),
+      countdownCompletedTaskBehavior: normalizeCountdownCompletedTaskBehavior(
+        rawPreferences.countdownCompletedTaskBehavior,
+        base.preferences.countdownCompletedTaskBehavior,
+      ),
     },
     subjects: Array.isArray(raw.subjects) ? raw.subjects : [],
     queue: Array.isArray(raw.queue) ? raw.queue : [],
+    stopwatchRecords: Array.isArray(raw.stopwatchRecords) ? raw.stopwatchRecords : [],
+    countdownTasks: Array.isArray(raw.countdownTasks) ? raw.countdownTasks : [],
     todos: Array.isArray(raw.todos) ? raw.todos : [],
     archives: Array.isArray(raw.archives) ? raw.archives : [],
     powerEvents: Array.isArray(raw.powerEvents) ? raw.powerEvents : [],
@@ -388,7 +611,7 @@ function loadPersistedState() {
   const primaryPath = getStatePath();
   let saved = readJsonSafe(primaryPath);
 
-  if (!saved) {
+  if (!saved && !preferredStatePath) {
     const fallbackPath = path.join(app.getPath('userData'), STATE_FILE_NAME);
     if (fallbackPath !== primaryPath) {
       saved = readJsonSafe(fallbackPath);
@@ -399,6 +622,61 @@ function loadPersistedState() {
   }
 
   appState = normalizeSavedState(saved);
+}
+
+function applyStatePath(newPath) {
+  preferredStatePath = newPath;
+  resolvedStatePath = newPath;
+  persistStorageConfig();
+}
+
+function setDataFilePath(targetPath, createIfMissing = false) {
+  const normalizedPath = resolveStatePathInput(targetPath);
+  if (!normalizedPath) {
+    return { ok: false, error: 'invalid_path' };
+  }
+
+  const exists = fs.existsSync(normalizedPath);
+  if (!exists && !createIfMissing) {
+    return { ok: false, requiresCreate: true, path: normalizedPath };
+  }
+
+  if (!ensureWritableStatePath(normalizedPath)) {
+    return { ok: false, error: 'path_not_writable', path: normalizedPath };
+  }
+
+  const jsonState = readJsonWithStatus(normalizedPath);
+  if (jsonState.exists && jsonState.error) {
+    return { ok: false, error: 'invalid_json', path: normalizedPath };
+  }
+
+  let nextState = createEmptyState();
+  let created = false;
+  if (jsonState.exists && jsonState.data) {
+    nextState = normalizeSavedState(jsonState.data);
+  } else if (jsonState.exists && !jsonState.data) {
+    return { ok: false, error: 'invalid_json', path: normalizedPath };
+  } else {
+    created = true;
+    if (!writeJsonSafe(normalizedPath, nextState)) {
+      return { ok: false, error: 'create_failed', path: normalizedPath };
+    }
+  }
+
+  applyStatePath(normalizedPath);
+  appState = nextState;
+  appState.preferences.autoLaunchEnabled = applySystemAutoLaunchEnabled(appState.preferences.autoLaunchEnabled);
+  resetRuntimeTrackingState();
+  scheduleSave();
+  emitState();
+
+  return {
+    ok: true,
+    path: normalizedPath,
+    existed: !created,
+    created,
+    state: appState,
+  };
 }
 
 function resetRuntimeTrackingState() {
@@ -444,6 +722,13 @@ function isDesktopWindow(processName, title) {
   );
 }
 
+function isExplorerFileManagerWindow(processName, title) {
+  if (processName !== 'explorer.exe') {
+    return false;
+  }
+  return !isDesktopWindow(processName, title);
+}
+
 function getBridgeSnapshotForProcess(processName) {
   const browserId = BROWSER_PROCESS_TO_ID[processName.toLowerCase()];
   if (!browserId) {
@@ -479,6 +764,26 @@ function toDomainProfile(domain, processName = 'browser') {
   };
 }
 
+function toBrowserUrlProfile(url, processName = 'browser') {
+  const normalizedUrl = normalizeWebUrl(url);
+  if (!normalizedUrl) {
+    return null;
+  }
+
+  return {
+    id: makeId('profile'),
+    classificationKey: `browser-url|${normalizedUrl}`.slice(0, 500),
+    displayName: normalizedUrl,
+    objectType: 'BrowserTab',
+    processName,
+    normalizedTitle: normalizedUrl,
+    domain: safeParseDomainFromUrl(normalizedUrl) || undefined,
+    category: DEFAULT_CATEGORY,
+    isBuiltIn: false,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function toNonBrowserProfile(rawWindow) {
   const processName = normalizeProcessName(rawWindow.owner?.path, rawWindow.owner?.name);
   const title = (rawWindow.title || '').trim();
@@ -495,6 +800,10 @@ function toNonBrowserProfile(rawWindow) {
       isBuiltIn: true,
       updatedAt: new Date().toISOString(),
     };
+  }
+
+  if (isExplorerFileManagerWindow(processName, title)) {
+    return null;
   }
 
   if (BROWSER_PROCESS_NAMES.has(processName)) {
@@ -549,11 +858,30 @@ function toFocusedWindowProfile(rawWindow) {
     };
   }
 
+  if (isExplorerFileManagerWindow(processName, title)) {
+    return null;
+  }
+
   if (BROWSER_PROCESS_NAMES.has(processName)) {
     const bridgeSnapshot = getBridgeSnapshotForProcess(processName);
+    const bridgeActiveUrl = normalizeWebUrl(bridgeSnapshot?.activeUrl);
+    const activeWinUrl = normalizeWebUrl(rawWindow.url);
+    const activeUrl = bridgeActiveUrl || activeWinUrl;
+
+    if (activeUrl && isUrlWhitelisted(activeUrl)) {
+      const urlProfile = toBrowserUrlProfile(activeUrl, processName);
+      if (urlProfile) {
+        return {
+          ...urlProfile,
+          browserName: rawWindow.owner?.name || undefined,
+        };
+      }
+    }
+
     const bridgeDomain = bridgeSnapshot?.activeDomain || null;
+    const activeUrlDomain = activeUrl ? safeParseDomainFromUrl(activeUrl) : null;
     const activeWinDomain = safeParseDomainFromUrl(rawWindow.url);
-    const domain = bridgeDomain || activeWinDomain;
+    const domain = bridgeDomain || activeUrlDomain || activeWinDomain;
     if (!domain) {
       // Ignore browser title noise; only use domain-based browser record.
       return null;
@@ -632,20 +960,49 @@ function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, nowIso) {
   });
 }
 
-function getFreshBridgeOpenDomains() {
+function getFreshBridgeOpenProfiles() {
   const nowMs = Date.now();
-  const set = new Set();
-  for (const snapshot of browserBridgeState.byBrowser.values()) {
+  const candidateMap = new Map();
+
+  for (const [browserId, snapshot] of browserBridgeState.byBrowser.entries()) {
     if (nowMs - snapshot.updatedAtMs > BROWSER_BRIDGE_STALE_MS) {
       continue;
     }
+
+    const processName = `${browserId}.exe`;
+    const hasOpenUrls = Array.isArray(snapshot.openUrls) && snapshot.openUrls.length > 0;
+
+    if (hasOpenUrls) {
+      for (const openUrl of snapshot.openUrls) {
+        if (!openUrl) {
+          continue;
+        }
+
+        if (isUrlWhitelisted(openUrl)) {
+          const urlProfile = toBrowserUrlProfile(openUrl, processName);
+          if (urlProfile) {
+            candidateMap.set(urlProfile.classificationKey, urlProfile);
+          }
+          continue;
+        }
+
+        const domainProfile = toDomainProfile(safeParseDomainFromUrl(openUrl), processName);
+        if (domainProfile) {
+          candidateMap.set(domainProfile.classificationKey, domainProfile);
+        }
+      }
+      continue;
+    }
+
     for (const domain of snapshot.openDomains) {
-      if (domain) {
-        set.add(domain);
+      const domainProfile = toDomainProfile(domain, processName);
+      if (domainProfile) {
+        candidateMap.set(domainProfile.classificationKey, domainProfile);
       }
     }
   }
-  return [...set];
+
+  return [...candidateMap.values()];
 }
 
 function getProcessTagAssignmentMap() {
@@ -780,6 +1137,7 @@ function parseBrowserBridgePayload(rawPayload) {
   }
 
   const openDomainSet = new Set();
+  const openUrlSet = new Set();
   if (Array.isArray(rawPayload.openDomains)) {
     for (const item of rawPayload.openDomains) {
       const domain = normalizeDomain(item);
@@ -790,17 +1148,25 @@ function parseBrowserBridgePayload(rawPayload) {
   }
   if (Array.isArray(rawPayload.openUrls)) {
     for (const item of rawPayload.openUrls) {
-      const domain = safeParseDomainFromUrl(item);
+      const normalizedUrl = normalizeWebUrl(item);
+      if (normalizedUrl) {
+        openUrlSet.add(normalizedUrl);
+      }
+      const domain = safeParseDomainFromUrl(normalizedUrl || item);
       if (domain) {
         openDomainSet.add(domain);
       }
     }
   }
 
+  const activeUrl = normalizeWebUrl(rawPayload.activeUrl) || null;
   const activeDomain =
     normalizeDomain(rawPayload.activeDomain) ||
-    safeParseDomainFromUrl(rawPayload.activeUrl) ||
+    safeParseDomainFromUrl(activeUrl) ||
     null;
+  if (activeUrl) {
+    openUrlSet.add(activeUrl);
+  }
   if (activeDomain) {
     openDomainSet.add(activeDomain);
   }
@@ -808,7 +1174,9 @@ function parseBrowserBridgePayload(rawPayload) {
   return {
     browserId,
     activeDomain,
+    activeUrl,
     openDomains: [...openDomainSet],
+    openUrls: [...openUrlSet],
     updatedAtMs: Date.now(),
     updatedAtIso: new Date().toISOString(),
   };
@@ -863,7 +1231,9 @@ function startBrowserBridgeServer() {
 
       browserBridgeState.byBrowser.set(normalized.browserId, {
         activeDomain: normalized.activeDomain,
+        activeUrl: normalized.activeUrl,
         openDomains: normalized.openDomains,
+        openUrls: normalized.openUrls,
         updatedAtMs: normalized.updatedAtMs,
         updatedAtIso: normalized.updatedAtIso,
       });
@@ -911,21 +1281,23 @@ async function monitorTick() {
   const bucket = new Map();
   for (const rawWindow of openWindows) {
     const candidate = toNonBrowserProfile(rawWindow);
-    if (!candidate) {
+    if (!candidate || shouldIgnoreByBlacklist(candidate)) {
       continue;
     }
     bucket.set(candidate.classificationKey, candidate);
   }
 
-  for (const domain of getFreshBridgeOpenDomains()) {
-    const candidate = toDomainProfile(domain);
-    if (!candidate) {
+  for (const candidate of getFreshBridgeOpenProfiles()) {
+    if (!candidate || shouldIgnoreByBlacklist(candidate)) {
       continue;
     }
     bucket.set(candidate.classificationKey, candidate);
   }
 
-  const focusedCandidate = toFocusedWindowProfile(focusedRaw);
+  let focusedCandidate = toFocusedWindowProfile(focusedRaw);
+  if (focusedCandidate && shouldIgnoreByBlacklist(focusedCandidate)) {
+    focusedCandidate = null;
+  }
   let focusedProfile = null;
   let currentFocusedWindow = null;
 
@@ -1024,6 +1396,12 @@ function mergeUserStateFromRenderer(partial) {
   if (Array.isArray(next.queue)) {
     appState.queue = next.queue;
   }
+  if (Array.isArray(next.stopwatchRecords)) {
+    appState.stopwatchRecords = next.stopwatchRecords;
+  }
+  if (Array.isArray(next.countdownTasks)) {
+    appState.countdownTasks = next.countdownTasks;
+  }
   if (Array.isArray(next.todos)) {
     appState.todos = next.todos;
   }
@@ -1038,6 +1416,14 @@ function mergeUserStateFromRenderer(partial) {
       next.preferences.autoLaunchEnabled,
       appState.preferences.autoLaunchEnabled,
     );
+    const normalizedUrlWhitelist = normalizeUrlWhitelistRules(
+      next.preferences.urlWhitelist,
+      appState.preferences.urlWhitelist,
+    );
+    const normalizedProcessBlacklist = normalizeProcessBlacklistRules(
+      next.preferences.processBlacklist,
+      appState.preferences.processBlacklist,
+    );
     const resolvedAutoLaunchEnabled =
       requestedAutoLaunchEnabled === appState.preferences.autoLaunchEnabled
         ? appState.preferences.autoLaunchEnabled
@@ -1050,6 +1436,12 @@ function mergeUserStateFromRenderer(partial) {
       ),
       uiTheme: normalizeUiTheme(next.preferences.uiTheme, appState.preferences.uiTheme),
       autoLaunchEnabled: resolvedAutoLaunchEnabled,
+      urlWhitelist: normalizedUrlWhitelist,
+      processBlacklist: normalizedProcessBlacklist,
+      countdownCompletedTaskBehavior: normalizeCountdownCompletedTaskBehavior(
+        next.preferences.countdownCompletedTaskBehavior,
+        appState.preferences.countdownCompletedTaskBehavior,
+      ),
     };
   }
   if (next.pomodoroSettings && typeof next.pomodoroSettings === 'object') {
@@ -1140,8 +1532,48 @@ function mergeUserStateFromRenderer(partial) {
   }
 }
 
+function notifySystem(payload) {
+  const title = typeof payload?.title === 'string' ? payload.title.trim() : '';
+  const body = typeof payload?.body === 'string' ? payload.body.trim() : '';
+  if (!title) {
+    return { ok: false, error: 'invalid_title' };
+  }
+
+  try {
+    if (typeof Notification?.isSupported === 'function' && !Notification.isSupported()) {
+      return { ok: false, error: 'unsupported' };
+    }
+    const notification = new Notification({ title, body });
+    notification.show();
+    return { ok: true };
+  } catch {
+    return { ok: false, error: 'failed' };
+  }
+}
+
 function registerIpc() {
   ipcMain.handle('app:get-state', () => appState);
+  ipcMain.handle('app:get-data-file-path', () => getStatePath());
+  ipcMain.handle('app:set-data-file-path', (_event, payload) =>
+    setDataFilePath(payload?.targetPath, Boolean(payload?.createIfMissing)),
+  );
+  ipcMain.handle('app:select-data-file-path', async () => {
+    const currentPath = getStatePath();
+    const result = await dialog.showSaveDialog(mainWindow ?? undefined, {
+      title: '选择数据文件路径',
+      defaultPath: currentPath,
+      filters: [
+        {
+          name: 'JSON',
+          extensions: ['json'],
+        },
+      ],
+    });
+    if (result.canceled || !result.filePath) {
+      return null;
+    }
+    return result.filePath;
+  });
   ipcMain.handle('app:save-user-state', (_event, partial) => {
     mergeUserStateFromRenderer(partial);
     scheduleSave();
@@ -1149,6 +1581,7 @@ function registerIpc() {
     return { ok: true };
   });
   ipcMain.handle('app:clear-all-data', () => clearAllData());
+  ipcMain.handle('app:notify', (_event, payload) => notifySystem(payload));
   ipcMain.handle('app:select-audio-file', async () => {
     const result = await dialog.showOpenDialog(mainWindow ?? undefined, {
       title: '选择提示音文件',
@@ -1202,6 +1635,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  loadStorageConfig();
   loadPersistedState();
   appState.preferences.autoLaunchEnabled = applySystemAutoLaunchEnabled(
     appState.preferences.autoLaunchEnabled,

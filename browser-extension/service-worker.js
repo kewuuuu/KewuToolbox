@@ -38,6 +38,33 @@ function normalizeDomainFromUrl(url) {
   }
 }
 
+function normalizeWebUrlFromUrl(url) {
+  if (!url || typeof url !== 'string') {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    const host = parsed.hostname.replace(/^www\./, '').replace(/\.$/, '').toLowerCase();
+    if (!host) {
+      return null;
+    }
+    let pathname = parsed.pathname || '/';
+    if (!pathname.startsWith('/')) {
+      pathname = `/${pathname}`;
+    }
+    if (pathname.length > 1 && pathname.endsWith('/')) {
+      pathname = pathname.slice(0, -1);
+    }
+    return `${parsed.protocol}//${host}${pathname}`;
+  } catch {
+    return null;
+  }
+}
+
 async function collectSnapshot() {
   const [allTabs, activeTabs] = await Promise.all([
     chrome.tabs.query({}),
@@ -45,21 +72,32 @@ async function collectSnapshot() {
   ]);
 
   const openDomainsSet = new Set();
+  const openUrlsSet = new Set();
   for (const tab of allTabs) {
-    const domain = normalizeDomainFromUrl(tab.url);
+    const normalizedUrl = normalizeWebUrlFromUrl(tab.url);
+    if (normalizedUrl) {
+      openUrlsSet.add(normalizedUrl);
+    }
+    const domain = normalizeDomainFromUrl(normalizedUrl || tab.url);
     if (domain) {
       openDomainsSet.add(domain);
     }
   }
 
-  const activeDomain = normalizeDomainFromUrl(activeTabs[0]?.url);
+  const activeUrl = normalizeWebUrlFromUrl(activeTabs[0]?.url);
+  const activeDomain = normalizeDomainFromUrl(activeUrl || activeTabs[0]?.url);
+  if (activeUrl) {
+    openUrlsSet.add(activeUrl);
+  }
   if (activeDomain) {
     openDomainsSet.add(activeDomain);
   }
 
   return {
     browser: detectBrowser(),
+    activeUrl: activeUrl || null,
     activeDomain: activeDomain || null,
+    openUrls: [...openUrlsSet],
     openDomains: [...openDomainsSet],
     timestamp: new Date().toISOString(),
   };

@@ -4,11 +4,15 @@ import {
   AppPreferences,
   AppUserState,
   Category,
+  CountdownTask,
   FocusQueueItem,
   FocusSubject,
   ProcessTag,
+  ProcessBlacklistRule,
   PomodoroSettings,
+  UrlWhitelistRule,
   SoundFileItem,
+  StopwatchRecord,
   TodoArchiveRecord,
   TodoTask,
   WindowClassificationProfile,
@@ -31,6 +35,8 @@ interface AppContextType {
   addToQueue: (item: FocusQueueItem) => void;
   removeFromQueue: (id: string) => void;
   updateSettings: (s: Partial<PomodoroSettings>) => void;
+  setStopwatchRecords: (records: StopwatchRecord[]) => void;
+  setCountdownTasks: (tasks: CountdownTask[]) => void;
   updatePreferences: (p: Partial<AppPreferences>) => void;
   clearAllData: () => Promise<void>;
   addSoundFile: (name: string, filePath: string, defaultVolumeMultiplier?: number) => SoundFileItem | null;
@@ -105,6 +111,14 @@ function normalizePomodoroSettings(input: Partial<PomodoroSettings> | undefined,
       input?.distractionVolumeMultiplier,
       fallback.distractionVolumeMultiplier,
     ),
+    countdownSoundFileId:
+      typeof input?.countdownSoundFileId === 'string'
+        ? input.countdownSoundFileId
+        : fallback.countdownSoundFileId,
+    countdownVolumeMultiplier: pickFinite(
+      input?.countdownVolumeMultiplier,
+      fallback.countdownVolumeMultiplier,
+    ),
   };
 }
 
@@ -112,6 +126,62 @@ function normalizePreferences(
   input: Partial<AppPreferences> | undefined,
   fallback: AppPreferences,
 ): AppPreferences {
+  const normalizePattern = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const normalizeUrlWhitelist = (raw: unknown, fallbackValue: UrlWhitelistRule[]) => {
+    if (!Array.isArray(raw)) {
+      return fallbackValue;
+    }
+    return raw
+      .filter(item => item && typeof item === 'object')
+      .map(item => {
+        const value = item as Partial<UrlWhitelistRule>;
+        const pattern = normalizePattern(value.pattern);
+        if (!pattern) {
+          return null;
+        }
+        const now = new Date().toISOString();
+        return {
+          id:
+            typeof value.id === 'string' && value.id.trim().length > 0
+              ? value.id
+              : `wl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          pattern,
+          createdAt: typeof value.createdAt === 'string' ? value.createdAt : now,
+          updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : now,
+        } satisfies UrlWhitelistRule;
+      })
+      .filter((item): item is UrlWhitelistRule => item !== null);
+  };
+  const normalizeProcessBlacklist = (raw: unknown, fallbackValue: ProcessBlacklistRule[]) => {
+    if (!Array.isArray(raw)) {
+      return fallbackValue;
+    }
+    return raw
+      .filter(item => item && typeof item === 'object')
+      .map(item => {
+        const value = item as Partial<ProcessBlacklistRule>;
+        const namePattern = normalizePattern(value.namePattern);
+        const typePattern = normalizePattern(value.typePattern);
+        const processPattern = normalizePattern(value.processPattern);
+        if (!namePattern && !typePattern && !processPattern) {
+          return null;
+        }
+        const now = new Date().toISOString();
+        return {
+          id:
+            typeof value.id === 'string' && value.id.trim().length > 0
+              ? value.id
+              : `bl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          namePattern: namePattern || undefined,
+          typePattern: typePattern || undefined,
+          processPattern: processPattern || undefined,
+          createdAt: typeof value.createdAt === 'string' ? value.createdAt : now,
+          updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : now,
+        } satisfies ProcessBlacklistRule;
+      })
+      .filter((item): item is ProcessBlacklistRule => item !== null);
+  };
+
   const threshold = Number(input?.recordWindowThresholdSeconds);
   const recordWindowThresholdSeconds = Number.isFinite(threshold)
     ? Math.max(0, Math.floor(threshold))
@@ -122,6 +192,10 @@ function normalizePreferences(
     uiTheme: input?.uiTheme === 'light' || input?.uiTheme === 'dark' ? input.uiTheme : fallback.uiTheme,
     autoLaunchEnabled:
       typeof input?.autoLaunchEnabled === 'boolean' ? input.autoLaunchEnabled : fallback.autoLaunchEnabled,
+    urlWhitelist: normalizeUrlWhitelist(input?.urlWhitelist, fallback.urlWhitelist),
+    processBlacklist: normalizeProcessBlacklist(input?.processBlacklist, fallback.processBlacklist),
+    countdownCompletedTaskBehavior:
+      input?.countdownCompletedTaskBehavior === 'delete' ? 'delete' : fallback.countdownCompletedTaskBehavior,
   };
 }
 
@@ -209,6 +283,8 @@ function normalizeState(raw: unknown): AppState {
     queue: Array.isArray(input.queue)
       ? input.queue.map((item, index) => ({ ...item, orderIndex: index }))
       : initial.queue,
+    stopwatchRecords: Array.isArray(input.stopwatchRecords) ? input.stopwatchRecords : initial.stopwatchRecords,
+    countdownTasks: Array.isArray(input.countdownTasks) ? input.countdownTasks : initial.countdownTasks,
     todos: (Array.isArray(input.todos) ? input.todos : initial.todos).map(task => normalizeTodoTask(task)),
     archives: Array.isArray(input.archives) ? input.archives : initial.archives,
     powerEvents: Array.isArray(input.powerEvents) ? input.powerEvents : initial.powerEvents,
@@ -221,6 +297,10 @@ function normalizeState(raw: unknown): AppState {
       distractionSoundFileId:
         normalizedSettings.distractionSoundFileId && normalizedSoundFiles.some(item => item.id === normalizedSettings.distractionSoundFileId)
           ? normalizedSettings.distractionSoundFileId
+          : fallbackSoundId,
+      countdownSoundFileId:
+        normalizedSettings.countdownSoundFileId && normalizedSoundFiles.some(item => item.id === normalizedSettings.countdownSoundFileId)
+          ? normalizedSettings.countdownSoundFileId
           : fallbackSoundId,
     },
     currentFocusedWindow: currentFocusedKey ? profileMap.get(currentFocusedKey) ?? null : null,
@@ -238,6 +318,8 @@ function extractUserState(state: AppState): AppUserState {
     subjects: state.subjects,
     queue: state.queue,
     pomodoroSettings: state.pomodoroSettings,
+    stopwatchRecords: state.stopwatchRecords,
+    countdownTasks: state.countdownTasks,
     todos: state.todos,
     archives: state.archives,
     displayMode: state.displayMode,
@@ -477,6 +559,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
+  const setStopwatchRecords = useCallback((records: StopwatchRecord[]) => {
+    setState(s => ({
+      ...s,
+      stopwatchRecords: records,
+    }));
+  }, []);
+
+  const setCountdownTasks = useCallback((tasks: CountdownTask[]) => {
+    setState(s => ({
+      ...s,
+      countdownTasks: tasks,
+    }));
+  }, []);
+
   const updatePreferences = useCallback((partial: Partial<AppPreferences>) => {
     setState(s => ({
       ...s,
@@ -521,6 +617,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         ...s.pomodoroSettings,
         completionSoundFileId: s.pomodoroSettings.completionSoundFileId || sound.id,
         distractionSoundFileId: s.pomodoroSettings.distractionSoundFileId || sound.id,
+        countdownSoundFileId: s.pomodoroSettings.countdownSoundFileId || sound.id,
       },
     }));
     return sound;
@@ -563,6 +660,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       if (nextSettings.distractionSoundFileId === id) {
         nextSettings.distractionSoundFileId = fallbackSoundId;
+      }
+      if (nextSettings.countdownSoundFileId === id) {
+        nextSettings.countdownSoundFileId = fallbackSoundId;
       }
       return {
         ...s,
@@ -759,6 +859,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       addToQueue,
       removeFromQueue,
       updateSettings,
+      setStopwatchRecords,
+      setCountdownTasks,
       updatePreferences,
       clearAllData,
       addSoundFile,
@@ -787,6 +889,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       addToQueue,
       removeFromQueue,
       updateSettings,
+      setStopwatchRecords,
+      setCountdownTasks,
       updatePreferences,
       clearAllData,
       addSoundFile,
