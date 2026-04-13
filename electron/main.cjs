@@ -30,10 +30,12 @@ const BROWSER_PROCESS_TO_ID = {
   'vivaldi.exe': 'vivaldi',
 };
 const BROWSER_PROCESS_NAMES = new Set(Object.keys(BROWSER_PROCESS_TO_ID));
+const VS_CODE_PROCESS_NAMES = new Set(['code.exe', 'code - insiders.exe', 'codium.exe']);
 const PORTABLE_DATA_DIR_NAME = 'data';
 const STATE_FILE_NAME = 'app-state.json';
 const STORAGE_CONFIG_FILE_NAME = 'storage-config.json';
 const PACKAGED_RUNTIME_DIR_NAME = 'electron-runtime';
+const CODE_WINDOW_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 let mainWindow = null;
 let monitorTimer = null;
@@ -58,6 +60,7 @@ const browserBridgeState = {
 };
 
 const pendingWindowRuntime = new Map();
+const codeWindowIdentityCache = new Map();
 
 function createDefaultSoundFiles(now = new Date().toISOString()) {
   return [
@@ -783,6 +786,7 @@ function resetRuntimeTrackingState() {
   monitorCursor.activeClassificationKey = null;
   pendingWindowRuntime.clear();
   browserBridgeState.byBrowser.clear();
+  codeWindowIdentityCache.clear();
 }
 
 function clearAllData() {
@@ -810,6 +814,118 @@ function normalizeProcessName(ownerPath, ownerName) {
     return ownerName.trim().toLowerCase();
   }
   return 'unknown';
+}
+
+function pruneCodeWindowIdentityCache(nowMs = Date.now()) {
+  for (const [cacheKey, cacheValue] of codeWindowIdentityCache.entries()) {
+    if (nowMs - cacheValue.updatedAtMs > CODE_WINDOW_CACHE_MAX_AGE_MS) {
+      codeWindowIdentityCache.delete(cacheKey);
+    }
+  }
+}
+
+function getCodeWindowCacheKey(processName, windowId) {
+  if (!VS_CODE_PROCESS_NAMES.has(processName)) {
+    return null;
+  }
+  if (windowId === undefined || windowId === null) {
+    return null;
+  }
+  return `${processName}|${String(windowId)}`;
+}
+
+function looksLikeFileNameSegment(segment) {
+  const value = (segment || '').trim();
+  if (!value) {
+    return false;
+  }
+  if (value.includes('/') || value.includes('\\')) {
+    return false;
+  }
+  return /^[^<>:"/\\|?*]+\.[A-Za-z0-9]{1,12}$/.test(value);
+}
+
+function getVsCodeSoftwareLabel(title) {
+  const value = (title || '').trim();
+  const matched = value.match(/visual studio code(?:\s*-\s*insiders)?/i);
+  if (!matched) {
+    return 'Visual Studio Code';
+  }
+  const normalized = matched[0].replace(/\s+/g, ' ').trim();
+  return /insiders/i.test(normalized)
+    ? 'Visual Studio Code - Insiders'
+    : 'Visual Studio Code';
+}
+
+function extractVsCodeProjectName(title) {
+  const value = (title || '').trim();
+  if (!value) {
+    return null;
+  }
+
+  const parts = value
+    .split(' - ')
+    .map(item => item.trim())
+    .filter(Boolean);
+  if (parts.length === 0) {
+    return null;
+  }
+
+  let softwareIndex = -1;
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    if (/visual studio code/i.test(parts[index])) {
+      softwareIndex = index;
+      break;
+    }
+  }
+
+  let candidates = softwareIndex >= 0 ? parts.slice(0, softwareIndex) : [...parts];
+  if (candidates.length > 1 && looksLikeFileNameSegment(candidates[0])) {
+    candidates = candidates.slice(1);
+  }
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  // Prefer the longest non-empty segment, which is usually workspace/project name.
+  let best = candidates[0];
+  for (const candidate of candidates) {
+    if (candidate.length > best.length) {
+      best = candidate;
+    }
+  }
+  const normalized = best.trim();
+  return normalized || null;
+}
+
+function getVsCodeIdentity(rawWindow, processName, title) {
+  const nowMs = Date.now();
+  const cacheKey = getCodeWindowCacheKey(processName, rawWindow?.id);
+  const softwareLabel = getVsCodeSoftwareLabel(title);
+  const projectName = extractVsCodeProjectName(title);
+
+  if (!projectName && cacheKey) {
+    const cached = codeWindowIdentityCache.get(cacheKey);
+    if (cached) {
+      cached.updatedAtMs = nowMs;
+      return cached.identity;
+    }
+  }
+
+  const displayName = projectName ? `${projectName} - ${softwareLabel}` : softwareLabel;
+  const identity = {
+    classificationKey: ['AppWindow', processName, displayName.toLowerCase()].join('|').slice(0, 300),
+    displayName,
+    normalizedTitle: displayName,
+  };
+
+  if (cacheKey) {
+    codeWindowIdentityCache.set(cacheKey, {
+      identity,
+      updatedAtMs: nowMs,
+    });
+  }
+  return identity;
 }
 
 function isDesktopWindow(processName, title) {
@@ -908,13 +1024,21 @@ function toNonBrowserProfile(rawWindow) {
     return null;
   }
 
-  const normalizedTitle = title || processName;
-  const classificationKey = ['AppWindow', processName, normalizedTitle.toLowerCase()].filter(Boolean).join('|').slice(0, 300);
+  let normalizedTitle = title || processName;
+  let displayName = normalizedTitle;
+  let classificationKey = ['AppWindow', processName, normalizedTitle.toLowerCase()].filter(Boolean).join('|').slice(0, 300);
+
+  if (VS_CODE_PROCESS_NAMES.has(processName)) {
+    const identity = getVsCodeIdentity(rawWindow, processName, title);
+    normalizedTitle = identity.normalizedTitle;
+    displayName = identity.displayName;
+    classificationKey = identity.classificationKey;
+  }
 
   return {
     id: makeId('profile'),
     classificationKey,
-    displayName: normalizedTitle,
+    displayName,
     objectType: 'AppWindow',
     processName,
     normalizedTitle,
@@ -1369,6 +1493,7 @@ async function getActiveWinApi() {
 async function monitorTick() {
   const now = new Date();
   const nowIso = now.toISOString();
+  pruneCodeWindowIdentityCache(now.getTime());
   const lastTickMs = monitorCursor.lastTickAt ? new Date(monitorCursor.lastTickAt).getTime() : now.getTime();
   const deltaSeconds = Math.max(1, Math.floor((now.getTime() - lastTickMs) / 1000) || 1);
   monitorCursor.lastTickAt = nowIso;
