@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useAppState } from '@/store/AppContext';
 
 type CalcErrorCode = 'INVALID' | 'DIV_ZERO' | 'NAN';
 
@@ -685,7 +686,8 @@ function calculate(input: string): CalcResult {
 }
 
 export default function CalculatorPage() {
-  const [expression, setExpression] = useState('');
+  const { state, updateUiState } = useAppState();
+  const expression = state.uiState.calculatorExpression;
 
   const result = useMemo(() => calculate(expression), [expression]);
 
@@ -708,7 +710,11 @@ export default function CalculatorPage() {
 
               <Input
                 value={expression}
-                onChange={event => setExpression(event.target.value)}
+                onChange={event =>
+                  updateUiState({
+                    calculatorExpression: event.target.value,
+                  })
+                }
                 placeholder="请输入，如：2*(3+4)^2 或 x^2-5x+6=0"
                 className="h-10 text-base"
               />

@@ -7,6 +7,17 @@ export type FocusQueueItemType = 'Subject' | 'AdHocWindowGroup';
 export type UiTheme = 'dark' | 'light';
 export type CountdownCompletedTaskBehavior = 'keep' | 'delete';
 export type SoundVolumeMode = 'unbalanced' | 'balanced';
+export type MonitoringSortKey =
+  | 'displayName'
+  | 'objectType'
+  | 'processName'
+  | 'category'
+  | 'tag'
+  | 'totalVisible'
+  | 'focusTime'
+  | 'lastSeen';
+export type MonitoringSortDirection = 'asc' | 'desc';
+export type MonitoringTab = 'history' | 'current' | 'tags' | 'events' | 'debug';
 
 export interface WindowClassificationProfile {
   id: string;
@@ -166,6 +177,53 @@ export interface PomodoroSettings {
   cycleCount: number;
 }
 
+export interface MonitoringSortState {
+  key: MonitoringSortKey;
+  direction: MonitoringSortDirection;
+}
+
+export interface MonitoringUiState {
+  activeTab: MonitoringTab;
+  historySort: MonitoringSortState;
+  currentSort: MonitoringSortState;
+}
+
+export interface ClockUiState {
+  newCountdownTitle: string;
+  newCountdownSeconds: string;
+}
+
+export interface AppUiState {
+  calculatorExpression: string;
+  monitoring: MonitoringUiState;
+  clock: ClockUiState;
+}
+
+export interface PomodoroRuntimeState {
+  secondsLeft: number;
+  isRunning: boolean;
+  currentCycle: number;
+  currentQueueIdx: number;
+  offTargetSeconds: number;
+  timerEndsAtMs?: number;
+  offTargetAccumulatedMs: number;
+  distractionAlerted: boolean;
+  distractionLastTickAtMs?: number;
+}
+
+export interface StopwatchRuntimeState {
+  isRunning: boolean;
+  elapsedMs: number;
+  runStartedAtMs?: number;
+  sessionStartedAt?: string;
+  laps: StopwatchLap[];
+}
+
+export interface AppRuntimeState {
+  pomodoro: PomodoroRuntimeState;
+  stopwatch: StopwatchRuntimeState;
+}
+
 export interface StopwatchLap {
   id: string;
   elapsedMs: number;
@@ -260,6 +318,8 @@ export interface AppState {
   powerEvents: PowerEventRecord[];
   currentFocusedWindow: WindowClassificationProfile | null;
   displayMode: string;
+  uiState: AppUiState;
+  runtimeState: AppRuntimeState;
 }
 
 export type AppUserState = Pick<
@@ -277,4 +337,5 @@ export type AppUserState = Pick<
   | 'todos'
   | 'archives'
   | 'displayMode'
+  | 'uiState'
 >;

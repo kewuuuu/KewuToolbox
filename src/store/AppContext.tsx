@@ -2,6 +2,8 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import {
   AppState,
   AppPreferences,
+  AppRuntimeState,
+  AppUiState,
   AppUserState,
   Category,
   CountdownTask,
@@ -14,6 +16,7 @@ import {
   UrlWhitelistRule,
   SoundFileItem,
   SoundVolumeMode,
+  StopwatchLap,
   StopwatchRecord,
   TodoArchiveRecord,
   TodoTask,
@@ -39,6 +42,8 @@ interface AppContextType {
   updateSettings: (s: Partial<PomodoroSettings>) => void;
   setStopwatchRecords: (records: StopwatchRecord[]) => void;
   setCountdownTasks: (tasks: CountdownTask[]) => void;
+  updateUiState: (u: Partial<AppUiState>) => void;
+  updateRuntimeState: (r: Partial<AppRuntimeState>) => void;
   updatePreferences: (p: Partial<AppPreferences>) => void;
   clearAllData: () => Promise<void>;
   addSoundFile: (name: string, filePath: string, defaultVolumeMultiplier?: number) => SoundFileItem | null;
@@ -62,6 +67,150 @@ const AppContext = createContext<AppContextType | null>(null);
 
 function isElectronRuntime() {
   return Boolean(window.desktopApi?.isElectron);
+}
+
+const FALLBACK_FOCUS_MINUTES = 25;
+
+function clampFocusMinutes(input: number, fallback = FALLBACK_FOCUS_MINUTES) {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(1, Math.min(240, Math.floor(parsed)));
+}
+
+function getFocusSecondsForQueueIndex(queue: FocusQueueItem[], queueIndex: number) {
+  const item = queue[queueIndex];
+  const focusMinutes = clampFocusMinutes(item?.durationMinutes ?? FALLBACK_FOCUS_MINUTES);
+  return focusMinutes * 60;
+}
+
+function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppUiState): AppUiState {
+  const normalizeSort = (value: AppUiState['monitoring']['historySort'], fallbackSort: AppUiState['monitoring']['historySort']) => {
+    const sortKeySet = new Set([
+      'displayName',
+      'objectType',
+      'processName',
+      'category',
+      'tag',
+      'totalVisible',
+      'focusTime',
+      'lastSeen',
+    ]);
+    const key =
+      value && typeof value.key === 'string' && sortKeySet.has(value.key)
+        ? value.key
+        : fallbackSort.key;
+    const direction =
+      value?.direction === 'asc' || value?.direction === 'desc'
+        ? value.direction
+        : fallbackSort.direction;
+    return { key, direction };
+  };
+
+  const normalizeMonitoringTab = (value: unknown, fallbackValue: AppUiState['monitoring']['activeTab']) => {
+    if (
+      value === 'history' ||
+      value === 'current' ||
+      value === 'tags' ||
+      value === 'events' ||
+      value === 'debug'
+    ) {
+      return value;
+    }
+    return fallbackValue;
+  };
+
+  return {
+    calculatorExpression:
+      typeof input?.calculatorExpression === 'string'
+        ? input.calculatorExpression
+        : fallback.calculatorExpression,
+    monitoring: {
+      activeTab: normalizeMonitoringTab(input?.monitoring?.activeTab, fallback.monitoring.activeTab),
+      historySort: normalizeSort(input?.monitoring?.historySort, fallback.monitoring.historySort),
+      currentSort: normalizeSort(input?.monitoring?.currentSort, fallback.monitoring.currentSort),
+    },
+    clock: {
+      newCountdownTitle:
+        typeof input?.clock?.newCountdownTitle === 'string'
+          ? input.clock.newCountdownTitle
+          : fallback.clock.newCountdownTitle,
+      newCountdownSeconds:
+        typeof input?.clock?.newCountdownSeconds === 'string'
+          ? input.clock.newCountdownSeconds
+          : fallback.clock.newCountdownSeconds,
+    },
+  };
+}
+
+function normalizeRuntimeState(
+  input: Partial<AppRuntimeState> | undefined,
+  fallback: AppRuntimeState,
+  queue: FocusQueueItem[],
+): AppRuntimeState {
+  const pickFinite = (value: unknown, fallbackValue: number) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return fallbackValue;
+    }
+    return parsed;
+  };
+
+  const queueLength = queue.length;
+  const maxQueueIndex = Math.max(0, queueLength - 1);
+  const runtimeQueueIndex = Math.floor(
+    Math.max(0, Math.min(maxQueueIndex, pickFinite(input?.pomodoro?.currentQueueIdx, fallback.pomodoro.currentQueueIdx))),
+  );
+  const fallbackFocusSeconds = getFocusSecondsForQueueIndex(queue, runtimeQueueIndex);
+
+  const normalizeLap = (lap: StopwatchLap, fallbackCreatedAt: string): StopwatchLap => ({
+    id: typeof lap.id === 'string' && lap.id.trim().length > 0 ? lap.id : `lap-${Date.now()}`,
+    elapsedMs: Math.max(0, Math.floor(pickFinite(lap.elapsedMs, 0))),
+    splitMs: Math.max(0, Math.floor(pickFinite(lap.splitMs, 0))),
+    note: typeof lap.note === 'string' ? lap.note : '',
+    createdAt: typeof lap.createdAt === 'string' ? lap.createdAt : fallbackCreatedAt,
+  });
+
+  return {
+    pomodoro: {
+      secondsLeft: Math.max(0, Math.floor(pickFinite(input?.pomodoro?.secondsLeft, fallbackFocusSeconds))),
+      isRunning: Boolean(input?.pomodoro?.isRunning ?? fallback.pomodoro.isRunning),
+      currentCycle: Math.max(1, Math.floor(pickFinite(input?.pomodoro?.currentCycle, fallback.pomodoro.currentCycle))),
+      currentQueueIdx: runtimeQueueIndex,
+      offTargetSeconds: Math.max(0, Math.floor(pickFinite(input?.pomodoro?.offTargetSeconds, fallback.pomodoro.offTargetSeconds))),
+      timerEndsAtMs:
+        Number.isFinite(Number(input?.pomodoro?.timerEndsAtMs))
+          ? Number(input?.pomodoro?.timerEndsAtMs)
+          : undefined,
+      offTargetAccumulatedMs: Math.max(
+        0,
+        Math.floor(pickFinite(input?.pomodoro?.offTargetAccumulatedMs, fallback.pomodoro.offTargetAccumulatedMs)),
+      ),
+      distractionAlerted: Boolean(input?.pomodoro?.distractionAlerted ?? fallback.pomodoro.distractionAlerted),
+      distractionLastTickAtMs:
+        Number.isFinite(Number(input?.pomodoro?.distractionLastTickAtMs))
+          ? Number(input?.pomodoro?.distractionLastTickAtMs)
+          : undefined,
+    },
+    stopwatch: {
+      isRunning: Boolean(input?.stopwatch?.isRunning ?? fallback.stopwatch.isRunning),
+      elapsedMs: Math.max(0, Math.floor(pickFinite(input?.stopwatch?.elapsedMs, fallback.stopwatch.elapsedMs))),
+      runStartedAtMs:
+        Number.isFinite(Number(input?.stopwatch?.runStartedAtMs))
+          ? Number(input?.stopwatch?.runStartedAtMs)
+          : undefined,
+      sessionStartedAt:
+        typeof input?.stopwatch?.sessionStartedAt === 'string'
+          ? input.stopwatch.sessionStartedAt
+          : fallback.stopwatch.sessionStartedAt,
+      laps: Array.isArray(input?.stopwatch?.laps)
+        ? input.stopwatch.laps
+            .filter(item => item && typeof item === 'object')
+            .map(item => normalizeLap(item as StopwatchLap, new Date().toISOString()))
+        : fallback.stopwatch.laps,
+    },
+  };
 }
 
 function normalizePomodoroSettings(input: Partial<PomodoroSettings> | undefined, fallback: PomodoroSettings): PomodoroSettings {
@@ -137,10 +286,19 @@ function normalizePomodoroSettings(input: Partial<PomodoroSettings> | undefined,
       fallback.distractionThresholdMinutes,
     ),
     cycleCount: pickInteger(input?.cycleCount, 0, 9999, fallback.cycleCount),
-    distractionMode:
-      typeof input?.distractionMode === 'string' && input.distractionMode.trim().length > 0
-        ? input.distractionMode
-        : fallback.distractionMode,
+    distractionMode: (() => {
+      const raw =
+        typeof input?.distractionMode === 'string' && input.distractionMode.trim().length > 0
+          ? input.distractionMode.trim()
+          : fallback.distractionMode;
+      if (raw === '杩炵画') {
+        return '连续';
+      }
+      if (raw === '绱') {
+        return '累计';
+      }
+      return raw;
+    })(),
     notifyEnabled: input?.notifyEnabled ?? fallback.notifyEnabled,
     soundEnabled: input?.soundEnabled ?? fallback.soundEnabled,
     completionSoundFileId:
@@ -328,8 +486,13 @@ function normalizeState(raw: unknown): AppState {
   }
 
   const fallbackSoundId = normalizedSoundFiles[0]?.id ?? '';
+  const normalizedQueue = Array.isArray(input.queue)
+    ? input.queue.map((item, index) => ({ ...item, orderIndex: index }))
+    : initial.queue;
   const normalizedSettings = normalizePomodoroSettings(input.pomodoroSettings, initial.pomodoroSettings);
   const normalizedPreferences = normalizePreferences(input.preferences, initial.preferences);
+  const normalizedUiState = normalizeUiState(input.uiState, initial.uiState);
+  const normalizedRuntimeState = normalizeRuntimeState(input.runtimeState, initial.runtimeState, normalizedQueue);
 
   return {
     ...initial,
@@ -344,9 +507,7 @@ function normalizeState(raw: unknown): AppState {
     soundFiles: normalizedSoundFiles,
     preferences: normalizedPreferences,
     subjects: Array.isArray(input.subjects) ? input.subjects : initial.subjects,
-    queue: Array.isArray(input.queue)
-      ? input.queue.map((item, index) => ({ ...item, orderIndex: index }))
-      : initial.queue,
+    queue: normalizedQueue,
     stopwatchRecords: Array.isArray(input.stopwatchRecords) ? input.stopwatchRecords : initial.stopwatchRecords,
     countdownTasks: Array.isArray(input.countdownTasks) ? input.countdownTasks : initial.countdownTasks,
     todos: (Array.isArray(input.todos) ? input.todos : initial.todos).map(task => normalizeTodoTask(task)),
@@ -369,6 +530,8 @@ function normalizeState(raw: unknown): AppState {
     },
     currentFocusedWindow: currentFocusedKey ? profileMap.get(currentFocusedKey) ?? null : null,
     displayMode: typeof input.displayMode === 'string' ? input.displayMode : initial.displayMode,
+    uiState: normalizedUiState,
+    runtimeState: normalizedRuntimeState,
   };
 }
 
@@ -387,6 +550,7 @@ function extractUserState(state: AppState): AppUserState {
     todos: state.todos,
     archives: state.archives,
     displayMode: state.displayMode,
+    uiState: state.uiState,
   };
 }
 
@@ -568,6 +732,260 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const nowMs = Date.now();
+      let completionMessage: { title: string; body: string } | null = null;
+      let distractionMessage: { title: string; body: string } | null = null;
+      let shouldPlayCompletionSound = false;
+      let shouldPlayDistractionSound = false;
+
+      setState(prev => {
+        const runtime = prev.runtimeState.pomodoro;
+        if (!runtime.isRunning) {
+          return prev;
+        }
+
+        const queue = prev.queue;
+        const queueLength = queue.length;
+        const currentQueueIdx = Math.max(0, Math.min(queueLength - 1, runtime.currentQueueIdx));
+        const currentItem = queue[currentQueueIdx];
+        const currentFocusSeconds = getFocusSecondsForQueueIndex(queue, currentQueueIdx);
+
+        if (queueLength === 0 || !currentItem) {
+          return {
+            ...prev,
+            runtimeState: {
+              ...prev.runtimeState,
+              pomodoro: {
+                ...runtime,
+                isRunning: false,
+                currentCycle: 1,
+                currentQueueIdx: 0,
+                secondsLeft: FALLBACK_FOCUS_MINUTES * 60,
+                timerEndsAtMs: undefined,
+                offTargetSeconds: 0,
+                offTargetAccumulatedMs: 0,
+                distractionAlerted: false,
+                distractionLastTickAtMs: undefined,
+              },
+            },
+          };
+        }
+
+        const effectiveTimerEndMs =
+          Number.isFinite(runtime.timerEndsAtMs) && (runtime.timerEndsAtMs ?? 0) > 0
+            ? Number(runtime.timerEndsAtMs)
+            : nowMs + Math.max(0, runtime.secondsLeft) * 1000;
+        let nextRuntime = {
+          ...runtime,
+          timerEndsAtMs: effectiveTimerEndMs,
+          currentQueueIdx,
+          secondsLeft: Math.max(0, runtime.secondsLeft),
+        };
+
+        const remainingMs = effectiveTimerEndMs - nowMs;
+        if (remainingMs <= 0) {
+          shouldPlayCompletionSound = true;
+          const isInfiniteCycle = prev.pomodoroSettings.cycleCount <= 0;
+          const reachedCycleLimit = !isInfiniteCycle && nextRuntime.currentCycle >= prev.pomodoroSettings.cycleCount;
+
+          if (reachedCycleLimit) {
+            const nextQueueIndex = nextRuntime.currentQueueIdx + 1;
+            if (nextQueueIndex < queueLength) {
+              nextRuntime = {
+                ...nextRuntime,
+                isRunning: false,
+                currentQueueIdx: nextQueueIndex,
+                currentCycle: 1,
+                secondsLeft: getFocusSecondsForQueueIndex(queue, nextQueueIndex),
+                timerEndsAtMs: undefined,
+              };
+              completionMessage = {
+                title: '专注到点',
+                body: `${currentItem.title} 已完成，已切换到下一个计划`,
+              };
+            } else {
+              nextRuntime = {
+                ...nextRuntime,
+                isRunning: false,
+                currentQueueIdx: 0,
+                currentCycle: 1,
+                secondsLeft: getFocusSecondsForQueueIndex(queue, 0),
+                timerEndsAtMs: undefined,
+              };
+              completionMessage = {
+                title: '专注到点',
+                body: '队列计划已全部完成',
+              };
+            }
+          } else {
+            nextRuntime = {
+              ...nextRuntime,
+              isRunning: false,
+              currentCycle: nextRuntime.currentCycle + 1,
+              secondsLeft: currentFocusSeconds,
+              timerEndsAtMs: undefined,
+            };
+            completionMessage = {
+              title: '专注到点',
+              body: `${currentItem.title} 本轮已完成`,
+            };
+          }
+
+          nextRuntime = {
+            ...nextRuntime,
+            offTargetSeconds: 0,
+            offTargetAccumulatedMs: 0,
+            distractionAlerted: false,
+            distractionLastTickAtMs: undefined,
+          };
+
+          return {
+            ...prev,
+            runtimeState: {
+              ...prev.runtimeState,
+              pomodoro: nextRuntime,
+            },
+          };
+        }
+
+        const nextSeconds = Math.ceil(remainingMs / 1000);
+        const lastTickAtMs = Number.isFinite(runtime.distractionLastTickAtMs)
+          ? Number(runtime.distractionLastTickAtMs)
+          : nowMs;
+        const deltaMs = Math.max(0, nowMs - lastTickAtMs);
+        let offTargetAccumulatedMs = Math.max(0, runtime.offTargetAccumulatedMs);
+        let offTargetSeconds = Math.max(0, runtime.offTargetSeconds);
+        let distractionAlerted = Boolean(runtime.distractionAlerted);
+
+        const hasTargetWindows = currentItem.windowGroup.length > 0;
+        if (!hasTargetWindows) {
+          offTargetAccumulatedMs = 0;
+          offTargetSeconds = 0;
+          distractionAlerted = false;
+        } else if (deltaMs > 0) {
+          const focusedClassificationKey = prev.currentFocusedWindow?.classificationKey;
+          const onTarget = Boolean(
+            focusedClassificationKey &&
+              currentItem.windowGroup.some(item => item.classificationKey === focusedClassificationKey),
+          );
+          if (onTarget) {
+            if (prev.pomodoroSettings.distractionMode === '连续' || prev.pomodoroSettings.distractionMode === '杩炵画') {
+              offTargetAccumulatedMs = 0;
+              offTargetSeconds = 0;
+              distractionAlerted = false;
+            }
+          } else {
+            offTargetAccumulatedMs += deltaMs;
+            offTargetSeconds = Math.floor(offTargetAccumulatedMs / 1000);
+            const thresholdSeconds = Math.max(
+              1,
+              Math.floor(Number(prev.pomodoroSettings.distractionThresholdMinutes) || 1),
+            ) * 60;
+            if (prev.pomodoroSettings.notifyEnabled && offTargetSeconds >= thresholdSeconds && !distractionAlerted) {
+              distractionAlerted = true;
+              shouldPlayDistractionSound = true;
+              distractionMessage = {
+                title: '偏离提醒',
+                body: `${currentItem.title} 已偏离目标窗口`,
+              };
+            }
+          }
+        }
+
+        const changed =
+          nextSeconds !== runtime.secondsLeft ||
+          currentQueueIdx !== runtime.currentQueueIdx ||
+          offTargetSeconds !== runtime.offTargetSeconds ||
+          offTargetAccumulatedMs !== runtime.offTargetAccumulatedMs ||
+          distractionAlerted !== runtime.distractionAlerted ||
+          effectiveTimerEndMs !== runtime.timerEndsAtMs ||
+          nowMs !== runtime.distractionLastTickAtMs;
+
+        if (!changed) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          runtimeState: {
+            ...prev.runtimeState,
+            pomodoro: {
+              ...nextRuntime,
+              secondsLeft: nextSeconds,
+              offTargetSeconds,
+              offTargetAccumulatedMs,
+              distractionAlerted,
+              distractionLastTickAtMs: nowMs,
+            },
+          },
+        };
+      });
+
+      const notify = async (message: { title: string; body: string }) => {
+        if (window.desktopApi?.notify) {
+          try {
+            await window.desktopApi.notify({ title: message.title, body: message.body });
+            return;
+          } catch {
+            // Fallback to browser Notification API.
+          }
+        }
+        if (!('Notification' in window)) {
+          return;
+        }
+        const push = () => {
+          try {
+            new Notification(message.title, { body: message.body });
+          } catch {
+            // Ignore notification failures.
+          }
+        };
+        if (Notification.permission === 'granted') {
+          push();
+          return;
+        }
+        if (Notification.permission === 'default') {
+          const permission = await Notification.requestPermission();
+          if (permission === 'granted') {
+            push();
+          }
+        }
+      };
+
+      if (completionMessage) {
+        toast.success(completionMessage.title, { description: completionMessage.body });
+        void notify(completionMessage);
+        if (shouldPlayCompletionSound) {
+          const { settings, soundFiles } = soundStateRef.current;
+          const playback = resolveSoundPlaybackForEvent(settings, soundFiles, 'completion');
+          void playSoundById(soundFiles, {
+            enabled: settings.soundEnabled,
+            soundFileId: playback.soundFileId,
+            eventVolumeMultiplier: playback.eventVolumeMultiplier,
+          });
+        }
+      }
+
+      if (distractionMessage) {
+        toast.warning(distractionMessage.title, { description: distractionMessage.body });
+        void notify(distractionMessage);
+        if (shouldPlayDistractionSound) {
+          const { settings, soundFiles } = soundStateRef.current;
+          const playback = resolveSoundPlaybackForEvent(settings, soundFiles, 'distraction');
+          void playSoundById(soundFiles, {
+            enabled: settings.soundEnabled,
+            soundFileId: playback.soundFileId,
+            eventVolumeMultiplier: playback.eventVolumeMultiplier,
+          });
+        }
+      }
+    }, 250);
+
+    return () => clearInterval(timer);
+  }, []);
+
   const updateProfile = useCallback((id: string, category: Category) => {
     setState(s => ({
       ...s,
@@ -600,6 +1018,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setState(s => ({
       ...s,
       queue: queue.map((item, index) => ({ ...item, orderIndex: index })),
+      runtimeState: normalizeRuntimeState(
+        {
+          ...s.runtimeState,
+          pomodoro: {
+            ...s.runtimeState.pomodoro,
+            secondsLeft: s.runtimeState.pomodoro.isRunning
+              ? s.runtimeState.pomodoro.secondsLeft
+              : getFocusSecondsForQueueIndex(queue, s.runtimeState.pomodoro.currentQueueIdx),
+          },
+        },
+        s.runtimeState,
+        queue,
+      ),
     }));
   }, []);
 
@@ -607,14 +1038,42 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setState(s => ({
       ...s,
       queue: [...s.queue, { ...item, orderIndex: s.queue.length }],
+      runtimeState: normalizeRuntimeState(
+        s.runtimeState,
+        s.runtimeState,
+        [...s.queue, { ...item, orderIndex: s.queue.length }],
+      ),
     }));
   }, []);
 
   const removeFromQueue = useCallback((id: string) => {
-    setState(s => ({
-      ...s,
-      queue: s.queue.filter(item => item.id !== id).map((item, index) => ({ ...item, orderIndex: index })),
-    }));
+    setState(s => {
+      const nextQueue = s.queue
+        .filter(item => item.id !== id)
+        .map((item, index) => ({ ...item, orderIndex: index }));
+      return {
+        ...s,
+        queue: nextQueue,
+        runtimeState: normalizeRuntimeState(
+          {
+            ...s.runtimeState,
+            pomodoro: {
+              ...s.runtimeState.pomodoro,
+              isRunning: nextQueue.length === 0 ? false : s.runtimeState.pomodoro.isRunning,
+              timerEndsAtMs: nextQueue.length === 0 ? undefined : s.runtimeState.pomodoro.timerEndsAtMs,
+              secondsLeft:
+                nextQueue.length === 0
+                  ? FALLBACK_FOCUS_MINUTES * 60
+                  : s.runtimeState.pomodoro.isRunning
+                    ? s.runtimeState.pomodoro.secondsLeft
+                    : getFocusSecondsForQueueIndex(nextQueue, s.runtimeState.pomodoro.currentQueueIdx),
+            },
+          },
+          s.runtimeState,
+          nextQueue,
+        ),
+      };
+    });
   }, []);
 
   const updateSettings = useCallback((partial: Partial<PomodoroSettings>) => {
@@ -635,6 +1094,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setState(s => ({
       ...s,
       countdownTasks: tasks,
+    }));
+  }, []);
+
+  const updateUiState = useCallback((partial: Partial<AppUiState>) => {
+    setState(s => ({
+      ...s,
+      uiState: normalizeUiState({ ...s.uiState, ...partial }, s.uiState),
+    }));
+  }, []);
+
+  const updateRuntimeState = useCallback((partial: Partial<AppRuntimeState>) => {
+    setState(s => ({
+      ...s,
+      runtimeState: normalizeRuntimeState(
+        { ...s.runtimeState, ...partial },
+        s.runtimeState,
+        s.queue,
+      ),
     }));
   }, []);
 
@@ -926,6 +1403,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       updateSettings,
       setStopwatchRecords,
       setCountdownTasks,
+      updateUiState,
+      updateRuntimeState,
       updatePreferences,
       clearAllData,
       addSoundFile,
@@ -956,6 +1435,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       updateSettings,
       setStopwatchRecords,
       setCountdownTasks,
+      updateUiState,
+      updateRuntimeState,
       updatePreferences,
       clearAllData,
       addSoundFile,

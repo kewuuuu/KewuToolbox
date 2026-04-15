@@ -95,16 +95,6 @@ const DEFAULT_SORT_DIRECTION: Record<SortKey, SortDirection> = {
   lastSeen: 'desc',
 };
 
-const DEFAULT_HISTORY_SORT: SortState = {
-  key: 'lastSeen',
-  direction: 'desc',
-};
-
-const DEFAULT_CURRENT_SORT: SortState = {
-  key: 'lastSeen',
-  direction: 'desc',
-};
-
 export default function MonitoringPage() {
   const {
     state,
@@ -114,14 +104,16 @@ export default function MonitoringPage() {
     updateProcessTag,
     deleteProcessTag,
     setProcessTagForProfile,
+    updateUiState,
   } = useAppState();
+
+  const monitoringUi = state.uiState.monitoring;
+  const activeTab = monitoringUi.activeTab;
+  const historySort = monitoringUi.historySort as SortState;
+  const currentSort = monitoringUi.currentSort as SortState;
 
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
-  const [activeTab, setActiveTab] = useState('history');
-
-  const [historySort, setHistorySort] = useState<SortState>(DEFAULT_HISTORY_SORT);
-  const [currentSort, setCurrentSort] = useState<SortState>(DEFAULT_CURRENT_SORT);
 
   const [expandedTagIds, setExpandedTagIds] = useState<Set<string>>(new Set());
   const [creatingTag, setCreatingTag] = useState(false);
@@ -359,18 +351,22 @@ export default function MonitoringPage() {
   };
 
   const handleSort = (scope: 'history' | 'current', key: SortKey) => {
-    const setter = scope === 'history' ? setHistorySort : setCurrentSort;
-    setter(prev => {
-      if (prev.key === key) {
-        return {
-          key,
-          direction: prev.direction === 'asc' ? 'desc' : 'asc',
-        };
-      }
-      return {
-        key,
-        direction: DEFAULT_SORT_DIRECTION[key],
-      };
+    const sourceSort = scope === 'history' ? historySort : currentSort;
+    const nextSort: SortState =
+      sourceSort.key === key
+        ? {
+            key,
+            direction: sourceSort.direction === 'asc' ? 'desc' : 'asc',
+          }
+        : {
+            key,
+            direction: DEFAULT_SORT_DIRECTION[key],
+          };
+    updateUiState({
+      monitoring: {
+        ...monitoringUi,
+        [scope === 'history' ? 'historySort' : 'currentSort']: nextSort,
+      },
     });
   };
 
@@ -542,7 +538,26 @@ export default function MonitoringPage() {
   return (
     <DashboardLayout pageTitle="进程管理">
       <div className="max-w-6xl mx-auto">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+        <Tabs
+          value={activeTab}
+          onValueChange={nextTab => {
+            const normalizedTab =
+              nextTab === 'history' ||
+              nextTab === 'current' ||
+              nextTab === 'tags' ||
+              nextTab === 'events' ||
+              nextTab === 'debug'
+                ? nextTab
+                : monitoringUi.activeTab;
+            updateUiState({
+              monitoring: {
+                ...monitoringUi,
+                activeTab: normalizedTab,
+              },
+            });
+          }}
+          className="space-y-4"
+        >
           <div className="flex items-center justify-between gap-3">
             <TabsList className="bg-secondary">
               <TabsTrigger value="history">历史记录</TabsTrigger>

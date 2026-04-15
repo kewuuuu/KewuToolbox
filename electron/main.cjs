@@ -132,6 +132,40 @@ function createEmptyState() {
     powerEvents: [],
     currentFocusedWindow: null,
     displayMode: DEFAULT_DISPLAY_MODE,
+    uiState: {
+      calculatorExpression: '',
+      monitoring: {
+        activeTab: 'history',
+        historySort: {
+          key: 'lastSeen',
+          direction: 'desc',
+        },
+        currentSort: {
+          key: 'lastSeen',
+          direction: 'desc',
+        },
+      },
+      clock: {
+        newCountdownTitle: '',
+        newCountdownSeconds: String(5 * 60),
+      },
+    },
+    runtimeState: {
+      pomodoro: {
+        secondsLeft: 25 * 60,
+        isRunning: false,
+        currentCycle: 1,
+        currentQueueIdx: 0,
+        offTargetSeconds: 0,
+        offTargetAccumulatedMs: 0,
+        distractionAlerted: false,
+      },
+      stopwatch: {
+        isRunning: false,
+        elapsedMs: 0,
+        laps: [],
+      },
+    },
   };
 }
 
@@ -1688,6 +1722,20 @@ function mergeUserStateFromRenderer(partial) {
   }
   if (typeof next.displayMode === 'string') {
     appState.displayMode = next.displayMode;
+  }
+  if (next.uiState && typeof next.uiState === 'object') {
+    appState.uiState = {
+      ...appState.uiState,
+      ...next.uiState,
+      monitoring: {
+        ...appState.uiState?.monitoring,
+        ...(next.uiState.monitoring ?? {}),
+      },
+      clock: {
+        ...appState.uiState?.clock,
+        ...(next.uiState.clock ?? {}),
+      },
+    };
   }
 
   if (Array.isArray(next.processTags)) {

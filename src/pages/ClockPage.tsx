@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { useAppState } from '@/store/AppContext';
@@ -79,21 +79,44 @@ function calcCountdownRemaining(task: CountdownTask, nowMs: number) {
   return Math.max(0, Math.ceil(base - elapsedSeconds));
 }
 
+function getStopwatchElapsedMs(runtime: {
+  isRunning: boolean;
+  elapsedMs: number;
+  runStartedAtMs?: number;
+}, nowMs: number) {
+  if (!runtime.isRunning || !runtime.runStartedAtMs) {
+    return Math.max(0, Math.floor(runtime.elapsedMs));
+  }
+  return Math.max(0, Math.floor(runtime.elapsedMs + (nowMs - runtime.runStartedAtMs)));
+}
+
 export default function ClockPage() {
-  const { state, setStopwatchRecords, setCountdownTasks } = useAppState();
+  const {
+    state,
+    setStopwatchRecords,
+    setCountdownTasks,
+    updateUiState,
+    updateRuntimeState,
+  } = useAppState();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = toClockTab(searchParams.get('tab'));
-
-  const [isRunning, setIsRunning] = useState(false);
-  const [elapsedMs, setElapsedMs] = useState(0);
-  const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
-  const [laps, setLaps] = useState<StopwatchLap[]>([]);
-  const [newCountdownTitle, setNewCountdownTitle] = useState('');
-  const [newCountdownSeconds, setNewCountdownSeconds] = useState(String(FALLBACK_COUNTDOWN_SECONDS));
   const [pendingDeleteRecordId, setPendingDeleteRecordId] = useState<string | null>(null);
-  const stopwatchStartedAtRef = useRef<number | null>(null);
-  const stopwatchBaseElapsedRef = useRef(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  const stopwatchRuntime = state.runtimeState.stopwatch;
+  const isStopwatchRunning = stopwatchRuntime.isRunning;
+  const stopwatchElapsedMs = getStopwatchElapsedMs(stopwatchRuntime, nowMs);
+
+  useEffect(() => {
+    if (!isStopwatchRunning) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 20);
+    return () => clearInterval(timer);
+  }, [isStopwatchRunning]);
 
   const sortedRecords = useMemo(
     () =>
@@ -134,29 +157,14 @@ export default function ClockPage() {
   }, []);
 
   useEffect(() => {
-    if (!isRunning) {
-      return;
-    }
-    const tick = window.setInterval(() => {
-      const startAtMs = stopwatchStartedAtRef.current;
-      if (!startAtMs) {
-        return;
-      }
-      const nowMs = Date.now();
-      setElapsedMs(stopwatchBaseElapsedRef.current + (nowMs - startAtMs));
-    }, 10);
-    return () => clearInterval(tick);
-  }, [isRunning]);
-
-  useEffect(() => {
     const hasRunningCountdown = state.countdownTasks.some(task => task.isRunning && !task.completed);
     if (!hasRunningCountdown) {
       return;
     }
 
     const tick = window.setInterval(() => {
-      const nowMs = Date.now();
-      const nowIso = new Date(nowMs).toISOString();
+      const currentNowMs = Date.now();
+      const nowIso = new Date(currentNowMs).toISOString();
       let changed = false;
       const completedTitles: string[] = [];
       const nextTasks: CountdownTask[] = [];
@@ -167,7 +175,7 @@ export default function ClockPage() {
           continue;
         }
 
-        const remainingSeconds = calcCountdownRemaining(task, nowMs);
+        const remainingSeconds = calcCountdownRemaining(task, currentNowMs);
         if (remainingSeconds > 0) {
           if (remainingSeconds === task.remainingSeconds) {
             nextTasks.push(task);
@@ -228,50 +236,58 @@ export default function ClockPage() {
   ]);
 
   const handleStartStopwatch = () => {
-    if (isRunning) {
+    if (isStopwatchRunning) {
       return;
     }
-    const nowMs = Date.now();
-    if (!sessionStartedAt) {
-      setSessionStartedAt(new Date(nowMs).toISOString());
-    }
-    stopwatchStartedAtRef.current = nowMs;
-    setIsRunning(true);
+    const startedAtMs = Date.now();
+    updateRuntimeState({
+      stopwatch: {
+        ...stopwatchRuntime,
+        isRunning: true,
+        runStartedAtMs: startedAtMs,
+        sessionStartedAt: stopwatchRuntime.sessionStartedAt ?? new Date(startedAtMs).toISOString(),
+      },
+    });
   };
 
   const handlePauseStopwatch = () => {
-    if (!isRunning) {
+    if (!isStopwatchRunning) {
       return;
     }
-    const startAtMs = stopwatchStartedAtRef.current;
-    if (startAtMs) {
-      const currentElapsedMs = stopwatchBaseElapsedRef.current + (Date.now() - startAtMs);
-      stopwatchBaseElapsedRef.current = currentElapsedMs;
-      setElapsedMs(currentElapsedMs);
-    }
-    stopwatchStartedAtRef.current = null;
-    setIsRunning(false);
+    const currentElapsedMs = getStopwatchElapsedMs(stopwatchRuntime, Date.now());
+    updateRuntimeState({
+      stopwatch: {
+        ...stopwatchRuntime,
+        isRunning: false,
+        elapsedMs: currentElapsedMs,
+        runStartedAtMs: undefined,
+      },
+    });
+    setNowMs(Date.now());
   };
 
   const handleResetStopwatch = () => {
-    setIsRunning(false);
-    stopwatchStartedAtRef.current = null;
-    stopwatchBaseElapsedRef.current = 0;
-    setElapsedMs(0);
-    setLaps([]);
-    setSessionStartedAt(null);
+    updateRuntimeState({
+      stopwatch: {
+        isRunning: false,
+        elapsedMs: 0,
+        runStartedAtMs: undefined,
+        sessionStartedAt: undefined,
+        laps: [],
+      },
+    });
+    setNowMs(Date.now());
   };
 
   const handleLap = () => {
-    if (!isRunning) {
+    if (!isStopwatchRunning) {
       return;
     }
-    const startAtMs = stopwatchStartedAtRef.current;
-    if (!startAtMs) {
-      return;
-    }
-    const currentElapsedMs = stopwatchBaseElapsedRef.current + (Date.now() - startAtMs);
-    const previousElapsedMs = laps.length > 0 ? laps[laps.length - 1].elapsedMs : 0;
+    const currentElapsedMs = getStopwatchElapsedMs(stopwatchRuntime, Date.now());
+    const previousElapsedMs =
+      stopwatchRuntime.laps.length > 0
+        ? stopwatchRuntime.laps[stopwatchRuntime.laps.length - 1].elapsedMs
+        : 0;
     const nextLap: StopwatchLap = {
       id: makeId('lap'),
       elapsedMs: currentElapsedMs,
@@ -279,38 +295,40 @@ export default function ClockPage() {
       note: '',
       createdAt: new Date().toISOString(),
     };
-    setElapsedMs(currentElapsedMs);
-    setLaps(prev => [...prev, nextLap]);
+    updateRuntimeState({
+      stopwatch: {
+        ...stopwatchRuntime,
+        laps: [...stopwatchRuntime.laps, nextLap],
+      },
+    });
+    setNowMs(Date.now());
   };
 
   const handleUpdateLapNote = (lapId: string, note: string) => {
-    setLaps(prev => prev.map(lap => (lap.id === lapId ? { ...lap, note } : lap)));
+    updateRuntimeState({
+      stopwatch: {
+        ...stopwatchRuntime,
+        laps: stopwatchRuntime.laps.map(lap => (lap.id === lapId ? { ...lap, note } : lap)),
+      },
+    });
   };
 
   const handleSaveStopwatchRecord = () => {
-    const runningStartAtMs = stopwatchStartedAtRef.current;
-    const finalElapsedMs =
-      isRunning && runningStartAtMs
-        ? stopwatchBaseElapsedRef.current + (Date.now() - runningStartAtMs)
-        : elapsedMs;
-
-    if (!sessionStartedAt || finalElapsedMs <= 0) {
+    const finalElapsedMs = getStopwatchElapsedMs(stopwatchRuntime, Date.now());
+    if (!stopwatchRuntime.sessionStartedAt || finalElapsedMs <= 0) {
       toast.error('秒表尚未开始或时长为 0');
       return;
     }
-    if (isRunning) {
-      handlePauseStopwatch();
-    }
 
     const endIso = new Date().toISOString();
-    const defaultName = `${formatDateTime(sessionStartedAt)} - ${formatDateTime(endIso)}`;
+    const defaultName = `${formatDateTime(stopwatchRuntime.sessionStartedAt)} - ${formatDateTime(endIso)}`;
     const record: StopwatchRecord = {
       id: makeId('sw'),
       name: defaultName,
-      startedAt: sessionStartedAt,
+      startedAt: stopwatchRuntime.sessionStartedAt,
       endedAt: endIso,
       totalElapsedMs: Math.max(0, Math.floor(finalElapsedMs)),
-      laps: laps.map(item => ({ ...item })),
+      laps: stopwatchRuntime.laps.map(item => ({ ...item })),
       createdAt: endIso,
       updatedAt: endIso,
     };
@@ -325,12 +343,10 @@ export default function ClockPage() {
     if (!trimmed) {
       return;
     }
-    const now = new Date().toISOString();
+    const nowIso = new Date().toISOString();
     setStopwatchRecords(
       state.stopwatchRecords.map(record =>
-        record.id === recordId
-          ? { ...record, name: trimmed, updatedAt: now }
-          : record,
+        record.id === recordId ? { ...record, name: trimmed, updatedAt: nowIso } : record,
       ),
     );
   };
@@ -341,48 +357,49 @@ export default function ClockPage() {
   };
 
   const handleCreateCountdownTask = () => {
-    const durationRaw = Number(newCountdownSeconds);
+    const durationRaw = Number(state.uiState.clock.newCountdownSeconds);
     if (!Number.isFinite(durationRaw) || durationRaw <= 0) {
       toast.error('倒计时秒数必须大于 0');
       return;
     }
     const durationSeconds = Math.floor(durationRaw);
-    const now = new Date().toISOString();
+    const nowIso = new Date().toISOString();
     const task: CountdownTask = {
       id: makeId('cd'),
-      title: newCountdownTitle.trim() || `倒计时 ${formatSeconds(durationSeconds)}`,
+      title: state.uiState.clock.newCountdownTitle.trim() || `倒计时 ${formatSeconds(durationSeconds)}`,
       durationSeconds,
       remainingSeconds: durationSeconds,
       isRunning: false,
       completed: false,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
     setCountdownTasks([task, ...state.countdownTasks]);
-    setNewCountdownTitle('');
-    setNewCountdownSeconds(String(FALLBACK_COUNTDOWN_SECONDS));
+    updateUiState({
+      clock: {
+        newCountdownTitle: '',
+        newCountdownSeconds: String(FALLBACK_COUNTDOWN_SECONDS),
+      },
+    });
   };
 
   const handleUpdateCountdownTask = (taskId: string, patch: Partial<CountdownTask>) => {
-    const now = new Date().toISOString();
+    const nowIso = new Date().toISOString();
     setCountdownTasks(
       state.countdownTasks.map(task =>
-        task.id === taskId
-          ? { ...task, ...patch, updatedAt: now }
-          : task,
+        task.id === taskId ? { ...task, ...patch, updatedAt: nowIso } : task,
       ),
     );
   };
 
   const handleToggleCountdownRunning = (taskId: string) => {
-    const nowMs = Date.now();
-    const nowIso = new Date(nowMs).toISOString();
+    const currentNowMs = Date.now();
+    const nowIso = new Date(currentNowMs).toISOString();
     setCountdownTasks(
       state.countdownTasks.map(task => {
         if (task.id !== taskId || task.completed) {
           return task;
         }
-
         if (!task.isRunning) {
           return {
             ...task,
@@ -393,7 +410,7 @@ export default function ClockPage() {
           };
         }
 
-        const remainingSeconds = calcCountdownRemaining(task, nowMs);
+        const remainingSeconds = calcCountdownRemaining(task, currentNowMs);
         return {
           ...task,
           isRunning: false,
@@ -447,10 +464,10 @@ export default function ClockPage() {
               <div className="text-center space-y-2">
                 <p className="text-xs text-muted-foreground">精度 0.01 秒</p>
                 <div className="text-5xl font-light tabular-nums tracking-wider text-foreground">
-                  {formatElapsedMs(elapsedMs)}
+                  {formatElapsedMs(stopwatchElapsedMs)}
                 </div>
                 <div className="flex items-center justify-center gap-2">
-                  {!isRunning ? (
+                  {!isStopwatchRunning ? (
                     <Button onClick={handleStartStopwatch} className="gap-1">
                       <Play className="w-4 h-4" />
                       开始
@@ -461,10 +478,10 @@ export default function ClockPage() {
                       暂停
                     </Button>
                   )}
-                  <Button onClick={handleLap} variant="outline" disabled={!isRunning}>
+                  <Button onClick={handleLap} variant="outline" disabled={!isStopwatchRunning}>
                     断点
                   </Button>
-                  <Button onClick={handleSaveStopwatchRecord} variant="outline" disabled={elapsedMs <= 0}>
+                  <Button onClick={handleSaveStopwatchRecord} variant="outline" disabled={stopwatchElapsedMs <= 0}>
                     <Save className="w-4 h-4 mr-1" />
                     结束并保存
                   </Button>
@@ -477,11 +494,11 @@ export default function ClockPage() {
 
               <div className="space-y-2">
                 <h3 className="text-sm font-semibold text-foreground">当前断点列表</h3>
-                {laps.length === 0 ? (
+                {stopwatchRuntime.laps.length === 0 ? (
                   <p className="text-xs text-muted-foreground">暂无断点，点击“断点”可记录中间时刻。</p>
                 ) : (
                   <div className="space-y-2">
-                    {laps.map((lap, index) => (
+                    {stopwatchRuntime.laps.map((lap, index) => (
                       <div key={lap.id} className="grid grid-cols-1 md:grid-cols-[80px_1fr_1fr_1.6fr] gap-2 items-center p-2 rounded-lg border border-border/70">
                         <span className="text-xs text-muted-foreground">#{index + 1}</span>
                         <span className="text-sm font-mono text-foreground">{formatElapsedMs(lap.elapsedMs)}</span>
@@ -506,16 +523,30 @@ export default function ClockPage() {
                 <h3 className="text-sm font-semibold text-foreground">新建倒计时任务</h3>
                 <div className="grid grid-cols-1 md:grid-cols-[1.2fr_180px_auto] gap-2">
                   <Input
-                    value={newCountdownTitle}
-                    onChange={event => setNewCountdownTitle(event.target.value)}
+                    value={state.uiState.clock.newCountdownTitle}
+                    onChange={event =>
+                      updateUiState({
+                        clock: {
+                          ...state.uiState.clock,
+                          newCountdownTitle: event.target.value,
+                        },
+                      })
+                    }
                     placeholder="任务名称（可选）"
                     className="h-8"
                   />
                   <Input
                     type="number"
                     min={1}
-                    value={newCountdownSeconds}
-                    onChange={event => setNewCountdownSeconds(event.target.value)}
+                    value={state.uiState.clock.newCountdownSeconds}
+                    onChange={event =>
+                      updateUiState({
+                        clock: {
+                          ...state.uiState.clock,
+                          newCountdownSeconds: event.target.value,
+                        },
+                      })
+                    }
                     placeholder="时长（秒）"
                     className="h-8"
                   />
