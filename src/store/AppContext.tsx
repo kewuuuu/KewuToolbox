@@ -95,11 +95,18 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
       'tag',
       'totalVisible',
       'focusTime',
-      'lastSeen',
+      'lastFocus',
+      'longestContinuousFocus',
     ]);
+    const rawKey =
+      value && typeof value.key === 'string'
+        ? value.key === 'lastSeen'
+          ? 'lastFocus'
+          : value.key
+        : undefined;
     const key =
-      value && typeof value.key === 'string' && sortKeySet.has(value.key)
-        ? value.key
+      rawKey && sortKeySet.has(rawKey)
+        ? rawKey
         : fallbackSort.key;
     const direction =
       value?.direction === 'asc' || value?.direction === 'desc'
@@ -176,6 +183,9 @@ function normalizeRuntimeState(
     pomodoro: {
       secondsLeft: Math.max(0, Math.floor(pickFinite(input?.pomodoro?.secondsLeft, fallbackFocusSeconds))),
       isRunning: Boolean(input?.pomodoro?.isRunning ?? fallback.pomodoro.isRunning),
+      hasStartedCurrentStage: Boolean(
+        input?.pomodoro?.hasStartedCurrentStage ?? fallback.pomodoro.hasStartedCurrentStage,
+      ),
       currentCycle: Math.max(1, Math.floor(pickFinite(input?.pomodoro?.currentCycle, fallback.pomodoro.currentCycle))),
       currentQueueIdx: runtimeQueueIndex,
       offTargetSeconds: Math.max(0, Math.floor(pickFinite(input?.pomodoro?.offTargetSeconds, fallback.pomodoro.offTargetSeconds))),
@@ -499,11 +509,37 @@ function normalizeState(raw: unknown): AppState {
     ...input,
     profiles,
     sessions: Array.isArray(input.sessions) ? input.sessions : initial.sessions,
-    windowStats: Array.isArray(input.windowStats) ? input.windowStats : initial.windowStats,
+    windowStats: Array.isArray(input.windowStats)
+      ? input.windowStats.map(item => ({
+          ...item,
+          lastFocusAt:
+            typeof item.lastFocusAt === 'string'
+              ? item.lastFocusAt
+              : typeof (item as { lastSeenAt?: unknown }).lastSeenAt === 'string'
+                ? String((item as { lastSeenAt?: unknown }).lastSeenAt)
+                : '',
+          longestContinuousFocusSeconds: Number.isFinite(Number(item.longestContinuousFocusSeconds))
+            ? Math.max(0, Math.floor(Number(item.longestContinuousFocusSeconds)))
+            : 0,
+        }))
+      : initial.windowStats,
     currentProcessKeys: Array.isArray(input.currentProcessKeys) ? input.currentProcessKeys : initial.currentProcessKeys,
     processTags: Array.isArray(input.processTags) ? input.processTags : initial.processTags,
     processTagAssignments: Array.isArray(input.processTagAssignments) ? input.processTagAssignments : initial.processTagAssignments,
-    processTagStats: Array.isArray(input.processTagStats) ? input.processTagStats : initial.processTagStats,
+    processTagStats: Array.isArray(input.processTagStats)
+      ? input.processTagStats.map(item => ({
+          ...item,
+          lastFocusAt:
+            typeof item.lastFocusAt === 'string'
+              ? item.lastFocusAt
+              : typeof (item as { lastSeenAt?: unknown }).lastSeenAt === 'string'
+                ? String((item as { lastSeenAt?: unknown }).lastSeenAt)
+                : '',
+          longestContinuousFocusSeconds: Number.isFinite(Number(item.longestContinuousFocusSeconds))
+            ? Math.max(0, Math.floor(Number(item.longestContinuousFocusSeconds)))
+            : 0,
+        }))
+      : initial.processTagStats,
     soundFiles: normalizedSoundFiles,
     preferences: normalizedPreferences,
     subjects: Array.isArray(input.subjects) ? input.subjects : initial.subjects,
@@ -572,9 +608,29 @@ function mergeLiveState(prev: AppState, incoming: AppState): AppState {
     windowStats: incoming.windowStats.map(item => ({
       ...item,
       category: localCategoryMap.get(item.classificationKey) ?? item.category,
+      lastFocusAt:
+        typeof item.lastFocusAt === 'string'
+          ? item.lastFocusAt
+          : typeof (item as { lastSeenAt?: unknown }).lastSeenAt === 'string'
+            ? String((item as { lastSeenAt?: unknown }).lastSeenAt)
+            : '',
+      longestContinuousFocusSeconds: Number.isFinite(Number(item.longestContinuousFocusSeconds))
+        ? Math.max(0, Math.floor(Number(item.longestContinuousFocusSeconds)))
+        : 0,
     })),
     currentProcessKeys: incoming.currentProcessKeys,
-    processTagStats: incoming.processTagStats,
+    processTagStats: incoming.processTagStats.map(item => ({
+      ...item,
+      lastFocusAt:
+        typeof item.lastFocusAt === 'string'
+          ? item.lastFocusAt
+          : typeof (item as { lastSeenAt?: unknown }).lastSeenAt === 'string'
+            ? String((item as { lastSeenAt?: unknown }).lastSeenAt)
+            : '',
+      longestContinuousFocusSeconds: Number.isFinite(Number(item.longestContinuousFocusSeconds))
+        ? Math.max(0, Math.floor(Number(item.longestContinuousFocusSeconds)))
+        : 0,
+    })),
     powerEvents: incoming.powerEvents,
     currentFocusedWindow: focused,
   };
@@ -760,6 +816,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               pomodoro: {
                 ...runtime,
                 isRunning: false,
+                hasStartedCurrentStage: false,
                 currentCycle: 1,
                 currentQueueIdx: 0,
                 secondsLeft: FALLBACK_FOCUS_MINUTES * 60,
@@ -773,18 +830,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           };
         }
 
+        const lastTickAtMs = Number.isFinite(runtime.distractionLastTickAtMs)
+          ? Number(runtime.distractionLastTickAtMs)
+          : nowMs;
+        const deltaMs = Math.max(0, nowMs - lastTickAtMs);
+        const hasTargetWindows = currentItem.windowGroup.length > 0;
+        const focusedClassificationKey = prev.currentFocusedWindow?.classificationKey;
+        const hasIdentifiedFocus = typeof focusedClassificationKey === 'string' && focusedClassificationKey.length > 0;
+        const isFocusedInTarget = hasIdentifiedFocus && currentItem.windowGroup.some(
+          item => item.classificationKey === focusedClassificationKey,
+        );
+        const onTarget = !hasTargetWindows || isFocusedInTarget;
+        const isDefinitelyOffTarget = hasTargetWindows && hasIdentifiedFocus && !isFocusedInTarget;
+
         const effectiveTimerEndMs =
           Number.isFinite(runtime.timerEndsAtMs) && (runtime.timerEndsAtMs ?? 0) > 0
             ? Number(runtime.timerEndsAtMs)
             : nowMs + Math.max(0, runtime.secondsLeft) * 1000;
+        const adjustedTimerEndMs =
+          isDefinitelyOffTarget && deltaMs > 0
+            ? effectiveTimerEndMs + deltaMs
+            : effectiveTimerEndMs;
         let nextRuntime = {
           ...runtime,
-          timerEndsAtMs: effectiveTimerEndMs,
+          hasStartedCurrentStage: true,
+          timerEndsAtMs: adjustedTimerEndMs,
           currentQueueIdx,
           secondsLeft: Math.max(0, runtime.secondsLeft),
         };
 
-        const remainingMs = effectiveTimerEndMs - nowMs;
+        const remainingMs = adjustedTimerEndMs - nowMs;
         if (remainingMs <= 0) {
           shouldPlayCompletionSound = true;
           const isInfiniteCycle = prev.pomodoroSettings.cycleCount <= 0;
@@ -796,6 +871,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               nextRuntime = {
                 ...nextRuntime,
                 isRunning: false,
+                hasStartedCurrentStage: false,
                 currentQueueIdx: nextQueueIndex,
                 currentCycle: 1,
                 secondsLeft: getFocusSecondsForQueueIndex(queue, nextQueueIndex),
@@ -809,6 +885,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               nextRuntime = {
                 ...nextRuntime,
                 isRunning: false,
+                hasStartedCurrentStage: false,
                 currentQueueIdx: 0,
                 currentCycle: 1,
                 secondsLeft: getFocusSecondsForQueueIndex(queue, 0),
@@ -823,6 +900,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             nextRuntime = {
               ...nextRuntime,
               isRunning: false,
+              hasStartedCurrentStage: false,
               currentCycle: nextRuntime.currentCycle + 1,
               secondsLeft: currentFocusSeconds,
               timerEndsAtMs: undefined,
@@ -851,26 +929,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
 
         const nextSeconds = Math.ceil(remainingMs / 1000);
-        const lastTickAtMs = Number.isFinite(runtime.distractionLastTickAtMs)
-          ? Number(runtime.distractionLastTickAtMs)
-          : nowMs;
-        const deltaMs = Math.max(0, nowMs - lastTickAtMs);
         let offTargetAccumulatedMs = Math.max(0, runtime.offTargetAccumulatedMs);
         let offTargetSeconds = Math.max(0, runtime.offTargetSeconds);
         let distractionAlerted = Boolean(runtime.distractionAlerted);
 
-        const hasTargetWindows = currentItem.windowGroup.length > 0;
         if (!hasTargetWindows) {
           offTargetAccumulatedMs = 0;
           offTargetSeconds = 0;
           distractionAlerted = false;
-        } else if (deltaMs > 0) {
-          const focusedClassificationKey = prev.currentFocusedWindow?.classificationKey;
-          const onTarget = Boolean(
-            focusedClassificationKey &&
-              currentItem.windowGroup.some(item => item.classificationKey === focusedClassificationKey),
-          );
-          if (onTarget) {
+        } else if (deltaMs > 0 && hasIdentifiedFocus) {
+          if (isFocusedInTarget) {
             if (prev.pomodoroSettings.distractionMode === '连续' || prev.pomodoroSettings.distractionMode === '杩炵画') {
               offTargetAccumulatedMs = 0;
               offTargetSeconds = 0;
@@ -900,7 +968,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           offTargetSeconds !== runtime.offTargetSeconds ||
           offTargetAccumulatedMs !== runtime.offTargetAccumulatedMs ||
           distractionAlerted !== runtime.distractionAlerted ||
-          effectiveTimerEndMs !== runtime.timerEndsAtMs ||
+          adjustedTimerEndMs !== runtime.timerEndsAtMs ||
           nowMs !== runtime.distractionLastTickAtMs;
 
         if (!changed) {

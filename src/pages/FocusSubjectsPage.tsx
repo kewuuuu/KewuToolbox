@@ -10,6 +10,20 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Plus, Edit2, Trash2, ListPlus, Clock } from 'lucide-react';
 import { FocusSubject, WindowGroupItem } from '@/types';
 
+type SelectableProfile = {
+  id: string;
+  classificationKey: string;
+  displayName: string;
+  objectType: 'AppWindow' | 'BrowserTab' | 'Desktop';
+};
+
+function formatDurationSeconds(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(total / 60);
+  const remain = total % 60;
+  return `${minutes}分 ${remain}秒`;
+}
+
 export default function FocusSubjectsPage() {
   const { state, addSubject, updateSubject, deleteSubject, addToQueue } = useAppState();
   const [modalOpen, setModalOpen] = useState(false);
@@ -26,68 +40,98 @@ export default function FocusSubjectsPage() {
     setModalOpen(true);
   };
 
-  const openEdit = (s: FocusSubject) => {
-    setEditing(s);
-    setTitle(s.title);
-    setDefaultMinutes(s.defaultMinutes);
-    setSelectedWindows([...s.windowGroup]);
+  const openEdit = (subject: FocusSubject) => {
+    setEditing(subject);
+    setTitle(subject.title);
+    setDefaultMinutes(subject.defaultMinutes);
+    setSelectedWindows([...subject.windowGroup]);
     setModalOpen(true);
   };
 
   const handleSave = () => {
-    if (!title.trim()) return;
-    const now = new Date().toISOString();
-    if (editing) {
-      updateSubject({ ...editing, title, defaultMinutes, windowGroup: selectedWindows, updatedAt: now });
-    } else {
-      addSubject({ id: `sub-${Date.now()}`, title, defaultMinutes, windowGroup: selectedWindows, createdAt: now, updatedAt: now });
+    const nextTitle = title.trim();
+    if (!nextTitle) {
+      return;
     }
+
+    const now = new Date().toISOString();
+    const safeMinutes = Number.isFinite(defaultMinutes) ? Math.max(1, Math.floor(defaultMinutes)) : 25;
+
+    if (editing) {
+      updateSubject({
+        ...editing,
+        title: nextTitle,
+        defaultMinutes: safeMinutes,
+        windowGroup: selectedWindows,
+        updatedAt: now,
+      });
+    } else {
+      addSubject({
+        id: `sub-${Date.now()}`,
+        title: nextTitle,
+        defaultMinutes: safeMinutes,
+        windowGroup: selectedWindows,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
     setModalOpen(false);
   };
 
-  const toggleWindow = (profile: { classificationKey: string; displayName: string; objectType: 'AppWindow' | 'BrowserTab' | 'Desktop' }) => {
+  const toggleWindow = (profile: SelectableProfile) => {
     setSelectedWindows(prev => {
-      const exists = prev.some(w => w.classificationKey === profile.classificationKey);
-      if (exists) return prev.filter(w => w.classificationKey !== profile.classificationKey);
-      return [...prev, { classificationKey: profile.classificationKey, displayName: profile.displayName, objectType: profile.objectType }];
+      const exists = prev.some(item => item.classificationKey === profile.classificationKey);
+      if (exists) {
+        return prev.filter(item => item.classificationKey !== profile.classificationKey);
+      }
+      return [
+        ...prev,
+        {
+          classificationKey: profile.classificationKey,
+          displayName: profile.displayName,
+          objectType: profile.objectType,
+        },
+      ];
     });
   };
 
-  const handleAddToQueue = (s: FocusSubject) => {
+  const handleAddToQueue = (subject: FocusSubject) => {
     addToQueue({
       id: `q-${Date.now()}`,
       itemType: 'Subject',
-      title: s.title,
-      durationMinutes: s.defaultMinutes,
-      windowGroup: s.windowGroup,
-      sourceSubjectId: s.id,
+      title: subject.title,
+      durationMinutes: subject.defaultMinutes,
+      windowGroup: subject.windowGroup,
+      sourceSubjectId: subject.id,
       orderIndex: state.queue.length,
     });
   };
 
-  // Calculate today's focus time per subject
-  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-  const getSubjectFocusTime = (s: FocusSubject) => {
-    const keys = new Set(s.windowGroup.map(w => w.classificationKey));
+  const todayStart = useMemo(() => {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    return now;
+  }, []);
+
+  const getSubjectFocusTime = (subject: FocusSubject) => {
+    const keys = new Set(subject.windowGroup.map(item => item.classificationKey));
     return state.sessions
-      .filter(sess => new Date(sess.startAt) >= todayStart && keys.has(sess.classificationKey))
-      .reduce((acc, sess) => acc + sess.durationSeconds, 0);
+      .filter(session => new Date(session.startAt) >= todayStart && keys.has(session.classificationKey))
+      .reduce((acc, session) => acc + session.durationSeconds, 0);
   };
 
   const sortedProfiles = useMemo(() => {
-    const statLastSeenMap = new Map(
-      state.windowStats.map(stat => [
-        stat.classificationKey,
-        new Date(stat.lastSeenAt).getTime() || 0,
-      ]),
+    const statLastFocusMap = new Map(
+      state.windowStats.map(stat => [stat.classificationKey, new Date(stat.lastFocusAt).getTime() || 0]),
     );
     const collator = new Intl.Collator('zh-CN-u-co-pinyin', { sensitivity: 'base' });
 
     return [...state.profiles].sort((a, b) => {
-      const lastSeenA = statLastSeenMap.get(a.classificationKey) ?? 0;
-      const lastSeenB = statLastSeenMap.get(b.classificationKey) ?? 0;
-      if (lastSeenA !== lastSeenB) {
-        return lastSeenB - lastSeenA;
+      const lastFocusA = statLastFocusMap.get(a.classificationKey) ?? 0;
+      const lastFocusB = statLastFocusMap.get(b.classificationKey) ?? 0;
+      if (lastFocusA !== lastFocusB) {
+        return lastFocusB - lastFocusA;
       }
       return collator.compare(a.displayName, b.displayName);
     });
@@ -95,81 +139,118 @@ export default function FocusSubjectsPage() {
 
   return (
     <DashboardLayout pageTitle="专注事项">
-      <div className="max-w-5xl mx-auto">
+      <div className="max-w-5xl mx-auto px-3 sm:px-0">
         <FocusSubnav />
-        <div className="flex items-center justify-between mb-4">
+
+        <div className="mb-4 flex items-center justify-between gap-2">
           <h2 className="text-lg font-semibold text-foreground">专注事项列表</h2>
-          <Button onClick={openCreate} size="sm" className="gap-1"><Plus className="w-3.5 h-3.5" /> 新建事项</Button>
+          <Button onClick={openCreate} size="sm" className="gap-1">
+            <Plus className="h-3.5 w-3.5" />
+            新建事项
+          </Button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {state.subjects.map(s => {
-            const focusTime = getSubjectFocusTime(s);
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {state.subjects.map(subject => {
+            const focusTime = getSubjectFocusTime(subject);
             return (
-              <Card key={s.id} className="p-4 bg-card border-border hover:border-primary/30 transition-colors">
-                <div className="flex items-start justify-between mb-2">
-                  <h3 className="text-sm font-medium text-foreground">{s.title}</h3>
-                  <div className="flex gap-1">
-                    <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => handleAddToQueue(s)}>
-                      <ListPlus className="w-3.5 h-3.5" />
+              <Card key={subject.id} className="bg-card p-4 transition-colors hover:border-primary/30">
+                <div className="mb-2 flex items-start justify-between gap-2">
+                  <h3 className="min-w-0 truncate text-sm font-medium text-foreground" title={subject.title}>
+                    {subject.title}
+                  </h3>
+                  <div className="flex shrink-0 gap-1">
+                    <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => handleAddToQueue(subject)}>
+                      <ListPlus className="h-3.5 w-3.5" />
                     </Button>
-                    <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => openEdit(s)}>
-                      <Edit2 className="w-3.5 h-3.5" />
+                    <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => openEdit(subject)}>
+                      <Edit2 className="h-3.5 w-3.5" />
                     </Button>
-                    <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" onClick={() => deleteSubject(s.id)}>
-                      <Trash2 className="w-3.5 h-3.5" />
+                    <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" onClick={() => deleteSubject(subject.id)}>
+                      <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
-                  <Clock className="w-3 h-3" />
-                  <span>默认 {s.defaultMinutes} 分钟</span>
+
+                <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                  <Clock className="h-3 w-3" />
+                  <span>默认 {subject.defaultMinutes} 分钟</span>
                 </div>
-                <div className="flex flex-wrap gap-1 mb-2">
-                  {s.windowGroup.map(w => (
-                    <span key={w.classificationKey} className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">
-                      {w.displayName}
+
+                <div className="mb-2 flex flex-wrap gap-1">
+                  {subject.windowGroup.map(window => (
+                    <span
+                      key={window.classificationKey}
+                      className="max-w-full truncate rounded bg-secondary px-1.5 py-0.5 text-[10px] text-secondary-foreground"
+                      title={window.displayName}
+                    >
+                      {window.displayName}
                     </span>
                   ))}
                 </div>
-                <div className="text-xs text-primary">
-                  今日: {Math.floor(focusTime / 60)}分{focusTime % 60}秒
-                </div>
+
+                <div className="text-xs text-primary">今日: {formatDurationSeconds(focusTime)}</div>
               </Card>
             );
           })}
         </div>
 
         <Dialog open={modalOpen} onOpenChange={setModalOpen}>
-          <DialogContent className="bg-card border-border">
-            <DialogHeader>
-              <DialogTitle>{editing ? '编辑事项' : '新建事项'}</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div>
-                <label className="text-xs text-muted-foreground">标题</label>
-                <Input value={title} onChange={e => setTitle(e.target.value)} className="mt-1" />
-              </div>
-              <div>
-                <label className="text-xs text-muted-foreground">默认时长 (分钟)</label>
-                <Input type="number" value={defaultMinutes} onChange={e => setDefaultMinutes(+e.target.value)} className="mt-1" />
-              </div>
-              <div>
-                <label className="text-xs text-muted-foreground mb-2 block">窗口组</label>
-                <div className="max-h-48 overflow-auto space-y-1 border border-border rounded-lg p-2">
-                  {sortedProfiles.map(p => (
-                    <label key={p.id} className="flex items-center gap-2 p-1.5 rounded hover:bg-secondary/50 cursor-pointer">
-                      <Checkbox
-                        checked={selectedWindows.some(w => w.classificationKey === p.classificationKey)}
-                        onCheckedChange={() => toggleWindow(p)}
-                      />
-                      <span className="text-sm text-foreground">{p.displayName}</span>
-                      <span className="text-[10px] text-muted-foreground">{p.objectType}</span>
-                    </label>
-                  ))}
+          <DialogContent className="w-[calc(100vw-2rem)] max-w-2xl overflow-hidden border-border bg-card p-0">
+            <div className="max-h-[85vh] overflow-y-auto p-6">
+              <DialogHeader>
+                <DialogTitle>{editing ? '编辑事项' : '新建事项'}</DialogTitle>
+              </DialogHeader>
+
+              <div className="mt-4 space-y-4">
+                <div className="min-w-0">
+                  <label className="text-xs text-muted-foreground">标题</label>
+                  <Input
+                    value={title}
+                    onChange={event => setTitle(event.target.value)}
+                    className="mt-1 w-full min-w-0"
+                    placeholder="请输入专注事项标题"
+                  />
                 </div>
+
+                <div className="min-w-0">
+                  <label className="text-xs text-muted-foreground">默认时长 (分钟)</label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={defaultMinutes}
+                    onChange={event => setDefaultMinutes(Number(event.target.value))}
+                    className="mt-1 w-full min-w-0"
+                  />
+                </div>
+
+                <div className="min-w-0">
+                  <label className="mb-2 block text-xs text-muted-foreground">窗口组</label>
+                  <div className="max-h-56 overflow-auto rounded-lg border border-border p-2">
+                    <div className="space-y-1">
+                      {sortedProfiles.map(profile => (
+                        <label
+                          key={profile.id}
+                          className="grid min-w-0 cursor-pointer grid-cols-[auto,1fr,auto] items-center gap-2 rounded p-1.5 hover:bg-secondary/50"
+                        >
+                          <Checkbox
+                            checked={selectedWindows.some(item => item.classificationKey === profile.classificationKey)}
+                            onCheckedChange={() => toggleWindow(profile)}
+                          />
+                          <span className="min-w-0 truncate text-sm text-foreground" title={profile.displayName}>
+                            {profile.displayName}
+                          </span>
+                          <span className="shrink-0 text-[10px] text-muted-foreground">{profile.objectType}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <Button onClick={handleSave} className="w-full">
+                  保存
+                </Button>
               </div>
-              <Button onClick={handleSave} className="w-full">保存</Button>
             </div>
           </DialogContent>
         </Dialog>

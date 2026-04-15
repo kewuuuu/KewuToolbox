@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, powerMonitor, Notification } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, powerMonitor, Notification, Tray, Menu } = require('electron');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
@@ -44,6 +44,7 @@ let activeWinApi = null;
 let browserBridgeServer = null;
 let resolvedStatePath = null;
 let preferredStatePath = null;
+let appTray = null;
 
 /** @type {import('../src/types').AppState} */
 let appState = createEmptyState();
@@ -53,6 +54,8 @@ const monitorCursor = {
   carryMs: 0,
   activeSessionId: null,
   activeClassificationKey: null,
+  activeTagId: null,
+  tagFocusStreakSeconds: 0,
 };
 
 const browserBridgeState = {
@@ -137,11 +140,11 @@ function createEmptyState() {
       monitoring: {
         activeTab: 'history',
         historySort: {
-          key: 'lastSeen',
+          key: 'lastFocus',
           direction: 'desc',
         },
         currentSort: {
-          key: 'lastSeen',
+          key: 'lastFocus',
           direction: 'desc',
         },
       },
@@ -154,6 +157,7 @@ function createEmptyState() {
       pomodoro: {
         secondsLeft: 25 * 60,
         isRunning: false,
+        hasStartedCurrentStage: false,
         currentCycle: 1,
         currentQueueIdx: 0,
         offTargetSeconds: 0,
@@ -335,6 +339,70 @@ function resolveAppIconPath() {
     }
   }
   return undefined;
+}
+
+function showMainWindowFromTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+
+  try {
+    mainWindow.setSkipTaskbar(false);
+  } catch {
+    // Ignore skip-taskbar errors.
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function hideMainWindowToTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  try {
+    mainWindow.setSkipTaskbar(true);
+  } catch {
+    // Ignore skip-taskbar errors.
+  }
+  mainWindow.hide();
+}
+
+function createTray() {
+  if (appTray) {
+    return;
+  }
+
+  const iconPath = resolveAppIconPath();
+  if (!iconPath || !fs.existsSync(iconPath)) {
+    return;
+  }
+
+  appTray = new Tray(iconPath);
+  appTray.setToolTip('KewuToolbox');
+  appTray.on('double-click', () => {
+    showMainWindowFromTray();
+  });
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Open',
+      click: () => showMainWindowFromTray(),
+    },
+    {
+      type: 'separator',
+    },
+    {
+      label: 'Exit',
+      click: () => app.quit(),
+    },
+  ]);
+  appTray.setContextMenu(contextMenu);
 }
 
 function ensureWritableStatePath(targetPath) {
@@ -655,6 +723,88 @@ function scheduleSave() {
   }, 300);
 }
 
+function normalizeMonitoringSort(rawSort, fallbackSort) {
+  const allowed = new Set([
+    'displayName',
+    'objectType',
+    'processName',
+    'category',
+    'tag',
+    'totalVisible',
+    'focusTime',
+    'lastFocus',
+    'longestContinuousFocus',
+  ]);
+  const keyCandidate = typeof rawSort?.key === 'string' ? rawSort.key : fallbackSort.key;
+  const mappedKey = keyCandidate === 'lastSeen' ? 'lastFocus' : keyCandidate;
+  const key = allowed.has(mappedKey) ? mappedKey : fallbackSort.key;
+  const direction =
+    rawSort?.direction === 'asc' || rawSort?.direction === 'desc'
+      ? rawSort.direction
+      : fallbackSort.direction;
+  return { key, direction };
+}
+
+function normalizeWindowRuntimeStat(item) {
+  if (!item || typeof item !== 'object' || typeof item.classificationKey !== 'string') {
+    return null;
+  }
+
+  const lastFocusAt =
+    typeof item.lastFocusAt === 'string'
+      ? item.lastFocusAt
+      : typeof item.lastSeenAt === 'string'
+        ? item.lastSeenAt
+        : '';
+  const longestContinuousFocusSeconds = Number.isFinite(Number(item.longestContinuousFocusSeconds))
+    ? Math.max(0, Math.floor(Number(item.longestContinuousFocusSeconds)))
+    : 0;
+
+  return {
+    classificationKey: item.classificationKey,
+    displayName: typeof item.displayName === 'string' ? item.displayName : item.classificationKey,
+    objectType: item.objectType === 'BrowserTab' || item.objectType === 'Desktop' ? item.objectType : 'AppWindow',
+    processName: typeof item.processName === 'string' ? item.processName : '',
+    domain: typeof item.domain === 'string' ? item.domain : undefined,
+    category: categoryFromExistingOrDefault(item.category, item.objectType === 'Desktop'),
+    totalVisibleSeconds: Number.isFinite(Number(item.totalVisibleSeconds))
+      ? Math.max(0, Math.floor(Number(item.totalVisibleSeconds)))
+      : 0,
+    focusSeconds: Number.isFinite(Number(item.focusSeconds))
+      ? Math.max(0, Math.floor(Number(item.focusSeconds)))
+      : 0,
+    lastFocusAt,
+    longestContinuousFocusSeconds,
+  };
+}
+
+function normalizeProcessTagRuntimeStat(item) {
+  if (!item || typeof item !== 'object' || typeof item.tagId !== 'string') {
+    return null;
+  }
+  const lastFocusAt =
+    typeof item.lastFocusAt === 'string'
+      ? item.lastFocusAt
+      : typeof item.lastSeenAt === 'string'
+        ? item.lastSeenAt
+        : '';
+  const longestContinuousFocusSeconds = Number.isFinite(Number(item.longestContinuousFocusSeconds))
+    ? Math.max(0, Math.floor(Number(item.longestContinuousFocusSeconds)))
+    : 0;
+
+  return {
+    tagId: item.tagId,
+    totalVisibleSeconds: Number.isFinite(Number(item.totalVisibleSeconds))
+      ? Math.max(0, Math.floor(Number(item.totalVisibleSeconds)))
+      : 0,
+    focusSeconds: Number.isFinite(Number(item.focusSeconds))
+      ? Math.max(0, Math.floor(Number(item.focusSeconds)))
+      : 0,
+    lastFocusAt,
+    longestContinuousFocusSeconds,
+  };
+}
+
 function normalizeSavedState(input) {
   const base = createEmptyState();
   if (!input || typeof input !== 'object') {
@@ -683,6 +833,10 @@ function normalizeSavedState(input) {
   const processTags = Array.isArray(raw.processTags) ? raw.processTags : [];
   const processTagAssignments = Array.isArray(raw.processTagAssignments) ? raw.processTagAssignments : [];
   const validTagSet = new Set(processTags.map(tag => tag.id));
+  const rawUiState = raw.uiState && typeof raw.uiState === 'object' ? raw.uiState : {};
+  const rawMonitoringUi = rawUiState.monitoring && typeof rawUiState.monitoring === 'object'
+    ? rawUiState.monitoring
+    : {};
   let soundFiles = Array.isArray(raw.soundFiles) ? raw.soundFiles : [];
   const defaultSoundFiles = createDefaultSoundFiles();
   if (soundFiles.length === 0) {
@@ -702,12 +856,18 @@ function normalizeSavedState(input) {
     ...raw,
     profiles,
     sessions: Array.isArray(raw.sessions) ? raw.sessions : [],
-    windowStats: Array.isArray(raw.windowStats) ? raw.windowStats : [],
+    windowStats: Array.isArray(raw.windowStats)
+      ? raw.windowStats
+          .map(item => normalizeWindowRuntimeStat(item))
+          .filter(Boolean)
+      : [],
     currentProcessKeys: Array.isArray(raw.currentProcessKeys) ? raw.currentProcessKeys : [],
     processTags,
     processTagAssignments: processTagAssignments.filter(item => validTagSet.has(item.tagId)),
     processTagStats: Array.isArray(raw.processTagStats)
-      ? raw.processTagStats.filter(item => validTagSet.has(item.tagId))
+      ? raw.processTagStats
+          .map(item => normalizeProcessTagRuntimeStat(item))
+          .filter(item => item && validTagSet.has(item.tagId))
       : [],
     soundFiles,
     preferences: {
@@ -742,6 +902,26 @@ function normalizeSavedState(input) {
     powerEvents: Array.isArray(raw.powerEvents) ? raw.powerEvents : [],
     currentFocusedWindow: raw.currentFocusedWindow ?? null,
     displayMode: typeof raw.displayMode === 'string' ? raw.displayMode : DEFAULT_DISPLAY_MODE,
+    uiState: {
+      ...base.uiState,
+      ...rawUiState,
+      monitoring: {
+        ...base.uiState.monitoring,
+        ...rawMonitoringUi,
+        historySort: normalizeMonitoringSort(
+          rawMonitoringUi.historySort,
+          base.uiState.monitoring.historySort,
+        ),
+        currentSort: normalizeMonitoringSort(
+          rawMonitoringUi.currentSort,
+          base.uiState.monitoring.currentSort,
+        ),
+      },
+      clock: {
+        ...base.uiState.clock,
+        ...(rawUiState.clock && typeof rawUiState.clock === 'object' ? rawUiState.clock : {}),
+      },
+    },
     pomodoroSettings: {
       ...base.pomodoroSettings,
       ...(raw.pomodoroSettings ?? {}),
@@ -826,6 +1006,8 @@ function resetRuntimeTrackingState() {
   monitorCursor.carryMs = 0;
   monitorCursor.activeSessionId = null;
   monitorCursor.activeClassificationKey = null;
+  monitorCursor.activeTagId = null;
+  monitorCursor.tagFocusStreakSeconds = 0;
   pendingWindowRuntime.clear();
   browserBridgeState.byBrowser.clear();
   codeWindowIdentityCache.clear();
@@ -1197,7 +1379,11 @@ function ensureProfile(profileCandidate) {
   return toInsert;
 }
 
-function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, nowIso) {
+function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, options = {}) {
+  const nextLastFocusAt = typeof options.lastFocusAt === 'string' ? options.lastFocusAt : undefined;
+  const nextLongestContinuousFocusSeconds = Number.isFinite(Number(options.longestContinuousFocusSeconds))
+    ? Math.max(0, Math.floor(Number(options.longestContinuousFocusSeconds)))
+    : 0;
   const existing = appState.windowStats.find(item => item.classificationKey === profile.classificationKey);
   if (existing) {
     existing.displayName = profile.displayName;
@@ -1207,7 +1393,13 @@ function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, nowIso) {
     existing.category = profile.category;
     existing.totalVisibleSeconds += deltaSeconds;
     existing.focusSeconds += focusDeltaSeconds;
-    existing.lastSeenAt = nowIso;
+    if (nextLastFocusAt) {
+      existing.lastFocusAt = nextLastFocusAt;
+    }
+    existing.longestContinuousFocusSeconds = Math.max(
+      Number(existing.longestContinuousFocusSeconds) || 0,
+      nextLongestContinuousFocusSeconds,
+    );
     return;
   }
 
@@ -1220,7 +1412,8 @@ function upsertWindowStat(profile, deltaSeconds, focusDeltaSeconds, nowIso) {
     category: profile.category,
     totalVisibleSeconds: deltaSeconds,
     focusSeconds: focusDeltaSeconds,
-    lastSeenAt: nowIso,
+    lastFocusAt: nextLastFocusAt || '',
+    longestContinuousFocusSeconds: nextLongestContinuousFocusSeconds,
   });
 }
 
@@ -1281,7 +1474,7 @@ function getProcessTagAssignmentMap() {
   return assignmentMap;
 }
 
-function updateProcessTagStats(openKeys, focusedKey, deltaSeconds, nowIso) {
+function updateProcessTagStats(openKeys, focusedKey, deltaSeconds, nowIso, focusedTagStreakSeconds = 0) {
   if (deltaSeconds <= 0) {
     return;
   }
@@ -1304,13 +1497,13 @@ function updateProcessTagStats(openKeys, focusedKey, deltaSeconds, nowIso) {
     const existing = statMap.get(tagId);
     if (existing) {
       existing.totalVisibleSeconds += deltaSeconds;
-      existing.lastSeenAt = nowIso;
     } else {
       statMap.set(tagId, {
         tagId,
         totalVisibleSeconds: deltaSeconds,
         focusSeconds: 0,
-        lastSeenAt: nowIso,
+        lastFocusAt: '',
+        longestContinuousFocusSeconds: 0,
       });
     }
   }
@@ -1319,13 +1512,18 @@ function updateProcessTagStats(openKeys, focusedKey, deltaSeconds, nowIso) {
     const focusedStat = statMap.get(focusedTagId);
     if (focusedStat) {
       focusedStat.focusSeconds += deltaSeconds;
-      focusedStat.lastSeenAt = nowIso;
+      focusedStat.lastFocusAt = nowIso;
+      focusedStat.longestContinuousFocusSeconds = Math.max(
+        Number(focusedStat.longestContinuousFocusSeconds) || 0,
+        Math.max(0, Math.floor(Number(focusedTagStreakSeconds) || 0)),
+      );
     } else {
       statMap.set(focusedTagId, {
         tagId: focusedTagId,
         totalVisibleSeconds: 0,
         focusSeconds: deltaSeconds,
-        lastSeenAt: nowIso,
+        lastFocusAt: nowIso,
+        longestContinuousFocusSeconds: Math.max(0, Math.floor(Number(focusedTagStreakSeconds) || 0)),
       });
     }
   }
@@ -1582,28 +1780,45 @@ async function monitorTick() {
   );
 
   for (const [key, candidate] of bucket.entries()) {
-    const focusDelta = focusedCandidate && key === focusedCandidate.classificationKey ? deltaSeconds : 0;
+    const isFocusedWindow = Boolean(focusedCandidate && key === focusedCandidate.classificationKey);
+    const focusDelta = isFocusedWindow ? deltaSeconds : 0;
     const profile = ensureProfile(candidate);
     const existingPending = pendingWindowRuntime.get(key);
     const pending = existingPending ?? {
       totalVisibleSeconds: 0,
       totalFocusSeconds: 0,
+      currentContinuousFocusSeconds: 0,
+      longestContinuousFocusSeconds: 0,
+      lastFocusAt: '',
       recorded: recordedKeys.has(key),
     };
     pending.totalVisibleSeconds += deltaSeconds;
     pending.totalFocusSeconds += focusDelta;
+    if (focusDelta > 0) {
+      pending.currentContinuousFocusSeconds += focusDelta;
+      pending.longestContinuousFocusSeconds = Math.max(
+        pending.longestContinuousFocusSeconds,
+        pending.currentContinuousFocusSeconds,
+      );
+      pending.lastFocusAt = nowIso;
+    } else {
+      pending.currentContinuousFocusSeconds = 0;
+    }
 
     const isRecordEligible = pending.recorded || pending.totalVisibleSeconds >= recordThresholdSeconds;
     if (isRecordEligible) {
       const visibleDelta = pending.recorded ? deltaSeconds : pending.totalVisibleSeconds;
       const focusDeltaToApply = pending.recorded ? focusDelta : pending.totalFocusSeconds;
-      upsertWindowStat(profile, visibleDelta, focusDeltaToApply, nowIso);
+      upsertWindowStat(profile, visibleDelta, focusDeltaToApply, {
+        lastFocusAt: pending.lastFocusAt,
+        longestContinuousFocusSeconds: pending.longestContinuousFocusSeconds,
+      });
       pending.recorded = true;
-      if (focusedCandidate && key === focusedCandidate.classificationKey) {
+      if (isFocusedWindow) {
         focusedProfile = profile;
         currentFocusedWindow = profile;
       }
-    } else if (focusedCandidate && key === focusedCandidate.classificationKey) {
+    } else if (isFocusedWindow) {
       currentFocusedWindow = profile;
     }
 
@@ -1619,13 +1834,36 @@ async function monitorTick() {
   appState.currentProcessKeys = [...bucket.keys()];
   appState.currentFocusedWindow = currentFocusedWindow;
 
-  updateProcessTagStats(new Set(appState.currentProcessKeys), focusedProfile?.classificationKey, deltaSeconds, nowIso);
+  const assignmentMap = getProcessTagAssignmentMap();
+  const focusedTagId = focusedProfile ? assignmentMap.get(focusedProfile.classificationKey)?.tagId ?? null : null;
+  if (deltaSeconds > 0) {
+    if (focusedTagId) {
+      if (monitorCursor.activeTagId === focusedTagId) {
+        monitorCursor.tagFocusStreakSeconds += deltaSeconds;
+      } else {
+        monitorCursor.activeTagId = focusedTagId;
+        monitorCursor.tagFocusStreakSeconds = deltaSeconds;
+      }
+    } else {
+      monitorCursor.activeTagId = null;
+      monitorCursor.tagFocusStreakSeconds = 0;
+    }
+  }
+  updateProcessTagStats(
+    new Set(appState.currentProcessKeys),
+    focusedProfile?.classificationKey,
+    deltaSeconds,
+    nowIso,
+    monitorCursor.tagFocusStreakSeconds,
+  );
 
   if (focusedProfile && deltaSeconds > 0) {
     upsertActiveSession(focusedProfile, nowIso);
   } else if (!focusedProfile) {
     monitorCursor.activeSessionId = null;
     monitorCursor.activeClassificationKey = null;
+    monitorCursor.activeTagId = null;
+    monitorCursor.tagFocusStreakSeconds = 0;
   }
 
   scheduleSave();
@@ -1638,6 +1876,8 @@ function startMonitoring() {
   }
   monitorCursor.lastTickAtMs = Date.now();
   monitorCursor.carryMs = 0;
+  monitorCursor.activeTagId = null;
+  monitorCursor.tagFocusStreakSeconds = 0;
   monitorTimer = setInterval(() => {
     monitorTick().catch(() => {
       // Ignore single-tick failure.
@@ -1916,6 +2156,15 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
+
+  mainWindow.on('minimize', event => {
+    event.preventDefault();
+    hideMainWindowToTray();
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
 }
 
 app.whenReady().then(() => {
@@ -1928,13 +2177,16 @@ app.whenReady().then(() => {
   registerPowerEvents();
   startBrowserBridgeServer();
   createWindow();
+  createTray();
   addPowerEvent('开机', '应用启动并开始监测', '#22c55e');
   startMonitoring();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
+      return;
     }
+    showMainWindowFromTray();
   });
 });
 
@@ -1947,6 +2199,10 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   stopMonitoring();
   stopBrowserBridgeServer();
+  if (appTray) {
+    appTray.destroy();
+    appTray = null;
+  }
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;

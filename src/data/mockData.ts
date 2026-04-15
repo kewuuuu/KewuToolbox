@@ -61,11 +61,11 @@ export function createInitialState(): AppState {
       monitoring: {
         activeTab: 'history',
         historySort: {
-          key: 'lastSeen',
+          key: 'lastFocus',
           direction: 'desc',
         },
         currentSort: {
-          key: 'lastSeen',
+          key: 'lastFocus',
           direction: 'desc',
         },
       },
@@ -78,6 +78,7 @@ export function createInitialState(): AppState {
       pomodoro: {
         secondsLeft: FALLBACK_FOCUS_MINUTES * 60,
         isRunning: false,
+        hasStartedCurrentStage: false,
         currentCycle: 1,
         currentQueueIdx: 0,
         offTargetSeconds: 0,

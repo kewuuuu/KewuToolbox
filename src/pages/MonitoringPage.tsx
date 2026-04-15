@@ -19,7 +19,8 @@ type ProcessRow = {
   processName: string;
   totalVisible: number;
   focusTime: number;
-  lastSeen: string;
+  lastFocus: string;
+  longestContinuousFocus: number;
   category: string;
   tagId?: string;
 };
@@ -32,7 +33,8 @@ type SortKey =
   | 'tag'
   | 'totalVisible'
   | 'focusTime'
-  | 'lastSeen';
+  | 'lastFocus'
+  | 'longestContinuousFocus';
 
 type SortDirection = 'asc' | 'desc';
 
@@ -92,7 +94,8 @@ const DEFAULT_SORT_DIRECTION: Record<SortKey, SortDirection> = {
   tag: 'asc',
   totalVisible: 'desc',
   focusTime: 'desc',
-  lastSeen: 'desc',
+  lastFocus: 'desc',
+  longestContinuousFocus: 'desc',
 };
 
 export default function MonitoringPage() {
@@ -155,7 +158,8 @@ export default function MonitoringPage() {
         processName: stat.processName,
         totalVisible: stat.totalVisibleSeconds,
         focusTime: stat.focusSeconds,
-        lastSeen: stat.lastSeenAt,
+        lastFocus: stat.lastFocusAt,
+        longestContinuousFocus: stat.longestContinuousFocusSeconds,
         category: profile?.category ?? stat.category,
         tagId: assignment?.tagId,
       };
@@ -180,7 +184,8 @@ export default function MonitoringPage() {
         processName: stat?.processName ?? profile?.processName ?? fallback.processName,
         totalVisible: stat?.totalVisibleSeconds ?? 0,
         focusTime: stat?.focusSeconds ?? 0,
-        lastSeen: stat?.lastSeenAt ?? profile?.updatedAt ?? new Date(0).toISOString(),
+        lastFocus: stat?.lastFocusAt ?? '',
+        longestContinuousFocus: stat?.longestContinuousFocusSeconds ?? 0,
         category: profile?.category ?? stat?.category ?? fallback.category,
         tagId: assignment?.tagId,
       };
@@ -227,8 +232,11 @@ export default function MonitoringPage() {
         case 'focusTime':
           result = a.focusTime - b.focusTime;
           break;
-        case 'lastSeen':
-          result = new Date(a.lastSeen).getTime() - new Date(b.lastSeen).getTime();
+        case 'lastFocus':
+          result = new Date(a.lastFocus || 0).getTime() - new Date(b.lastFocus || 0).getTime();
+          break;
+        case 'longestContinuousFocus':
+          result = a.longestContinuousFocus - b.longestContinuousFocus;
           break;
         default:
           result = 0;
@@ -283,9 +291,12 @@ export default function MonitoringPage() {
           result = (a.stat?.totalVisibleSeconds || 0) - (b.stat?.totalVisibleSeconds || 0);
         } else if (historySort.key === 'focusTime') {
           result = (a.stat?.focusSeconds || 0) - (b.stat?.focusSeconds || 0);
-        } else if (historySort.key === 'lastSeen') {
+        } else if (historySort.key === 'lastFocus') {
           result =
-            new Date(a.stat?.lastSeenAt || 0).getTime() - new Date(b.stat?.lastSeenAt || 0).getTime();
+            new Date(a.stat?.lastFocusAt || 0).getTime() - new Date(b.stat?.lastFocusAt || 0).getTime();
+        } else if (historySort.key === 'longestContinuousFocus') {
+          result =
+            (a.stat?.longestContinuousFocusSeconds || 0) - (b.stat?.longestContinuousFocusSeconds || 0);
         } else {
           result = compareString(a.tagName, b.tagName);
         }
@@ -449,7 +460,10 @@ export default function MonitoringPage() {
           <td className="py-1.5 px-2 text-right text-muted-foreground">{formatDuration(row.totalVisible)}</td>
           <td className="py-1.5 px-2 text-right text-primary">{formatDuration(row.focusTime)}</td>
           <td className="py-1.5 px-2 text-right text-muted-foreground">
-            {new Date(row.lastSeen).toLocaleString('zh-CN')}
+            {formatDuration(row.longestContinuousFocus)}
+          </td>
+          <td className="py-1.5 px-2 text-right text-muted-foreground">
+            {row.lastFocus ? new Date(row.lastFocus).toLocaleString('zh-CN') : '-'}
           </td>
         </tr>
       );
@@ -491,7 +505,10 @@ export default function MonitoringPage() {
             {formatDuration(group.stat?.focusSeconds ?? 0)}
           </td>
           <td className="py-2 px-2 text-right text-muted-foreground">
-            {group.stat?.lastSeenAt ? new Date(group.stat.lastSeenAt).toLocaleString('zh-CN') : '-'}
+            {formatDuration(group.stat?.longestContinuousFocusSeconds ?? 0)}
+          </td>
+          <td className="py-2 px-2 text-right text-muted-foreground">
+            {group.stat?.lastFocusAt ? new Date(group.stat.lastFocusAt).toLocaleString('zh-CN') : '-'}
           </td>
         </tr>,
       );
@@ -592,7 +609,8 @@ export default function MonitoringPage() {
                     {renderSortHeader('history', 'category', '分类', 'text-left py-2 px-2')}
                     {renderSortHeader('history', 'totalVisible', '总可见时长', 'text-right py-2 px-2')}
                     {renderSortHeader('history', 'focusTime', '焦点时长', 'text-right py-2 px-2')}
-                    {renderSortHeader('history', 'lastSeen', '最后出现', 'text-right py-2 px-2')}
+                    {renderSortHeader('history', 'longestContinuousFocus', '最长焦点连续时长', 'text-right py-2 px-2')}
+                    {renderSortHeader('history', 'lastFocus', '最后焦点时间', 'text-right py-2 px-2')}
                   </tr>
                 </thead>
                 <tbody>{renderHistoryGroupedRows()}</tbody>
@@ -620,7 +638,8 @@ export default function MonitoringPage() {
                     {renderSortHeader('current', 'tag', '标签', 'text-left py-2 px-2')}
                     {renderSortHeader('current', 'totalVisible', '总可见时长', 'text-right py-2 px-2')}
                     {renderSortHeader('current', 'focusTime', '焦点时长', 'text-right py-2 px-2')}
-                    {renderSortHeader('current', 'lastSeen', '最后出现', 'text-right py-2 px-2')}
+                    {renderSortHeader('current', 'longestContinuousFocus', '最长焦点连续时长', 'text-right py-2 px-2')}
+                    {renderSortHeader('current', 'lastFocus', '最后焦点时间', 'text-right py-2 px-2')}
                   </tr>
                 </thead>
                 <tbody>{renderProcessRows(currentRows, true)}</tbody>

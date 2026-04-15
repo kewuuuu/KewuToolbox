@@ -15,7 +15,8 @@ export type MonitoringSortKey =
   | 'tag'
   | 'totalVisible'
   | 'focusTime'
-  | 'lastSeen';
+  | 'lastFocus'
+  | 'longestContinuousFocus';
 export type MonitoringSortDirection = 'asc' | 'desc';
 export type MonitoringTab = 'history' | 'current' | 'tags' | 'events' | 'debug';
 
@@ -58,7 +59,8 @@ export interface WindowRuntimeStat {
   category: Category;
   totalVisibleSeconds: number;
   focusSeconds: number;
-  lastSeenAt: string;
+  lastFocusAt: string;
+  longestContinuousFocusSeconds: number;
 }
 
 export interface ProcessTag {
@@ -79,7 +81,8 @@ export interface ProcessTagRuntimeStat {
   tagId: string;
   totalVisibleSeconds: number;
   focusSeconds: number;
-  lastSeenAt: string;
+  lastFocusAt: string;
+  longestContinuousFocusSeconds: number;
 }
 
 export interface WindowGroupItem {
@@ -202,6 +205,7 @@ export interface AppUiState {
 export interface PomodoroRuntimeState {
   secondsLeft: number;
   isRunning: boolean;
+  hasStartedCurrentStage: boolean;
   currentCycle: number;
   currentQueueIdx: number;
   offTargetSeconds: number;

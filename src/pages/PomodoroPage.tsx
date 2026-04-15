@@ -40,10 +40,12 @@ export default function PomodoroPage() {
   const currentCycle = runtime.currentCycle;
   const secondsLeft = runtime.secondsLeft;
   const isRunning = runtime.isRunning;
+  const hasStartedCurrentStage = runtime.hasStartedCurrentStage;
   const offTargetSeconds = runtime.offTargetSeconds;
 
   const totalSeconds = getFocusSecondsForIndex(state.queue, currentQueueIdx);
   const progress = totalSeconds > 0 ? ((totalSeconds - secondsLeft) / totalSeconds) * 100 : 0;
+  const isPreStartState = !isRunning && !hasStartedCurrentStage;
 
   const handleStart = () => {
     if (state.queue.length === 0) {
@@ -53,12 +55,14 @@ export default function PomodoroPage() {
     if (isRunning) {
       return;
     }
+
     const nowMs = Date.now();
     const nextSecondsLeft = Math.max(0, secondsLeft) || getFocusSecondsForIndex(state.queue, currentQueueIdx);
     updateRuntimeState({
       pomodoro: {
         ...runtime,
         isRunning: true,
+        hasStartedCurrentStage: true,
         secondsLeft: nextSecondsLeft,
         timerEndsAtMs: nowMs + nextSecondsLeft * 1000,
         distractionLastTickAtMs: nowMs,
@@ -78,6 +82,7 @@ export default function PomodoroPage() {
       pomodoro: {
         ...runtime,
         isRunning: false,
+        hasStartedCurrentStage: true,
         secondsLeft: remainingSeconds,
         timerEndsAtMs: undefined,
         distractionLastTickAtMs: undefined,
@@ -85,18 +90,41 @@ export default function PomodoroPage() {
     });
   };
 
-  const handleReset = () => {
-    const focusSeconds = getFocusSecondsForIndex(state.queue, currentQueueIdx);
+  const handleResetPomodoro = () => {
+    const resetQueueIdx = 0;
+    const resetSeconds = getFocusSecondsForIndex(state.queue, resetQueueIdx);
     updateRuntimeState({
       pomodoro: {
         ...runtime,
         isRunning: false,
-        secondsLeft: focusSeconds,
+        hasStartedCurrentStage: false,
+        currentQueueIdx: resetQueueIdx,
+        currentCycle: 1,
+        secondsLeft: resetSeconds,
         timerEndsAtMs: undefined,
         offTargetSeconds: 0,
         offTargetAccumulatedMs: 0,
         distractionAlerted: false,
         distractionLastTickAtMs: undefined,
+      },
+    });
+  };
+
+  const handleResetCurrentStage = () => {
+    const focusSeconds = getFocusSecondsForIndex(state.queue, currentQueueIdx);
+    const keepRunning = isRunning;
+    const nowMs = Date.now();
+    updateRuntimeState({
+      pomodoro: {
+        ...runtime,
+        isRunning: keepRunning,
+        hasStartedCurrentStage: true,
+        secondsLeft: focusSeconds,
+        timerEndsAtMs: keepRunning ? nowMs + focusSeconds * 1000 : undefined,
+        offTargetSeconds: 0,
+        offTargetAccumulatedMs: 0,
+        distractionAlerted: false,
+        distractionLastTickAtMs: keepRunning ? nowMs : undefined,
       },
     });
   };
@@ -105,35 +133,27 @@ export default function PomodoroPage() {
     if (state.queue.length === 0) {
       return;
     }
-    const isInfiniteCycle = settings.cycleCount <= 0;
-    const reachedCycleLimit = !isInfiniteCycle && currentCycle >= settings.cycleCount;
-    let nextQueueIdx = currentQueueIdx;
-    let nextCycle = currentCycle;
 
-    if (reachedCycleLimit) {
-      if (currentQueueIdx + 1 < state.queue.length) {
-        nextQueueIdx = currentQueueIdx + 1;
-        nextCycle = 1;
-      } else {
-        nextQueueIdx = 0;
-        nextCycle = 1;
-      }
-    } else {
-      nextCycle = currentCycle + 1;
-    }
+    const reachedTail = currentQueueIdx + 1 >= state.queue.length;
+    const nextQueueIdx = reachedTail ? 0 : currentQueueIdx + 1;
+    const nextCycle = reachedTail ? currentCycle + 1 : currentCycle;
+    const shouldKeepRunning = isRunning || hasStartedCurrentStage;
+    const nowMs = Date.now();
+    const nextSeconds = getFocusSecondsForIndex(state.queue, nextQueueIdx);
 
     updateRuntimeState({
       pomodoro: {
         ...runtime,
-        isRunning: false,
+        isRunning: shouldKeepRunning,
+        hasStartedCurrentStage: shouldKeepRunning,
         currentQueueIdx: nextQueueIdx,
         currentCycle: nextCycle,
-        secondsLeft: getFocusSecondsForIndex(state.queue, nextQueueIdx),
-        timerEndsAtMs: undefined,
+        secondsLeft: nextSeconds,
+        timerEndsAtMs: shouldKeepRunning ? nowMs + nextSeconds * 1000 : undefined,
         offTargetSeconds: 0,
         offTargetAccumulatedMs: 0,
         distractionAlerted: false,
-        distractionLastTickAtMs: undefined,
+        distractionLastTickAtMs: shouldKeepRunning ? nowMs : undefined,
       },
     });
   };
@@ -153,15 +173,17 @@ export default function PomodoroPage() {
       : false;
 
   const handleAddSubjectToQueue = (subjectId: string) => {
-    const sub = state.subjects.find(s => s.id === subjectId);
-    if (!sub) return;
+    const subject = state.subjects.find(item => item.id === subjectId);
+    if (!subject) {
+      return;
+    }
     addToQueue({
       id: `q-${Date.now()}`,
       itemType: 'Subject',
-      title: sub.title,
-      durationMinutes: clampMinutes(sub.defaultMinutes, FALLBACK_FOCUS_MINUTES),
-      windowGroup: sub.windowGroup,
-      sourceSubjectId: sub.id,
+      title: subject.title,
+      durationMinutes: clampMinutes(subject.defaultMinutes, FALLBACK_FOCUS_MINUTES),
+      windowGroup: subject.windowGroup,
+      sourceSubjectId: subject.id,
       orderIndex: state.queue.length,
     });
   };
@@ -170,11 +192,7 @@ export default function PomodoroPage() {
     const parsed = Number(nextMinutesText);
     const nextMinutes = clampMinutes(parsed, FALLBACK_FOCUS_MINUTES);
     setQueue(
-      state.queue.map(item =>
-        item.id === id
-          ? { ...item, durationMinutes: nextMinutes }
-          : item,
-      ),
+      state.queue.map(item => (item.id === id ? { ...item, durationMinutes: nextMinutes } : item)),
     );
   };
 
@@ -210,24 +228,30 @@ export default function PomodoroPage() {
         pomodoro: {
           ...runtime,
           currentQueueIdx: nextCurrentQueueIndex,
-          secondsLeft: isRunning ? runtime.secondsLeft : getFocusSecondsForIndex(nextQueue, nextCurrentQueueIndex),
+          secondsLeft:
+            isRunning || hasStartedCurrentStage
+              ? runtime.secondsLeft
+              : getFocusSecondsForIndex(nextQueue, nextCurrentQueueIndex),
         },
       });
     }
-  }, [currentQueueIdx, isRunning, runtime, setQueue, state.queue, updateRuntimeState]);
+  }, [currentQueueIdx, hasStartedCurrentStage, isRunning, runtime, setQueue, state.queue, updateRuntimeState]);
 
   return (
     <DashboardLayout pageTitle="番茄钟">
       <div className="max-w-6xl mx-auto space-y-4">
         <FocusSubnav />
+
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <Card className="p-6 bg-card border-border">
             <div className="text-center space-y-4">
               <div className="flex items-center justify-center gap-2">
-                <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                  isRunning ? 'bg-primary/20 text-primary' : 'bg-secondary text-muted-foreground'
-                }`}>
-                  {isRunning ? '专注中' : '待开始'}
+                <span
+                  className={`px-3 py-1 rounded-full text-xs font-medium ${
+                    isRunning ? 'bg-primary/20 text-primary' : 'bg-secondary text-muted-foreground'
+                  }`}
+                >
+                  {isRunning ? '专注中' : hasStartedCurrentStage ? '已暂停' : '待开始'}
                 </span>
                 <span className="text-xs text-muted-foreground">
                   周期 {currentCycle}/{settings.cycleCount <= 0 ? '∞' : settings.cycleCount}
@@ -254,31 +278,52 @@ export default function PomodoroPage() {
                     {formatTime(secondsLeft)}
                   </span>
                   {currentItem && (
-                    <span className="text-xs text-muted-foreground mt-1 max-w-[160px] truncate">
+                    <span className="text-xs text-muted-foreground mt-1 max-w-[180px] truncate" title={currentItem.title}>
                       {currentItem.title}
                     </span>
                   )}
                 </div>
               </div>
 
-              <div className="flex items-center justify-center gap-2">
-                {!isRunning ? (
-                  <Button onClick={handleStart} className="gap-1">
-                    <Play className="w-4 h-4" />
-                    开始
-                  </Button>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                {isPreStartState ? (
+                  <>
+                    <Button onClick={handleStart} className="gap-1">
+                      <Play className="w-4 h-4" />
+                      开始
+                    </Button>
+                    <Button onClick={handleSkip} variant="outline" className="gap-1">
+                      <SkipForward className="w-4 h-4" />
+                      下一个队列
+                    </Button>
+                  </>
                 ) : (
-                  <Button onClick={handlePause} variant="secondary" className="gap-1">
-                    <Pause className="w-4 h-4" />
-                    暂停
-                  </Button>
+                  <>
+                    {isRunning ? (
+                      <Button onClick={handlePause} variant="secondary" className="gap-1">
+                        <Pause className="w-4 h-4" />
+                        暂停
+                      </Button>
+                    ) : (
+                      <Button onClick={handleStart} className="gap-1">
+                        <Play className="w-4 h-4" />
+                        继续
+                      </Button>
+                    )}
+                    <Button onClick={handleResetPomodoro} variant="outline" className="gap-1">
+                      <RotateCcw className="w-4 h-4" />
+                      重置番茄钟
+                    </Button>
+                    <Button onClick={handleResetCurrentStage} variant="outline" className="gap-1">
+                      <RotateCcw className="w-4 h-4" />
+                      重置当前阶段
+                    </Button>
+                    <Button onClick={handleSkip} variant="outline" className="gap-1">
+                      <SkipForward className="w-4 h-4" />
+                      下一个队列
+                    </Button>
+                  </>
                 )}
-                <Button onClick={handleReset} variant="outline" size="icon">
-                  <RotateCcw className="w-4 h-4" />
-                </Button>
-                <Button onClick={handleSkip} variant="outline" size="icon">
-                  <SkipForward className="w-4 h-4" />
-                </Button>
               </div>
 
               <div className="text-xs text-muted-foreground">
@@ -289,6 +334,7 @@ export default function PomodoroPage() {
 
           <Card className="p-5 bg-card border-border space-y-4">
             <h3 className="text-sm font-semibold text-foreground">专注规则</h3>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs text-muted-foreground">循环次数</label>
@@ -316,9 +362,9 @@ export default function PomodoroPage() {
               <div className="flex items-center justify-between">
                 <span className="text-xs text-muted-foreground">偏离模式</span>
                 <Button variant="outline" size="sm" onClick={toggleDistractionMode}>
-                  {settings.distractionMode === '杩炵画'
+                  {settings.distractionMode === '连续' || settings.distractionMode === '杩炵画'
                     ? '连续'
-                    : settings.distractionMode === '绱'
+                    : settings.distractionMode === '累计' || settings.distractionMode === '绱'
                       ? '累计'
                       : settings.distractionMode}
                 </Button>
@@ -390,10 +436,8 @@ export default function PomodoroPage() {
                 <div
                   key={item.id}
                   className={`flex items-center gap-3 px-3 py-2 rounded-lg border transition-colors ${
-                    idx === currentQueueIdx ? 'border-primary/50 bg-primary/5' : 'border-border bg-secondary/30'
-                  } ${
-                    dragOverItemId === item.id && draggingItemId !== item.id ? 'ring-1 ring-primary/70' : ''
-                  } ${
+                    isRunning && idx === currentQueueIdx ? 'border-primary/50 bg-primary/5' : 'border-border bg-secondary/30'
+                  } ${dragOverItemId === item.id && draggingItemId !== item.id ? 'ring-1 ring-primary/70' : ''} ${
                     draggingItemId === item.id ? 'opacity-60' : ''
                   }`}
                   onDragOver={event => {
