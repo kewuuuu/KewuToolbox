@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { useAppState } from '@/store/AppContext';
 import { CountdownTask, StopwatchLap, StopwatchRecord } from '@/types';
-import { playSoundById } from '@/lib/sound';
+import { playSoundById, resolveSoundPlaybackForEvent } from '@/lib/sound';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -208,10 +208,11 @@ export default function ClockPage() {
       for (const title of completedTitles) {
         toast.success('倒计时已完成', { description: title });
         void pushSystemNotification('倒计时到点提醒', `${title} 已完成`);
+        const playback = resolveSoundPlaybackForEvent(state.pomodoroSettings, state.soundFiles, 'countdown');
         void playSoundById(state.soundFiles, {
           enabled: true,
-          soundFileId: state.pomodoroSettings.countdownSoundFileId,
-          eventVolumeMultiplier: state.pomodoroSettings.countdownVolumeMultiplier,
+          soundFileId: playback.soundFileId,
+          eventVolumeMultiplier: playback.eventVolumeMultiplier,
         });
       }
     }, 200);
@@ -221,8 +222,7 @@ export default function ClockPage() {
     pushSystemNotification,
     setCountdownTasks,
     state.countdownTasks,
-    state.pomodoroSettings.countdownSoundFileId,
-    state.pomodoroSettings.countdownVolumeMultiplier,
+    state.pomodoroSettings,
     state.preferences.countdownCompletedTaskBehavior,
     state.soundFiles,
   ]);

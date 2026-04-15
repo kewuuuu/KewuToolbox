@@ -2,8 +2,15 @@ import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from
 import { useSearchParams } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { useAppState } from '@/store/AppContext';
-import { ProcessBlacklistRule, UrlWhitelistRule } from '@/types';
-import { getSoundDisplayNameFromPath, playSoundById } from '@/lib/sound';
+import { ProcessBlacklistRule, SoundBalanceCache, UrlWhitelistRule } from '@/types';
+import {
+  analyzeSoundFileLoudness,
+  calculateBalancedGainFromAnalysis,
+  getSoundDisplayNameFromPath,
+  playSoundById,
+  resolveSoundPlaybackForEvent,
+  SoundEventType,
+} from '@/lib/sound';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -26,10 +33,60 @@ import { FolderOpen, MoonStar, Play, Plus, Sun, Trash2 } from 'lucide-react';
 
 type SettingsTab = 'general' | 'sounds';
 const NONE_SOUND_ID = '__none__';
+type SoundEventConfig = {
+  eventType: SoundEventType;
+  label: string;
+  soundIdKey: 'completionSoundFileId' | 'distractionSoundFileId' | 'countdownSoundFileId';
+  volumeModeKey: 'completionVolumeMode' | 'distractionVolumeMode' | 'countdownVolumeMode';
+  manualMultiplierKey:
+    | 'completionVolumeMultiplier'
+    | 'distractionVolumeMultiplier'
+    | 'countdownVolumeMultiplier';
+  targetDbKey: 'completionBalancedTargetDb' | 'distractionBalancedTargetDb' | 'countdownBalancedTargetDb';
+  cacheKey: 'completionBalanceCache' | 'distractionBalanceCache' | 'countdownBalanceCache';
+};
+
+const SOUND_EVENT_CONFIGS: SoundEventConfig[] = [
+  {
+    eventType: 'completion',
+    label: '番茄钟到点',
+    soundIdKey: 'completionSoundFileId',
+    volumeModeKey: 'completionVolumeMode',
+    manualMultiplierKey: 'completionVolumeMultiplier',
+    targetDbKey: 'completionBalancedTargetDb',
+    cacheKey: 'completionBalanceCache',
+  },
+  {
+    eventType: 'distraction',
+    label: '偏离提醒',
+    soundIdKey: 'distractionSoundFileId',
+    volumeModeKey: 'distractionVolumeMode',
+    manualMultiplierKey: 'distractionVolumeMultiplier',
+    targetDbKey: 'distractionBalancedTargetDb',
+    cacheKey: 'distractionBalanceCache',
+  },
+  {
+    eventType: 'countdown',
+    label: '倒计时到点',
+    soundIdKey: 'countdownSoundFileId',
+    volumeModeKey: 'countdownVolumeMode',
+    manualMultiplierKey: 'countdownVolumeMultiplier',
+    targetDbKey: 'countdownBalancedTargetDb',
+    cacheKey: 'countdownBalanceCache',
+  },
+];
 
 function toFinite(value: string, fallback: number) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function toPositiveFinite(value: string, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
     return fallback;
   }
   return parsed;
@@ -52,6 +109,7 @@ export default function SettingsPage() {
   const [pendingCreatePath, setPendingCreatePath] = useState('');
   const [isChangingDataPath, setIsChangingDataPath] = useState(false);
   const [isClearingAllData, setIsClearingAllData] = useState(false);
+  const [applyingBalanceEventType, setApplyingBalanceEventType] = useState<SoundEventType | null>(null);
   const [thresholdInput, setThresholdInput] = useState(
     String(state.preferences.recordWindowThresholdSeconds),
   );
@@ -127,11 +185,68 @@ export default function SettingsPage() {
     }
   };
 
-  const handleSelectSound = (
-    key: 'completionSoundFileId' | 'distractionSoundFileId' | 'countdownSoundFileId',
-    value: string,
-  ) => {
-    updateSettings({ [key]: value === NONE_SOUND_ID ? '' : value });
+  const getEventSoundId = (config: SoundEventConfig) => state.pomodoroSettings[config.soundIdKey] ?? '';
+  const getEventVolumeMode = (config: SoundEventConfig) => state.pomodoroSettings[config.volumeModeKey];
+  const getEventManualMultiplier = (config: SoundEventConfig) =>
+    state.pomodoroSettings[config.manualMultiplierKey];
+  const getEventTargetDb = (config: SoundEventConfig) => state.pomodoroSettings[config.targetDbKey];
+  const getEventCache = (config: SoundEventConfig) => state.pomodoroSettings[config.cacheKey];
+
+  const updateEventManualMultiplier = (config: SoundEventConfig, rawValue: string) => {
+    updateSettings({
+      [config.manualMultiplierKey]: toPositiveFinite(rawValue, getEventManualMultiplier(config)),
+      [config.cacheKey]: undefined,
+    });
+  };
+
+  const updateEventTargetDb = (config: SoundEventConfig, rawValue: string) => {
+    updateSettings({
+      [config.targetDbKey]: toFinite(rawValue, getEventTargetDb(config)),
+      [config.cacheKey]: undefined,
+    });
+  };
+
+  const updateEventVolumeMode = (config: SoundEventConfig, value: 'unbalanced' | 'balanced') => {
+    updateSettings({
+      [config.volumeModeKey]: value,
+    });
+  };
+
+  const handleApplyBalance = async (config: SoundEventConfig) => {
+    const soundFileId = getEventSoundId(config);
+    if (!soundFileId) {
+      toast.error('请先选择提示音文件');
+      return;
+    }
+    const soundFile = state.soundFiles.find(item => item.id === soundFileId);
+    if (!soundFile) {
+      toast.error('未找到提示音文件');
+      return;
+    }
+
+    const targetDb = getEventTargetDb(config);
+    setApplyingBalanceEventType(config.eventType);
+    try {
+      const analysis = await analyzeSoundFileLoudness(soundFile.filePath);
+      const normalizedGain = calculateBalancedGainFromAnalysis(analysis, targetDb);
+      const nextCache: SoundBalanceCache = {
+        soundFileId: soundFile.id,
+        soundFileUpdatedAt: soundFile.updatedAt,
+        targetDb,
+        measuredAverageDb: analysis.measuredAverageDb,
+        measuredPeakDb: analysis.measuredPeakDb,
+        normalizedGain,
+        generatedAt: new Date().toISOString(),
+      };
+      updateSettings({
+        [config.cacheKey]: nextCache,
+      });
+      toast.success(`${config.label} 已应用音量平衡`);
+    } catch {
+      toast.error('应用音量平衡失败，请检查音频路径是否可读');
+    } finally {
+      setApplyingBalanceEventType(null);
+    }
   };
 
   const handleClearAllData = async () => {
@@ -390,6 +505,26 @@ export default function SettingsPage() {
         enabled: true,
         soundFileId: soundId,
         eventVolumeMultiplier: 1,
+      });
+    } catch {
+      toast.error('试听失败，请检查音频文件');
+    }
+  };
+
+  const handlePreviewEvent = async (config: SoundEventConfig) => {
+    const playback = resolveSoundPlaybackForEvent(state.pomodoroSettings, state.soundFiles, config.eventType);
+    if (!playback.soundFileId) {
+      toast.error('请先选择提示音文件');
+      return;
+    }
+    if (playback.volumeMode === 'balanced' && !playback.cacheReady) {
+      toast.info('平衡模式尚未应用，当前将按原始音量试听');
+    }
+    try {
+      await playSoundById(state.soundFiles, {
+        enabled: true,
+        soundFileId: playback.soundFileId,
+        eventVolumeMultiplier: playback.eventVolumeMultiplier,
       });
     } catch {
       toast.error('试听失败，请检查音频文件');
@@ -749,121 +884,118 @@ export default function SettingsPage() {
                   </p>
                 </div>
 
-                <div className="space-y-2">
-                  <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_120px_auto] gap-2 items-center">
-                    <span className="text-xs text-muted-foreground">番茄钟到点</span>
-                    <Select
-                      value={state.pomodoroSettings.completionSoundFileId || NONE_SOUND_ID}
-                      onValueChange={value => handleSelectSound('completionSoundFileId', value)}
-                    >
-                      <SelectTrigger className="h-8">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NONE_SOUND_ID}>无</SelectItem>
-                        {sortedSoundFiles.map(sound => (
-                          <SelectItem key={sound.id} value={sound.id}>
-                            {sound.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Input
-                      type="number"
-                      step="0.1"
-                      value={state.pomodoroSettings.completionVolumeMultiplier}
-                      onChange={event =>
-                        updateSettings({ completionVolumeMultiplier: toFinite(event.target.value, 1) })
-                      }
-                      className="h-8"
-                    />
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void handlePreview(state.pomodoroSettings.completionSoundFileId)}
-                      disabled={!state.pomodoroSettings.completionSoundFileId}
-                    >
-                      试听
-                    </Button>
-                  </div>
+                <div className="space-y-3">
+                  {SOUND_EVENT_CONFIGS.map(config => {
+                    const soundFileId = getEventSoundId(config);
+                    const mode = getEventVolumeMode(config);
+                    const cache = getEventCache(config);
+                    const playback = resolveSoundPlaybackForEvent(state.pomodoroSettings, state.soundFiles, config.eventType);
+                    return (
+                      <div key={config.eventType} className="rounded-lg border border-border/70 p-3 space-y-3">
+                        <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_auto] gap-2 items-center">
+                          <span className="text-xs text-muted-foreground">{config.label}</span>
+                          <Select
+                            value={soundFileId || NONE_SOUND_ID}
+                            onValueChange={value =>
+                              updateSettings({
+                                [config.soundIdKey]: value === NONE_SOUND_ID ? '' : value,
+                                [config.cacheKey]: undefined,
+                              })
+                            }
+                          >
+                            <SelectTrigger className="h-8">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={NONE_SOUND_ID}>无</SelectItem>
+                              {sortedSoundFiles.map(sound => (
+                                <SelectItem key={sound.id} value={sound.id}>
+                                  {sound.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void handlePreviewEvent(config)}
+                            disabled={!soundFileId}
+                          >
+                            试听
+                          </Button>
+                        </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_120px_auto] gap-2 items-center">
-                    <span className="text-xs text-muted-foreground">偏离提醒</span>
-                    <Select
-                      value={state.pomodoroSettings.distractionSoundFileId || NONE_SOUND_ID}
-                      onValueChange={value => handleSelectSound('distractionSoundFileId', value)}
-                    >
-                      <SelectTrigger className="h-8">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NONE_SOUND_ID}>无</SelectItem>
-                        {sortedSoundFiles.map(sound => (
-                          <SelectItem key={sound.id} value={sound.id}>
-                            {sound.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Input
-                      type="number"
-                      step="0.1"
-                      value={state.pomodoroSettings.distractionVolumeMultiplier}
-                      onChange={event =>
-                        updateSettings({ distractionVolumeMultiplier: toFinite(event.target.value, 1) })
-                      }
-                      className="h-8"
-                    />
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void handlePreview(state.pomodoroSettings.distractionSoundFileId)}
-                      disabled={!state.pomodoroSettings.distractionSoundFileId}
-                    >
-                      试听
-                    </Button>
-                  </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground">音量模式</span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={mode === 'unbalanced' ? 'default' : 'outline'}
+                            onClick={() => updateEventVolumeMode(config, 'unbalanced')}
+                          >
+                            不平衡
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={mode === 'balanced' ? 'default' : 'outline'}
+                            onClick={() => updateEventVolumeMode(config, 'balanced')}
+                          >
+                            平衡
+                          </Button>
+                        </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_120px_auto] gap-2 items-center">
-                    <span className="text-xs text-muted-foreground">倒计时到点</span>
-                    <Select
-                      value={state.pomodoroSettings.countdownSoundFileId || NONE_SOUND_ID}
-                      onValueChange={value => handleSelectSound('countdownSoundFileId', value)}
-                    >
-                      <SelectTrigger className="h-8">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NONE_SOUND_ID}>无</SelectItem>
-                        {sortedSoundFiles.map(sound => (
-                          <SelectItem key={sound.id} value={sound.id}>
-                            {sound.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Input
-                      type="number"
-                      step="0.1"
-                      value={state.pomodoroSettings.countdownVolumeMultiplier}
-                      onChange={event =>
-                        updateSettings({ countdownVolumeMultiplier: toFinite(event.target.value, 1) })
-                      }
-                      className="h-8"
-                    />
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void handlePreview(state.pomodoroSettings.countdownSoundFileId)}
-                      disabled={!state.pomodoroSettings.countdownSoundFileId}
-                    >
-                      试听
-                    </Button>
-                  </div>
+                        {mode === 'unbalanced' ? (
+                          <div className="grid grid-cols-1 md:grid-cols-[140px_180px_1fr] gap-2 items-center">
+                            <span className="text-xs text-muted-foreground">音量倍率</span>
+                            <Input
+                              type="number"
+                              step="0.1"
+                              min="0.0001"
+                              value={getEventManualMultiplier(config)}
+                              onChange={event => updateEventManualMultiplier(config, event.target.value)}
+                              className="h-8"
+                            />
+                            <p className="text-xs text-muted-foreground">倍率需大于 0，1 为原始音量，无上限。</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <div className="grid grid-cols-1 md:grid-cols-[140px_180px_auto] gap-2 items-center">
+                              <span className="text-xs text-muted-foreground">目标平均音量 (dB)</span>
+                              <Input
+                                type="number"
+                                step="0.1"
+                                value={getEventTargetDb(config)}
+                                onChange={event => updateEventTargetDb(config, event.target.value)}
+                                className="h-8"
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                disabled={!soundFileId || applyingBalanceEventType === config.eventType}
+                                onClick={() => void handleApplyBalance(config)}
+                              >
+                                {applyingBalanceEventType === config.eventType ? '应用中...' : '应用并缓存'}
+                              </Button>
+                            </div>
+                            {cache ? (
+                              <p className="text-xs text-muted-foreground">
+                                缓存：平均 {cache.measuredAverageDb.toFixed(2)} dB，峰值 {cache.measuredPeakDb.toFixed(2)} dB，倍率 x
+                                {cache.normalizedGain.toFixed(3)}
+                                {!playback.cacheReady ? '（缓存与当前配置不一致，请重新应用）' : ''}
+                              </p>
+                            ) : (
+                              <p className="text-xs text-muted-foreground">尚未生成缓存，点击“应用并缓存”后生效。</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
+
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-[1fr_220px_auto] gap-2 items-end">

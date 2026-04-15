@@ -10,8 +10,10 @@ import {
   ProcessTag,
   ProcessBlacklistRule,
   PomodoroSettings,
+  SoundBalanceCache,
   UrlWhitelistRule,
   SoundFileItem,
+  SoundVolumeMode,
   StopwatchRecord,
   TodoArchiveRecord,
   TodoTask,
@@ -20,7 +22,7 @@ import {
 import { createInitialState } from '@/data/mockData';
 import { createDefaultSoundFiles } from '@/data/defaultSoundFiles';
 import { buildReminderStamp, normalizeTodoTask, shouldTriggerReminder, validateTodoTask } from '@/lib/todo';
-import { playSoundById } from '@/lib/sound';
+import { playSoundById, resolveSoundPlaybackForEvent } from '@/lib/sound';
 import { toast } from 'sonner';
 
 const STORAGE_KEY = 'kewu-toolbox-state';
@@ -79,6 +81,50 @@ function normalizePomodoroSettings(input: Partial<PomodoroSettings> | undefined,
     return parsed;
   };
 
+  const pickPositiveFinite = (value: number | undefined, fallbackValue: number) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return fallbackValue;
+    }
+    return parsed;
+  };
+
+  const pickSoundVolumeMode = (
+    value: SoundVolumeMode | undefined,
+    fallbackValue: SoundVolumeMode,
+  ): SoundVolumeMode => (value === 'balanced' ? 'balanced' : value === 'unbalanced' ? 'unbalanced' : fallbackValue);
+
+  const normalizeBalanceCache = (value: SoundBalanceCache | undefined): SoundBalanceCache | undefined => {
+    if (!value || typeof value !== 'object') {
+      return undefined;
+    }
+    const soundFileId = typeof value.soundFileId === 'string' ? value.soundFileId : '';
+    const soundFileUpdatedAt = typeof value.soundFileUpdatedAt === 'string' ? value.soundFileUpdatedAt : '';
+    const generatedAt = typeof value.generatedAt === 'string' ? value.generatedAt : '';
+    const measuredAverageDb = Number(value.measuredAverageDb);
+    const measuredPeakDb = Number(value.measuredPeakDb);
+    const targetDb = Number(value.targetDb);
+    const normalizedGain = Number(value.normalizedGain);
+    if (!soundFileId || !soundFileUpdatedAt || !generatedAt) {
+      return undefined;
+    }
+    if (!Number.isFinite(measuredAverageDb) || !Number.isFinite(measuredPeakDb) || !Number.isFinite(targetDb)) {
+      return undefined;
+    }
+    if (!Number.isFinite(normalizedGain) || normalizedGain <= 0) {
+      return undefined;
+    }
+    return {
+      soundFileId,
+      soundFileUpdatedAt,
+      targetDb,
+      measuredAverageDb,
+      measuredPeakDb,
+      normalizedGain,
+      generatedAt,
+    };
+  };
+
   return {
     ...fallback,
     ...input,
@@ -99,26 +145,44 @@ function normalizePomodoroSettings(input: Partial<PomodoroSettings> | undefined,
     soundEnabled: input?.soundEnabled ?? fallback.soundEnabled,
     completionSoundFileId:
       typeof input?.completionSoundFileId === 'string' ? input.completionSoundFileId : fallback.completionSoundFileId,
-    completionVolumeMultiplier: pickFinite(
+    completionVolumeMode: pickSoundVolumeMode(input?.completionVolumeMode, fallback.completionVolumeMode),
+    completionVolumeMultiplier: pickPositiveFinite(
       input?.completionVolumeMultiplier,
       fallback.completionVolumeMultiplier,
     ),
+    completionBalancedTargetDb: pickFinite(
+      input?.completionBalancedTargetDb,
+      fallback.completionBalancedTargetDb,
+    ),
+    completionBalanceCache: normalizeBalanceCache(input?.completionBalanceCache),
     distractionSoundFileId:
       typeof input?.distractionSoundFileId === 'string'
         ? input.distractionSoundFileId
         : fallback.distractionSoundFileId,
-    distractionVolumeMultiplier: pickFinite(
+    distractionVolumeMode: pickSoundVolumeMode(input?.distractionVolumeMode, fallback.distractionVolumeMode),
+    distractionVolumeMultiplier: pickPositiveFinite(
       input?.distractionVolumeMultiplier,
       fallback.distractionVolumeMultiplier,
     ),
+    distractionBalancedTargetDb: pickFinite(
+      input?.distractionBalancedTargetDb,
+      fallback.distractionBalancedTargetDb,
+    ),
+    distractionBalanceCache: normalizeBalanceCache(input?.distractionBalanceCache),
     countdownSoundFileId:
       typeof input?.countdownSoundFileId === 'string'
         ? input.countdownSoundFileId
         : fallback.countdownSoundFileId,
-    countdownVolumeMultiplier: pickFinite(
+    countdownVolumeMode: pickSoundVolumeMode(input?.countdownVolumeMode, fallback.countdownVolumeMode),
+    countdownVolumeMultiplier: pickPositiveFinite(
       input?.countdownVolumeMultiplier,
       fallback.countdownVolumeMultiplier,
     ),
+    countdownBalancedTargetDb: pickFinite(
+      input?.countdownBalancedTargetDb,
+      fallback.countdownBalancedTargetDb,
+    ),
+    countdownBalanceCache: normalizeBalanceCache(input?.countdownBalanceCache),
   };
 }
 
@@ -492,10 +556,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       if (shouldPlaySound) {
         const { settings, soundFiles } = soundStateRef.current;
+        const playback = resolveSoundPlaybackForEvent(settings, soundFiles, 'completion');
         void playSoundById(soundFiles, {
           enabled: settings.soundEnabled,
-          soundFileId: settings.completionSoundFileId,
-          eventVolumeMultiplier: settings.completionVolumeMultiplier,
+          soundFileId: playback.soundFileId,
+          eventVolumeMultiplier: playback.eventVolumeMultiplier,
         });
       }
     }, 1000);

@@ -6,6 +6,7 @@ export type RepeatMode = string;
 export type FocusQueueItemType = 'Subject' | 'AdHocWindowGroup';
 export type UiTheme = 'dark' | 'light';
 export type CountdownCompletedTaskBehavior = 'keep' | 'delete';
+export type SoundVolumeMode = 'unbalanced' | 'balanced';
 
 export interface WindowClassificationProfile {
   id: string;
@@ -104,6 +105,16 @@ export interface SoundFileItem {
   updatedAt: string;
 }
 
+export interface SoundBalanceCache {
+  soundFileId: string;
+  soundFileUpdatedAt: string;
+  targetDb: number;
+  measuredAverageDb: number;
+  measuredPeakDb: number;
+  normalizedGain: number;
+  generatedAt: string;
+}
+
 export interface UrlWhitelistRule {
   id: string;
   pattern: string;
@@ -138,11 +149,20 @@ export interface PomodoroSettings {
   notifyEnabled: boolean;
   soundEnabled: boolean;
   completionSoundFileId: string;
+  completionVolumeMode: SoundVolumeMode;
   completionVolumeMultiplier: number;
+  completionBalancedTargetDb: number;
+  completionBalanceCache?: SoundBalanceCache;
   distractionSoundFileId: string;
+  distractionVolumeMode: SoundVolumeMode;
   distractionVolumeMultiplier: number;
+  distractionBalancedTargetDb: number;
+  distractionBalanceCache?: SoundBalanceCache;
   countdownSoundFileId: string;
+  countdownVolumeMode: SoundVolumeMode;
   countdownVolumeMultiplier: number;
+  countdownBalancedTargetDb: number;
+  countdownBalanceCache?: SoundBalanceCache;
   cycleCount: number;
 }
 

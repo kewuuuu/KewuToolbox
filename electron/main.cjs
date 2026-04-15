@@ -49,7 +49,8 @@ let preferredStatePath = null;
 let appState = createEmptyState();
 
 const monitorCursor = {
-  lastTickAt: null,
+  lastTickAtMs: null,
+  carryMs: 0,
   activeSessionId: null,
   activeClassificationKey: null,
 };
@@ -111,11 +112,17 @@ function createEmptyState() {
       notifyEnabled: true,
       soundEnabled: true,
       completionSoundFileId: BUILTIN_COMPLETION_SOUND_ID,
+      completionVolumeMode: 'unbalanced',
       completionVolumeMultiplier: 1,
+      completionBalancedTargetDb: -18,
       distractionSoundFileId: BUILTIN_WARNING_SOUND_ID,
+      distractionVolumeMode: 'unbalanced',
       distractionVolumeMultiplier: 1,
+      distractionBalancedTargetDb: -18,
       countdownSoundFileId: BUILTIN_COMPLETION_SOUND_ID,
+      countdownVolumeMode: 'unbalanced',
       countdownVolumeMultiplier: 1,
+      countdownBalancedTargetDb: -18,
       cycleCount: 0,
     },
     stopwatchRecords: [],
@@ -781,7 +788,8 @@ function setDataFilePath(targetPath, createIfMissing = false) {
 }
 
 function resetRuntimeTrackingState() {
-  monitorCursor.lastTickAt = null;
+  monitorCursor.lastTickAtMs = null;
+  monitorCursor.carryMs = 0;
   monitorCursor.activeSessionId = null;
   monitorCursor.activeClassificationKey = null;
   pendingWindowRuntime.clear();
@@ -1494,9 +1502,13 @@ async function monitorTick() {
   const now = new Date();
   const nowIso = now.toISOString();
   pruneCodeWindowIdentityCache(now.getTime());
-  const lastTickMs = monitorCursor.lastTickAt ? new Date(monitorCursor.lastTickAt).getTime() : now.getTime();
-  const deltaSeconds = Math.max(1, Math.floor((now.getTime() - lastTickMs) / 1000) || 1);
-  monitorCursor.lastTickAt = nowIso;
+  const nowMs = now.getTime();
+  const lastTickMs = monitorCursor.lastTickAtMs ?? nowMs;
+  const elapsedMs = Math.max(0, nowMs - lastTickMs);
+  monitorCursor.lastTickAtMs = nowMs;
+  const totalMs = monitorCursor.carryMs + elapsedMs;
+  const deltaSeconds = Math.floor(totalMs / 1000);
+  monitorCursor.carryMs = totalMs - deltaSeconds * 1000;
 
   const activeWin = await getActiveWinApi();
   const [focusedRaw, openWindows] = await Promise.all([activeWin(), activeWin.getOpenWindows()]);
@@ -1575,9 +1587,9 @@ async function monitorTick() {
 
   updateProcessTagStats(new Set(appState.currentProcessKeys), focusedProfile?.classificationKey, deltaSeconds, nowIso);
 
-  if (focusedProfile) {
+  if (focusedProfile && deltaSeconds > 0) {
     upsertActiveSession(focusedProfile, nowIso);
-  } else {
+  } else if (!focusedProfile) {
     monitorCursor.activeSessionId = null;
     monitorCursor.activeClassificationKey = null;
   }
@@ -1590,7 +1602,8 @@ function startMonitoring() {
   if (monitorTimer) {
     clearInterval(monitorTimer);
   }
-  monitorCursor.lastTickAt = new Date().toISOString();
+  monitorCursor.lastTickAtMs = Date.now();
+  monitorCursor.carryMs = 0;
   monitorTimer = setInterval(() => {
     monitorTick().catch(() => {
       // Ignore single-tick failure.

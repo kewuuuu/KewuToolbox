@@ -4,7 +4,7 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { FocusSubnav } from '@/components/focus/FocusSubnav';
 import { useAppState } from '@/store/AppContext';
 import { getCategoryColor } from '@/lib/categories';
-import { playSoundById } from '@/lib/sound';
+import { playSoundById, resolveSoundPlaybackForEvent } from '@/lib/sound';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -36,6 +36,8 @@ export default function PomodoroPage() {
   const [currentCycle, setCurrentCycle] = useState(1);
   const [currentQueueIdx, setCurrentQueueIdx] = useState(0);
   const [offTargetSeconds, setOffTargetSeconds] = useState(0);
+  const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
+  const [dragOverItemId, setDragOverItemId] = useState<string | null>(null);
   const prevQueueIdxRef = useRef(0);
   const timerEndsAtRef = useRef<number | null>(null);
   const distractionAlertedRef = useRef(false);
@@ -56,26 +58,26 @@ export default function PomodoroPage() {
   const progress = totalSeconds > 0 ? ((totalSeconds - secondsLeft) / totalSeconds) * 100 : 0;
 
   const playCompletionSound = useCallback(() => {
+    const playback = resolveSoundPlaybackForEvent(settings, state.soundFiles, 'completion');
     void playSoundById(state.soundFiles, {
       enabled: true,
-      soundFileId: settings.completionSoundFileId,
-      eventVolumeMultiplier: settings.completionVolumeMultiplier,
+      soundFileId: playback.soundFileId,
+      eventVolumeMultiplier: playback.eventVolumeMultiplier,
     });
   }, [
-    settings.completionSoundFileId,
-    settings.completionVolumeMultiplier,
+    settings,
     state.soundFiles,
   ]);
 
   const playDistractionSound = useCallback(() => {
+    const playback = resolveSoundPlaybackForEvent(settings, state.soundFiles, 'distraction');
     void playSoundById(state.soundFiles, {
       enabled: true,
-      soundFileId: settings.distractionSoundFileId,
-      eventVolumeMultiplier: settings.distractionVolumeMultiplier,
+      soundFileId: playback.soundFileId,
+      eventVolumeMultiplier: playback.eventVolumeMultiplier,
     });
   }, [
-    settings.distractionSoundFileId,
-    settings.distractionVolumeMultiplier,
+    settings,
     state.soundFiles,
   ]);
 
@@ -373,6 +375,32 @@ export default function PomodoroPage() {
     updateSettings({ distractionMode: nextMode });
   };
 
+  const moveQueueItem = (sourceId: string, targetId: string) => {
+    if (!sourceId || !targetId || sourceId === targetId) {
+      return;
+    }
+
+    const sourceIndex = state.queue.findIndex(item => item.id === sourceId);
+    const targetIndex = state.queue.findIndex(item => item.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) {
+      return;
+    }
+
+    const nextQueue = [...state.queue];
+    const [movedItem] = nextQueue.splice(sourceIndex, 1);
+    nextQueue.splice(targetIndex, 0, movedItem);
+    setQueue(nextQueue);
+
+    const currentItemId = state.queue[currentQueueIdx]?.id;
+    if (!currentItemId) {
+      return;
+    }
+    const nextCurrentQueueIndex = nextQueue.findIndex(item => item.id === currentItemId);
+    if (nextCurrentQueueIndex >= 0 && nextCurrentQueueIndex !== currentQueueIdx) {
+      setCurrentQueueIdx(nextCurrentQueueIndex);
+    }
+  };
+
   return (
     <DashboardLayout pageTitle="番茄钟">
       <div className="max-w-6xl mx-auto space-y-4">
@@ -544,9 +572,47 @@ export default function PomodoroPage() {
                   key={item.id}
                   className={`flex items-center gap-3 px-3 py-2 rounded-lg border transition-colors ${
                     idx === currentQueueIdx ? 'border-primary/50 bg-primary/5' : 'border-border bg-secondary/30'
+                  } ${
+                    dragOverItemId === item.id && draggingItemId !== item.id ? 'ring-1 ring-primary/70' : ''
+                  } ${
+                    draggingItemId === item.id ? 'opacity-60' : ''
                   }`}
+                  onDragOver={event => {
+                    if (!draggingItemId || draggingItemId === item.id) {
+                      return;
+                    }
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'move';
+                    setDragOverItemId(item.id);
+                  }}
+                  onDrop={event => {
+                    event.preventDefault();
+                    if (!draggingItemId) {
+                      return;
+                    }
+                    moveQueueItem(draggingItemId, item.id);
+                    setDraggingItemId(null);
+                    setDragOverItemId(null);
+                  }}
+                  onDragEnd={() => {
+                    setDraggingItemId(null);
+                    setDragOverItemId(null);
+                  }}
                 >
-                  <GripVertical className="w-3.5 h-3.5 text-muted-foreground cursor-grab" />
+                  <button
+                    type="button"
+                    className="text-muted-foreground cursor-grab active:cursor-grabbing"
+                    draggable={state.queue.length > 1}
+                    onDragStart={event => {
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData('text/plain', item.id);
+                      setDraggingItemId(item.id);
+                      setDragOverItemId(item.id);
+                    }}
+                    title="拖动调整顺序"
+                  >
+                    <GripVertical className="w-3.5 h-3.5" />
+                  </button>
                   <div className="flex-1 min-w-0">
                     <span className="text-sm text-foreground">{item.title}</span>
                     <span className="text-[10px] text-muted-foreground ml-2">{item.windowGroup.length} 个窗口</span>
