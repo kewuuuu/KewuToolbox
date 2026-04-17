@@ -36,9 +36,6 @@ export function AppSidebar() {
           </NavLink>
         ))}
       </nav>
-      <div className="p-3 border-t border-sidebar-border">
-        <p className="text-[10px] text-muted-foreground">v1.0 原型</p>
-      </div>
     </aside>
   );
 }
