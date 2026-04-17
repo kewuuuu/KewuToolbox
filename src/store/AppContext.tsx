@@ -855,11 +855,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const hasTargetWindows = currentItem.windowGroup.length > 0;
         const focusedClassificationKey = prev.currentFocusedWindow?.classificationKey;
         const hasIdentifiedFocus = typeof focusedClassificationKey === 'string' && focusedClassificationKey.length > 0;
-        const hiddenToTray = Boolean(prev.isWindowHiddenToTray);
         const isFocusedInTarget = hasIdentifiedFocus && currentItem.windowGroup.some(
           item => item.classificationKey === focusedClassificationKey,
         );
-        const shouldTreatUnknownFocusAsOffTarget = hasTargetWindows && hiddenToTray && !hasIdentifiedFocus;
+        const shouldTreatUnknownFocusAsOffTarget = hasTargetWindows && !hasIdentifiedFocus;
         const isDefinitelyOffTarget =
           hasTargetWindows &&
           !isFocusedInTarget &&
