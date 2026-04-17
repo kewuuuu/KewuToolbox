@@ -179,13 +179,24 @@ function normalizeRuntimeState(
     createdAt: typeof lap.createdAt === 'string' ? lap.createdAt : fallbackCreatedAt,
   });
 
+  const normalizedPomodoroIsRunning = Boolean(input?.pomodoro?.isRunning ?? fallback.pomodoro.isRunning);
+  const normalizedPomodoroHasStarted = Boolean(
+    input?.pomodoro?.hasStartedCurrentStage ?? fallback.pomodoro.hasStartedCurrentStage,
+  );
+  const normalizedPomodoroSecondsLeft = Math.max(
+    0,
+    Math.floor(pickFinite(input?.pomodoro?.secondsLeft, fallbackFocusSeconds)),
+  );
+  const effectivePomodoroSecondsLeft =
+    !normalizedPomodoroIsRunning && !normalizedPomodoroHasStarted
+      ? fallbackFocusSeconds
+      : normalizedPomodoroSecondsLeft;
+
   return {
     pomodoro: {
-      secondsLeft: Math.max(0, Math.floor(pickFinite(input?.pomodoro?.secondsLeft, fallbackFocusSeconds))),
-      isRunning: Boolean(input?.pomodoro?.isRunning ?? fallback.pomodoro.isRunning),
-      hasStartedCurrentStage: Boolean(
-        input?.pomodoro?.hasStartedCurrentStage ?? fallback.pomodoro.hasStartedCurrentStage,
-      ),
+      secondsLeft: effectivePomodoroSecondsLeft,
+      isRunning: normalizedPomodoroIsRunning,
+      hasStartedCurrentStage: normalizedPomodoroHasStarted,
       currentCycle: Math.max(1, Math.floor(pickFinite(input?.pomodoro?.currentCycle, fallback.pomodoro.currentCycle))),
       currentQueueIdx: runtimeQueueIndex,
       offTargetSeconds: Math.max(0, Math.floor(pickFinite(input?.pomodoro?.offTargetSeconds, fallback.pomodoro.offTargetSeconds))),
@@ -418,6 +429,10 @@ function normalizePreferences(
   const recordWindowThresholdSeconds = Number.isFinite(threshold)
     ? Math.max(0, Math.floor(threshold))
     : fallback.recordWindowThresholdSeconds;
+  const closeWindowBehavior =
+    input?.closeWindowBehavior === 'close' || input?.closeWindowBehavior === 'tray' || input?.closeWindowBehavior === 'ask'
+      ? input.closeWindowBehavior
+      : fallback.closeWindowBehavior;
 
   return {
     recordWindowThresholdSeconds,
@@ -428,6 +443,7 @@ function normalizePreferences(
     processBlacklist: normalizeProcessBlacklist(input?.processBlacklist, fallback.processBlacklist),
     countdownCompletedTaskBehavior:
       input?.countdownCompletedTaskBehavior === 'delete' ? 'delete' : fallback.countdownCompletedTaskBehavior,
+    closeWindowBehavior,
   };
 }
 
@@ -565,6 +581,7 @@ function normalizeState(raw: unknown): AppState {
           : fallbackSoundId,
     },
     currentFocusedWindow: currentFocusedKey ? profileMap.get(currentFocusedKey) ?? null : null,
+    isWindowHiddenToTray: Boolean(input.isWindowHiddenToTray),
     displayMode: typeof input.displayMode === 'string' ? input.displayMode : initial.displayMode,
     uiState: normalizedUiState,
     runtimeState: normalizedRuntimeState,
@@ -633,6 +650,7 @@ function mergeLiveState(prev: AppState, incoming: AppState): AppState {
     })),
     powerEvents: incoming.powerEvents,
     currentFocusedWindow: focused,
+    isWindowHiddenToTray: Boolean(incoming.isWindowHiddenToTray),
   };
 }
 
@@ -837,11 +855,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const hasTargetWindows = currentItem.windowGroup.length > 0;
         const focusedClassificationKey = prev.currentFocusedWindow?.classificationKey;
         const hasIdentifiedFocus = typeof focusedClassificationKey === 'string' && focusedClassificationKey.length > 0;
+        const hiddenToTray = Boolean(prev.isWindowHiddenToTray);
         const isFocusedInTarget = hasIdentifiedFocus && currentItem.windowGroup.some(
           item => item.classificationKey === focusedClassificationKey,
         );
-        const onTarget = !hasTargetWindows || isFocusedInTarget;
-        const isDefinitelyOffTarget = hasTargetWindows && hasIdentifiedFocus && !isFocusedInTarget;
+        const shouldTreatUnknownFocusAsOffTarget = hasTargetWindows && hiddenToTray && !hasIdentifiedFocus;
+        const isDefinitelyOffTarget =
+          hasTargetWindows &&
+          !isFocusedInTarget &&
+          (hasIdentifiedFocus || shouldTreatUnknownFocusAsOffTarget);
 
         const effectiveTimerEndMs =
           Number.isFinite(runtime.timerEndsAtMs) && (runtime.timerEndsAtMs ?? 0) > 0
@@ -937,7 +959,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           offTargetAccumulatedMs = 0;
           offTargetSeconds = 0;
           distractionAlerted = false;
-        } else if (deltaMs > 0 && hasIdentifiedFocus) {
+        } else if (deltaMs > 0 && (hasIdentifiedFocus || shouldTreatUnknownFocusAsOffTarget)) {
           if (isFocusedInTarget) {
             if (prev.pomodoroSettings.distractionMode === '连续' || prev.pomodoroSettings.distractionMode === '杩炵画') {
               offTargetAccumulatedMs = 0;

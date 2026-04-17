@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
   saveUserState: (partial) => ipcRenderer.invoke('app:save-user-state', partial),
   clearAllData: () => ipcRenderer.invoke('app:clear-all-data'),
   notify: (payload) => ipcRenderer.invoke('app:notify', payload),
+  hideToTray: () => ipcRenderer.invoke('app:hide-to-tray'),
   selectAudioFile: () => ipcRenderer.invoke('app:select-audio-file'),
   onState: (callback) => {
     if (typeof callback !== 'function') {

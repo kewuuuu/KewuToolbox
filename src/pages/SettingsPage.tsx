@@ -274,6 +274,23 @@ export default function SettingsPage() {
     toast.success(checked ? '已开启开机自启动' : '已关闭开机自启动');
   };
 
+  const handleHideToTrayNow = async () => {
+    if (!window.desktopApi?.isElectron || !window.desktopApi.hideToTray) {
+      toast.info('Tray operation is not supported in current environment');
+      return;
+    }
+
+    try {
+      const result = await window.desktopApi.hideToTray();
+      if (result?.ok) {
+        return;
+      }
+      toast.error('Failed to hide window to tray');
+    } catch {
+      toast.error('Failed to hide window to tray');
+    }
+  };
+
   const handlePickDataFilePath = async () => {
     if (!window.desktopApi?.isElectron) {
       toast.info('当前环境不支持选择数据文件路径');
@@ -602,6 +619,46 @@ export default function SettingsPage() {
                     onCheckedChange={handleAutoLaunchChange}
                     disabled={!isElectronRuntime}
                   />
+                </div>
+
+                <div className="md:col-span-2 rounded-lg border border-border/70 p-3 space-y-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-foreground">关闭窗口行为</p>
+                    <p className="text-xs text-muted-foreground">
+                      点击右上角关闭按钮时的默认动作。选择“每次询问”会弹出“关闭/隐藏到托盘”的确认框，并可勾选记住选择。
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant={state.preferences.closeWindowBehavior === 'ask' ? 'default' : 'outline'}
+                      onClick={() => updatePreferences({ closeWindowBehavior: 'ask' })}
+                    >
+                      每次询问
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={state.preferences.closeWindowBehavior === 'close' ? 'default' : 'outline'}
+                      onClick={() => updatePreferences({ closeWindowBehavior: 'close' })}
+                    >
+                      直接关闭
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={state.preferences.closeWindowBehavior === 'tray' ? 'default' : 'outline'}
+                      onClick={() => updatePreferences({ closeWindowBehavior: 'tray' })}
+                    >
+                      隐藏到托盘
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void handleHideToTrayNow()}
+                      disabled={!isElectronRuntime}
+                    >
+                      立即隐藏到托盘
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="md:col-span-2 rounded-lg border border-border/70 p-3 space-y-2">
@@ -1110,3 +1167,4 @@ export default function SettingsPage() {
     </DashboardLayout>
   );
 }
+

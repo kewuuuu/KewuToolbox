@@ -24,6 +24,7 @@ declare global {
       saveUserState: (partial: Partial<AppUserState>) => Promise<{ ok: boolean }>;
       clearAllData: () => Promise<AppState>;
       notify: (payload: { title: string; body?: string }) => Promise<{ ok: boolean; error?: string }>;
+      hideToTray: () => Promise<{ ok: boolean }>;
       selectAudioFile: () => Promise<string | null>;
       onState: (callback: (nextState: AppState) => void) => () => void;
     };

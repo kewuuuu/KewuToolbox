@@ -6,6 +6,7 @@ export type RepeatMode = string;
 export type FocusQueueItemType = 'Subject' | 'AdHocWindowGroup';
 export type UiTheme = 'dark' | 'light';
 export type CountdownCompletedTaskBehavior = 'keep' | 'delete';
+export type CloseWindowBehavior = 'ask' | 'close' | 'tray';
 export type SoundVolumeMode = 'unbalanced' | 'balanced';
 export type MonitoringSortKey =
   | 'displayName'
@@ -152,6 +153,7 @@ export interface AppPreferences {
   urlWhitelist: UrlWhitelistRule[];
   processBlacklist: ProcessBlacklistRule[];
   countdownCompletedTaskBehavior: CountdownCompletedTaskBehavior;
+  closeWindowBehavior: CloseWindowBehavior;
 }
 
 export interface PomodoroSettings {
@@ -321,6 +323,7 @@ export interface AppState {
   archives: TodoArchiveRecord[];
   powerEvents: PowerEventRecord[];
   currentFocusedWindow: WindowClassificationProfile | null;
+  isWindowHiddenToTray: boolean;
   displayMode: string;
   uiState: AppUiState;
   runtimeState: AppRuntimeState;

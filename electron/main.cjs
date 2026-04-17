@@ -45,6 +45,8 @@ let browserBridgeServer = null;
 let resolvedStatePath = null;
 let preferredStatePath = null;
 let appTray = null;
+let forceQuitRequested = false;
+let isHandlingCloseDecision = false;
 
 /** @type {import('../src/types').AppState} */
 let appState = createEmptyState();
@@ -104,6 +106,7 @@ function createEmptyState() {
       urlWhitelist: [],
       processBlacklist: [],
       countdownCompletedTaskBehavior: 'keep',
+      closeWindowBehavior: 'ask',
     },
     subjects: [],
     queue: [],
@@ -134,6 +137,7 @@ function createEmptyState() {
     archives: [],
     powerEvents: [],
     currentFocusedWindow: null,
+    isWindowHiddenToTray: false,
     displayMode: DEFAULT_DISPLAY_MODE,
     uiState: {
       calculatorExpression: '',
@@ -344,7 +348,7 @@ function resolveAppIconPath() {
 function showMainWindowFromTray() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow();
-    return;
+    return true;
   }
 
   try {
@@ -358,11 +362,20 @@ function showMainWindowFromTray() {
   }
   mainWindow.show();
   mainWindow.focus();
+  setWindowHiddenToTray(false);
+  return true;
 }
 
 function hideMainWindowToTray() {
   if (!mainWindow || mainWindow.isDestroyed()) {
-    return;
+    return false;
+  }
+
+  if (!appTray) {
+    createTray();
+  }
+  if (!appTray) {
+    return false;
   }
 
   try {
@@ -371,6 +384,8 @@ function hideMainWindowToTray() {
     // Ignore skip-taskbar errors.
   }
   mainWindow.hide();
+  setWindowHiddenToTray(true);
+  return true;
 }
 
 function createTray() {
@@ -399,10 +414,23 @@ function createTray() {
     },
     {
       label: 'Exit',
-      click: () => app.quit(),
+      click: () => {
+        forceQuitRequested = true;
+        app.quit();
+      },
     },
   ]);
   appTray.setContextMenu(contextMenu);
+}
+
+function setWindowHiddenToTray(hidden) {
+  const normalized = Boolean(hidden);
+  if (appState.isWindowHiddenToTray === normalized) {
+    return;
+  }
+  appState.isWindowHiddenToTray = normalized;
+  scheduleSave();
+  emitState();
 }
 
 function ensureWritableStatePath(targetPath) {
@@ -452,6 +480,10 @@ function normalizeAutoLaunchEnabled(input, fallback = false) {
 
 function normalizeCountdownCompletedTaskBehavior(input, fallback = 'keep') {
   return input === 'delete' ? 'delete' : fallback;
+}
+
+function normalizeCloseWindowBehavior(input, fallback = 'ask') {
+  return input === 'close' || input === 'tray' || input === 'ask' ? input : fallback;
 }
 
 function readSystemAutoLaunchEnabled() {
@@ -892,6 +924,10 @@ function normalizeSavedState(input) {
         rawPreferences.countdownCompletedTaskBehavior,
         base.preferences.countdownCompletedTaskBehavior,
       ),
+      closeWindowBehavior: normalizeCloseWindowBehavior(
+        rawPreferences.closeWindowBehavior,
+        base.preferences.closeWindowBehavior,
+      ),
     },
     subjects: Array.isArray(raw.subjects) ? raw.subjects : [],
     queue: Array.isArray(raw.queue) ? raw.queue : [],
@@ -901,6 +937,7 @@ function normalizeSavedState(input) {
     archives: Array.isArray(raw.archives) ? raw.archives : [],
     powerEvents: Array.isArray(raw.powerEvents) ? raw.powerEvents : [],
     currentFocusedWindow: raw.currentFocusedWindow ?? null,
+    isWindowHiddenToTray: Boolean(raw.isWindowHiddenToTray),
     displayMode: typeof raw.displayMode === 'string' ? raw.displayMode : DEFAULT_DISPLAY_MODE,
     uiState: {
       ...base.uiState,
@@ -1952,6 +1989,10 @@ function mergeUserStateFromRenderer(partial) {
         next.preferences.countdownCompletedTaskBehavior,
         appState.preferences.countdownCompletedTaskBehavior,
       ),
+      closeWindowBehavior: normalizeCloseWindowBehavior(
+        next.preferences.closeWindowBehavior,
+        appState.preferences.closeWindowBehavior,
+      ),
     };
   }
   if (next.pomodoroSettings && typeof next.pomodoroSettings === 'object') {
@@ -2106,6 +2147,7 @@ function registerIpc() {
   });
   ipcMain.handle('app:clear-all-data', () => clearAllData());
   ipcMain.handle('app:notify', (_event, payload) => notifySystem(payload));
+  ipcMain.handle('app:hide-to-tray', () => ({ ok: hideMainWindowToTray() }));
   ipcMain.handle('app:select-audio-file', async () => {
     const result = await dialog.showOpenDialog(mainWindow ?? undefined, {
       title: '选择提示音文件',
@@ -2132,7 +2174,83 @@ function registerPowerEvents() {
   powerMonitor.on('shutdown', () => addPowerEvent('关机', '系统关机', '#ef4444'));
 }
 
+async function handleWindowClose(event) {
+  if (forceQuitRequested || !mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  const closeBehavior = normalizeCloseWindowBehavior(appState.preferences?.closeWindowBehavior, 'ask');
+  if (closeBehavior === 'close') {
+    return;
+  }
+
+  event.preventDefault();
+
+  if (closeBehavior === 'tray') {
+    const hidden = hideMainWindowToTray();
+    if (!hidden) {
+      forceQuitRequested = true;
+      mainWindow.close();
+    }
+    return;
+  }
+
+  if (isHandlingCloseDecision) {
+    return;
+  }
+  isHandlingCloseDecision = true;
+
+  try {
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      title: 'Close App',
+      message: 'What should happen when closing the window?',
+      detail: 'You can change the default behavior in Settings > General.',
+      buttons: ['Close App', 'Hide to Tray', 'Cancel'],
+      defaultId: 1,
+      cancelId: 2,
+      noLink: true,
+      checkboxLabel: 'Remember my choice (do not ask again)',
+      checkboxChecked: false,
+    });
+
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    if (result.response === 2) {
+      return;
+    }
+
+    const chosenBehavior = result.response === 0 ? 'close' : 'tray';
+
+    if (result.checkboxChecked) {
+      appState.preferences = {
+        ...appState.preferences,
+        closeWindowBehavior: chosenBehavior,
+      };
+      scheduleSave();
+      emitState();
+    }
+
+    if (chosenBehavior === 'tray') {
+      const hidden = hideMainWindowToTray();
+      if (!hidden) {
+        forceQuitRequested = true;
+        mainWindow.close();
+      }
+      return;
+    }
+
+    forceQuitRequested = true;
+    mainWindow.close();
+  } finally {
+    isHandlingCloseDecision = false;
+  }
+}
+
 function createWindow() {
+  forceQuitRequested = false;
+  isHandlingCloseDecision = false;
   const iconPath = resolveAppIconPath();
   mainWindow = new BrowserWindow({
     width: 1320,
@@ -2157,12 +2275,13 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
 
-  mainWindow.on('minimize', event => {
-    event.preventDefault();
-    hideMainWindowToTray();
+  setWindowHiddenToTray(false);
+  mainWindow.on('close', event => {
+    void handleWindowClose(event);
   });
 
   mainWindow.on('closed', () => {
+    setWindowHiddenToTray(false);
     mainWindow = null;
   });
 }
@@ -2197,6 +2316,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  forceQuitRequested = true;
   stopMonitoring();
   stopBrowserBridgeServer();
   if (appTray) {
@@ -2209,3 +2329,4 @@ app.on('before-quit', () => {
   }
   persistState();
 });
+

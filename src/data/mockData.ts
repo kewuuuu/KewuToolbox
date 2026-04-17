@@ -25,6 +25,7 @@ export function createInitialState(): AppState {
       urlWhitelist: [],
       processBlacklist: [],
       countdownCompletedTaskBehavior: 'keep',
+      closeWindowBehavior: 'ask',
     },
     subjects: [],
     queue: [],
@@ -55,6 +56,7 @@ export function createInitialState(): AppState {
     archives: [],
     powerEvents: [],
     currentFocusedWindow: null,
+    isWindowHiddenToTray: false,
     displayMode: '显示性质',
     uiState: {
       calculatorExpression: '',

@@ -125,9 +125,12 @@ export default function FocusSubjectsPage() {
     const statLastFocusMap = new Map(
       state.windowStats.map(stat => [stat.classificationKey, new Date(stat.lastFocusAt).getTime() || 0]),
     );
+    const currentKeySet = new Set(state.currentProcessKeys);
     const collator = new Intl.Collator('zh-CN-u-co-pinyin', { sensitivity: 'base' });
 
-    return [...state.profiles].sort((a, b) => {
+    return state.profiles
+      .filter(profile => currentKeySet.has(profile.classificationKey))
+      .sort((a, b) => {
       const lastFocusA = statLastFocusMap.get(a.classificationKey) ?? 0;
       const lastFocusB = statLastFocusMap.get(b.classificationKey) ?? 0;
       if (lastFocusA !== lastFocusB) {
@@ -135,7 +138,7 @@ export default function FocusSubjectsPage() {
       }
       return collator.compare(a.displayName, b.displayName);
     });
-  }, [state.profiles, state.windowStats]);
+  }, [state.currentProcessKeys, state.profiles, state.windowStats]);
 
   return (
     <DashboardLayout pageTitle="专注事项">

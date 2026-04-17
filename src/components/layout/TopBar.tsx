@@ -1,6 +1,8 @@
 import { useAppState } from '@/store/AppContext';
 import { getCategoryColor } from '@/lib/categories';
 import { useEffect, useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { PanelBottomClose } from 'lucide-react';
 
 interface TopBarProps {
   pageTitle: string;
@@ -17,6 +19,11 @@ export function TopBar({ pageTitle }: TopBarProps) {
 
   const focusedWindow = state.currentFocusedWindow;
   const categoryColor = focusedWindow ? getCategoryColor(focusedWindow.category) : '#6b7280';
+  const isElectronRuntime = Boolean(window.desktopApi?.isElectron);
+
+  const handleHideToTray = () => {
+    void window.desktopApi?.hideToTray?.();
+  };
 
   return (
     <header className="h-12 flex items-center justify-between px-4 border-b border-border bg-card/80 backdrop-blur-sm shrink-0">
@@ -30,6 +37,19 @@ export function TopBar({ pageTitle }: TopBarProps) {
         )}
       </div>
       <div className="flex items-center gap-3">
+        {isElectronRuntime && (
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8"
+            onClick={handleHideToTray}
+            title="隐藏到托盘"
+            aria-label="隐藏到托盘"
+          >
+            <PanelBottomClose className="h-4 w-4" />
+          </Button>
+        )}
         <span className="text-xs text-muted-foreground font-mono tabular-nums">
           {time.toLocaleTimeString('zh-CN', { hour12: false })}
         </span>
