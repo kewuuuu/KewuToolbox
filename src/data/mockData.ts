@@ -8,6 +8,18 @@ import {
 const FALLBACK_FOCUS_MINUTES = 25;
 const FALLBACK_COUNTDOWN_SECONDS = 5 * 60;
 
+function createDefaultProcessBlacklistRules(now = new Date().toISOString()) {
+  return [
+    {
+      id: 'bl-default-explorer-app-window',
+      typePattern: 'AppWindow',
+      processPattern: 'explorer.exe',
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+}
+
 export function createInitialState(): AppState {
   return {
     profiles: [],
@@ -23,7 +35,7 @@ export function createInitialState(): AppState {
       uiTheme: 'dark',
       autoLaunchEnabled: false,
       urlWhitelist: [],
-      processBlacklist: [],
+      processBlacklist: createDefaultProcessBlacklistRules(),
       countdownCompletedTaskBehavior: 'keep',
       closeWindowBehavior: 'ask',
     },

@@ -9,13 +9,37 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Checkbox } from '@/components/ui/checkbox';
 import { Plus, Edit2, Trash2, ListPlus, Clock } from 'lucide-react';
 import { FocusSubject, WindowGroupItem } from '@/types';
+import { matchesWindowGroupItem } from '@/lib/windowGroupMatcher';
 
 type SelectableProfile = {
   id: string;
   classificationKey: string;
   displayName: string;
   objectType: 'AppWindow' | 'BrowserTab' | 'Desktop';
+  processName: string;
 };
+
+function toCanonicalObjectType(input: string) {
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'appwindow') {
+    return 'AppWindow';
+  }
+  if (normalized === 'browsertab') {
+    return 'BrowserTab';
+  }
+  if (normalized === 'desktop') {
+    return 'Desktop';
+  }
+  return undefined;
+}
+
+function isBrowserTabType(input: string) {
+  return input.trim().toLowerCase() === 'browsertab';
+}
+
+function hasPatternMatcher(item: WindowGroupItem) {
+  return Boolean(item.matchMode === 'pattern' || item.namePattern || item.typePattern || item.processPattern);
+}
 
 function formatDurationSeconds(seconds: number) {
   const total = Math.max(0, Math.floor(seconds));
@@ -31,12 +55,18 @@ export default function FocusSubjectsPage() {
   const [title, setTitle] = useState('');
   const [defaultMinutes, setDefaultMinutes] = useState(25);
   const [selectedWindows, setSelectedWindows] = useState<WindowGroupItem[]>([]);
+  const [manualNamePattern, setManualNamePattern] = useState('');
+  const [manualTypePattern, setManualTypePattern] = useState('');
+  const [manualProcessPattern, setManualProcessPattern] = useState('');
 
   const openCreate = () => {
     setEditing(null);
     setTitle('');
     setDefaultMinutes(25);
     setSelectedWindows([]);
+    setManualNamePattern('');
+    setManualTypePattern('');
+    setManualProcessPattern('');
     setModalOpen(true);
   };
 
@@ -45,6 +75,9 @@ export default function FocusSubjectsPage() {
     setTitle(subject.title);
     setDefaultMinutes(subject.defaultMinutes);
     setSelectedWindows([...subject.windowGroup]);
+    setManualNamePattern('');
+    setManualTypePattern('');
+    setManualProcessPattern('');
     setModalOpen(true);
   };
 
@@ -91,9 +124,43 @@ export default function FocusSubjectsPage() {
           classificationKey: profile.classificationKey,
           displayName: profile.displayName,
           objectType: profile.objectType,
+          processName: profile.processName,
+          matchMode: 'exact',
         },
       ];
     });
+  };
+
+  const removeWindowGroupItem = (classificationKey: string) => {
+    setSelectedWindows(prev => prev.filter(item => item.classificationKey !== classificationKey));
+  };
+
+  const addManualRule = () => {
+    const namePattern = manualNamePattern.trim();
+    const typePattern = manualTypePattern.trim();
+    const browserTabType = isBrowserTabType(typePattern);
+    const processPattern = browserTabType ? '' : manualProcessPattern.trim();
+    const canonicalType = toCanonicalObjectType(typePattern);
+    const displayName = `规则: 名称 ${namePattern || '*'} / 类型 ${typePattern || '*'} / 进程 ${
+      browserTabType ? '(忽略)' : processPattern || '*'
+    }`;
+
+    setSelectedWindows(prev => [
+      ...prev,
+      {
+        classificationKey: `subject-rule-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        displayName,
+        objectType: canonicalType,
+        matchMode: 'pattern',
+        namePattern: namePattern || undefined,
+        typePattern: typePattern || undefined,
+        processPattern: processPattern || undefined,
+      },
+    ]);
+
+    setManualNamePattern('');
+    setManualTypePattern('');
+    setManualProcessPattern('');
   };
 
   const handleAddToQueue = (subject: FocusSubject) => {
@@ -115,9 +182,21 @@ export default function FocusSubjectsPage() {
   }, []);
 
   const getSubjectFocusTime = (subject: FocusSubject) => {
-    const keys = new Set(subject.windowGroup.map(item => item.classificationKey));
     return state.sessions
-      .filter(session => new Date(session.startAt) >= todayStart && keys.has(session.classificationKey))
+      .filter(
+        session =>
+          new Date(session.startAt) >= todayStart &&
+          subject.windowGroup.some(item =>
+            matchesWindowGroupItem(item, {
+              classificationKey: session.classificationKey,
+              displayName: session.displayName,
+              objectType: session.objectType,
+              processName: session.processName,
+              normalizedTitle: session.windowTitle || session.browserTabTitle || session.displayName,
+              domain: session.domain,
+            }),
+          ),
+      )
       .reduce((acc, session) => acc + session.durationSeconds, 0);
   };
 
@@ -227,8 +306,106 @@ export default function FocusSubjectsPage() {
                   />
                 </div>
 
+                <div className="min-w-0 space-y-2">
+                  <label className="block text-xs text-muted-foreground">已添加的进程/规则</label>
+                  <div className="max-h-52 overflow-auto rounded-lg border border-border p-2">
+                    {selectedWindows.length === 0 ? (
+                      <p className="py-3 text-center text-xs text-muted-foreground">暂无已添加项</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {selectedWindows.map(item => {
+                          const patternMode = hasPatternMatcher(item);
+                          const browserTabRule = isBrowserTabType(item.typePattern || '');
+                          const nameText = patternMode ? item.namePattern?.trim() || '任意' : item.displayName;
+                          const typeText = patternMode
+                            ? item.typePattern?.trim() || '任意'
+                            : item.objectType || '任意';
+                          const processText = patternMode
+                            ? browserTabRule
+                              ? '(已忽略)'
+                              : item.processPattern?.trim() || '任意'
+                            : item.processName || '—';
+                          return (
+                            <div
+                              key={item.classificationKey}
+                              className="grid min-w-0 grid-cols-[1fr,auto] items-center gap-2 rounded border border-border/60 px-2 py-1.5"
+                            >
+                              <div className="min-w-0">
+                                <p className="truncate text-xs text-foreground" title={item.displayName}>
+                                  {item.displayName}
+                                </p>
+                                <p className="truncate text-[10px] text-muted-foreground">
+                                  名称: {nameText} | 类型: {typeText} | 进程: {processText}
+                                </p>
+                              </div>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-6 w-6 text-destructive"
+                                onClick={() => removeWindowGroupItem(item.classificationKey)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="min-w-0 space-y-2">
+                  <label className="block text-xs text-muted-foreground">手动添加规则</label>
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-[1.2fr_0.8fr_1fr_auto]">
+                    <Input
+                      value={manualNamePattern}
+                      onChange={event => setManualNamePattern(event.target.value)}
+                      placeholder={
+                        isBrowserTabType(manualTypePattern)
+                          ? '名称/网址通配，如 https://*.bilibili.com/*'
+                          : '名称通配，如 *Visual Studio Code*'
+                      }
+                      className="h-8"
+                      onKeyDown={event => {
+                        if (event.key === 'Enter') {
+                          addManualRule();
+                        }
+                      }}
+                    />
+                    <Input
+                      value={manualTypePattern}
+                      onChange={event => setManualTypePattern(event.target.value)}
+                      placeholder="类型通配，如 BrowserTab"
+                      className="h-8"
+                      onKeyDown={event => {
+                        if (event.key === 'Enter') {
+                          addManualRule();
+                        }
+                      }}
+                    />
+                    <Input
+                      value={manualProcessPattern}
+                      onChange={event => setManualProcessPattern(event.target.value)}
+                      placeholder={isBrowserTabType(manualTypePattern) ? 'BrowserTab 类型下将忽略' : '进程通配，如 code.exe'}
+                      className="h-8"
+                      disabled={isBrowserTabType(manualTypePattern)}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter') {
+                          addManualRule();
+                        }
+                      }}
+                    />
+                    <Button type="button" size="sm" onClick={addManualRule}>
+                      添加
+                    </Button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    规则为空字段表示“匹配全部”。当类型填写 BrowserTab 时，名称按网址通配匹配，进程字段自动忽略。
+                  </p>
+                </div>
+
                 <div className="min-w-0">
-                  <label className="mb-2 block text-xs text-muted-foreground">窗口组</label>
+                  <label className="mb-2 block text-xs text-muted-foreground">从当前打开窗口快速添加</label>
                   <div className="max-h-56 overflow-auto rounded-lg border border-border p-2">
                     <div className="space-y-1">
                       {sortedProfiles.map(profile => (
@@ -237,7 +414,11 @@ export default function FocusSubjectsPage() {
                           className="grid min-w-0 cursor-pointer grid-cols-[auto,1fr,auto] items-center gap-2 rounded p-1.5 hover:bg-secondary/50"
                         >
                           <Checkbox
-                            checked={selectedWindows.some(item => item.classificationKey === profile.classificationKey)}
+                            checked={selectedWindows.some(
+                              item =>
+                                !hasPatternMatcher(item) &&
+                                item.classificationKey === profile.classificationKey,
+                            )}
                             onCheckedChange={() => toggleWindow(profile)}
                           />
                           <span className="min-w-0 truncate text-sm text-foreground" title={profile.displayName}>

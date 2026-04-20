@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { FocusSubnav } from '@/components/focus/FocusSubnav';
 import { useAppState } from '@/store/AppContext';
+import { matchesAnyWindowGroup } from '@/lib/windowGroupMatcher';
 import { getCategoryColor } from '@/lib/categories';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -167,10 +168,7 @@ export default function PomodoroPage() {
   const fw = state.currentFocusedWindow;
   const currentItem = state.queue[currentQueueIdx];
   const hasTargetWindows = Boolean(currentItem && currentItem.windowGroup.length > 0);
-  const isOnTarget =
-    hasTargetWindows && fw
-      ? currentItem.windowGroup.some(w => w.classificationKey === fw.classificationKey)
-      : false;
+  const isOnTarget = hasTargetWindows && fw ? matchesAnyWindowGroup(currentItem.windowGroup, fw) : false;
 
   const handleAddSubjectToQueue = (subjectId: string) => {
     const subject = state.subjects.find(item => item.id === subjectId);

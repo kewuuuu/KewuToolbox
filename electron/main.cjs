@@ -10,6 +10,7 @@ const DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS = 60;
 
 const DESKTOP_KEY = 'desktop';
 const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain';
+const BROWSER_WHITELIST_KEY_PREFIX = 'browser-whitelist';
 const DEFAULT_CATEGORY = '其他';
 const DESKTOP_CATEGORY = '休息';
 const DEFAULT_DISPLAY_MODE = '显示性质';
@@ -104,7 +105,7 @@ function createEmptyState() {
       uiTheme: 'dark',
       autoLaunchEnabled: false,
       urlWhitelist: [],
-      processBlacklist: [],
+      processBlacklist: createDefaultProcessBlacklistRules(),
       countdownCompletedTaskBehavior: 'keep',
       closeWindowBehavior: 'ask',
     },
@@ -175,6 +176,18 @@ function createEmptyState() {
       },
     },
   };
+}
+
+function createDefaultProcessBlacklistRules(now = new Date().toISOString()) {
+  return [
+    {
+      id: 'bl-default-explorer-app-window',
+      typePattern: 'AppWindow',
+      processPattern: 'explorer.exe',
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
 }
 
 function getStorageConfigPath() {
@@ -626,6 +639,13 @@ function normalizePatternInput(input) {
   return typeof input === 'string' ? input.trim() : '';
 }
 
+function normalizeWhitelistName(input, pattern) {
+  if (typeof input === 'string' && input.trim()) {
+    return input.trim();
+  }
+  return pattern;
+}
+
 function normalizeUrlWhitelistRules(raw, fallback = []) {
   if (!Array.isArray(raw)) {
     return fallback;
@@ -640,6 +660,7 @@ function normalizeUrlWhitelistRules(raw, fallback = []) {
       const now = new Date().toISOString();
       return {
         id: typeof item.id === 'string' && item.id.trim() ? item.id : makeId('wl'),
+        name: normalizeWhitelistName(item.name, pattern),
         pattern,
         createdAt: typeof item.createdAt === 'string' ? item.createdAt : now,
         updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : now,
@@ -692,14 +713,14 @@ function wildcardMatch(pattern, value) {
   }
 }
 
-function isUrlWhitelisted(url) {
+function findMatchingUrlWhitelistRules(url) {
   const normalizedUrl = normalizeWebUrl(url);
   if (!normalizedUrl) {
-    return false;
+    return [];
   }
   const withoutProtocol = normalizedUrl.replace(/^https?:\/\//i, '');
   const rules = appState.preferences?.urlWhitelist ?? [];
-  return rules.some(rule => wildcardMatch(rule.pattern, normalizedUrl) || wildcardMatch(rule.pattern, withoutProtocol));
+  return rules.filter(rule => wildcardMatch(rule.pattern, normalizedUrl) || wildcardMatch(rule.pattern, withoutProtocol));
 }
 
 function shouldIgnoreByBlacklist(profile) {
@@ -727,6 +748,73 @@ function shouldIgnoreByBlacklist(profile) {
     return true;
   }
   return false;
+}
+
+function applyWhitelistNamesToState() {
+  const rules = appState.preferences?.urlWhitelist ?? [];
+  if (!Array.isArray(rules) || rules.length === 0) {
+    return;
+  }
+
+  const nowIso = new Date().toISOString();
+  const nameMap = new Map();
+  for (const rule of rules) {
+    if (!rule || typeof rule.id !== 'string') {
+      continue;
+    }
+    const key = `${BROWSER_WHITELIST_KEY_PREFIX}|${rule.id}`;
+    nameMap.set(key, normalizeWhitelistName(rule.name, rule.pattern || key));
+  }
+  if (nameMap.size === 0) {
+    return;
+  }
+
+  appState.profiles = appState.profiles.map(profile => {
+    const nextName = nameMap.get(profile.classificationKey);
+    if (!nextName || profile.displayName === nextName) {
+      return profile;
+    }
+    return {
+      ...profile,
+      displayName: nextName,
+      normalizedTitle: nextName,
+      updatedAt: nowIso,
+    };
+  });
+
+  appState.windowStats = appState.windowStats.map(item => {
+    const nextName = nameMap.get(item.classificationKey);
+    if (!nextName || item.displayName === nextName) {
+      return item;
+    }
+    return {
+      ...item,
+      displayName: nextName,
+    };
+  });
+
+  appState.sessions = appState.sessions.map(item => {
+    const nextName = nameMap.get(item.classificationKey);
+    if (!nextName || item.displayName === nextName) {
+      return item;
+    }
+    return {
+      ...item,
+      displayName: nextName,
+    };
+  });
+
+  if (appState.currentFocusedWindow) {
+    const nextName = nameMap.get(appState.currentFocusedWindow.classificationKey);
+    if (nextName && appState.currentFocusedWindow.displayName !== nextName) {
+      appState.currentFocusedWindow = {
+        ...appState.currentFocusedWindow,
+        displayName: nextName,
+        normalizedTitle: nextName,
+        updatedAt: nowIso,
+      };
+    }
+  }
 }
 
 function persistState() {
@@ -981,6 +1069,7 @@ function loadPersistedState() {
   }
 
   appState = normalizeSavedState(saved);
+  applyWhitelistNamesToState();
 }
 
 function applyStatePath(newPath) {
@@ -1197,13 +1286,6 @@ function isDesktopWindow(processName, title) {
   );
 }
 
-function isExplorerFileManagerWindow(processName, title) {
-  if (processName !== 'explorer.exe') {
-    return false;
-  }
-  return !isDesktopWindow(processName, title);
-}
-
 function getBridgeSnapshotForProcess(processName) {
   const browserId = BROWSER_PROCESS_TO_ID[processName.toLowerCase()];
   if (!browserId) {
@@ -1239,7 +1321,10 @@ function toDomainProfile(domain, processName = 'browser') {
   };
 }
 
-function toBrowserUrlProfile(url, processName = 'browser') {
+function toWhitelistRuleProfile(rule, url, processName = 'browser') {
+  if (!rule || typeof rule !== 'object' || typeof rule.id !== 'string') {
+    return null;
+  }
   const normalizedUrl = normalizeWebUrl(url);
   if (!normalizedUrl) {
     return null;
@@ -1247,16 +1332,43 @@ function toBrowserUrlProfile(url, processName = 'browser') {
 
   return {
     id: makeId('profile'),
-    classificationKey: `browser-url|${normalizedUrl}`.slice(0, 500),
-    displayName: normalizedUrl,
+    classificationKey: `${BROWSER_WHITELIST_KEY_PREFIX}|${rule.id}`.slice(0, 300),
+    displayName: normalizeWhitelistName(rule.name, rule.pattern || normalizedUrl),
     objectType: 'BrowserTab',
-    processName,
+    processName: processName || 'browser',
     normalizedTitle: normalizedUrl,
     domain: safeParseDomainFromUrl(normalizedUrl) || undefined,
     category: DEFAULT_CATEGORY,
     isBuiltIn: false,
     updatedAt: new Date().toISOString(),
   };
+}
+
+function getFocusedBrowserWhitelistProfiles(rawWindow, processName) {
+  if (!rawWindow || !BROWSER_PROCESS_NAMES.has(processName)) {
+    return [];
+  }
+
+  const bridgeSnapshot = getBridgeSnapshotForProcess(processName);
+  const bridgeActiveUrl = normalizeWebUrl(bridgeSnapshot?.activeUrl);
+  const activeWinUrl = normalizeWebUrl(rawWindow.url);
+  const activeUrl = bridgeActiveUrl || activeWinUrl;
+  if (!activeUrl) {
+    return [];
+  }
+
+  const matchedRules = findMatchingUrlWhitelistRules(activeUrl);
+  if (matchedRules.length === 0) {
+    return [];
+  }
+
+  return matchedRules
+    .map(rule => toWhitelistRuleProfile(rule, activeUrl, processName))
+    .filter(Boolean)
+    .map(profile => ({
+      ...profile,
+      browserName: rawWindow.owner?.name || undefined,
+    }));
 }
 
 function toNonBrowserProfile(rawWindow) {
@@ -1275,10 +1387,6 @@ function toNonBrowserProfile(rawWindow) {
       isBuiltIn: true,
       updatedAt: new Date().toISOString(),
     };
-  }
-
-  if (isExplorerFileManagerWindow(processName, title)) {
-    return null;
   }
 
   if (BROWSER_PROCESS_NAMES.has(processName)) {
@@ -1341,25 +1449,16 @@ function toFocusedWindowProfile(rawWindow) {
     };
   }
 
-  if (isExplorerFileManagerWindow(processName, title)) {
-    return null;
-  }
-
   if (BROWSER_PROCESS_NAMES.has(processName)) {
+    const whitelistProfiles = getFocusedBrowserWhitelistProfiles(rawWindow, processName);
+    if (whitelistProfiles.length > 0) {
+      return whitelistProfiles[0];
+    }
+
     const bridgeSnapshot = getBridgeSnapshotForProcess(processName);
     const bridgeActiveUrl = normalizeWebUrl(bridgeSnapshot?.activeUrl);
     const activeWinUrl = normalizeWebUrl(rawWindow.url);
     const activeUrl = bridgeActiveUrl || activeWinUrl;
-
-    if (activeUrl && isUrlWhitelisted(activeUrl)) {
-      const urlProfile = toBrowserUrlProfile(activeUrl, processName);
-      if (urlProfile) {
-        return {
-          ...urlProfile,
-          browserName: rawWindow.owner?.name || undefined,
-        };
-      }
-    }
 
     const bridgeDomain = bridgeSnapshot?.activeDomain || null;
     const activeUrlDomain = activeUrl ? safeParseDomainFromUrl(activeUrl) : null;
@@ -1376,7 +1475,7 @@ function toFocusedWindowProfile(rawWindow) {
       objectType: 'BrowserTab',
       processName,
       browserName: rawWindow.owner?.name || undefined,
-      normalizedTitle: domain,
+      normalizedTitle: activeUrl || domain,
       domain,
       category: DEFAULT_CATEGORY,
       isBuiltIn: false,
@@ -1472,10 +1571,13 @@ function getFreshBridgeOpenProfiles() {
           continue;
         }
 
-        if (isUrlWhitelisted(openUrl)) {
-          const urlProfile = toBrowserUrlProfile(openUrl, processName);
-          if (urlProfile) {
-            candidateMap.set(urlProfile.classificationKey, urlProfile);
+        const matchedRules = findMatchingUrlWhitelistRules(openUrl);
+        if (matchedRules.length > 0) {
+          for (const rule of matchedRules) {
+            const whitelistProfile = toWhitelistRuleProfile(rule, openUrl, processName);
+            if (whitelistProfile) {
+              candidateMap.set(whitelistProfile.classificationKey, whitelistProfile);
+            }
           }
           continue;
         }
@@ -1802,6 +1904,23 @@ async function monitorTick() {
   if (focusedCandidate && shouldIgnoreByBlacklist(focusedCandidate)) {
     focusedCandidate = null;
   }
+  const focusedWhitelistCandidates =
+    focusedRaw && focusedCandidate && focusedCandidate.classificationKey.startsWith(`${BROWSER_WHITELIST_KEY_PREFIX}|`)
+      ? getFocusedBrowserWhitelistProfiles(
+          focusedRaw,
+          normalizeProcessName(focusedRaw.owner?.path, focusedRaw.owner?.name),
+        ).filter(profile => !shouldIgnoreByBlacklist(profile))
+      : [];
+
+  const focusedKeySet = new Set();
+  if (focusedCandidate) {
+    focusedKeySet.add(focusedCandidate.classificationKey);
+  }
+  for (const profile of focusedWhitelistCandidates) {
+    focusedKeySet.add(profile.classificationKey);
+    bucket.set(profile.classificationKey, profile);
+  }
+
   let focusedProfile = null;
   let currentFocusedWindow = null;
 
@@ -1817,7 +1936,7 @@ async function monitorTick() {
   );
 
   for (const [key, candidate] of bucket.entries()) {
-    const isFocusedWindow = Boolean(focusedCandidate && key === focusedCandidate.classificationKey);
+    const isFocusedWindow = focusedKeySet.has(key);
     const focusDelta = isFocusedWindow ? deltaSeconds : 0;
     const profile = ensureProfile(candidate);
     const existingPending = pendingWindowRuntime.get(key);
@@ -1851,12 +1970,18 @@ async function monitorTick() {
         longestContinuousFocusSeconds: pending.longestContinuousFocusSeconds,
       });
       pending.recorded = true;
-      if (isFocusedWindow) {
+      if (isFocusedWindow && focusedCandidate && key === focusedCandidate.classificationKey) {
         focusedProfile = profile;
+        currentFocusedWindow = profile;
+      } else if (isFocusedWindow && !currentFocusedWindow) {
         currentFocusedWindow = profile;
       }
     } else if (isFocusedWindow) {
-      currentFocusedWindow = profile;
+      if (focusedCandidate && key === focusedCandidate.classificationKey) {
+        currentFocusedWindow = profile;
+      } else if (!currentFocusedWindow) {
+        currentFocusedWindow = profile;
+      }
     }
 
     pendingWindowRuntime.set(key, pending);
@@ -1994,6 +2119,7 @@ function mergeUserStateFromRenderer(partial) {
         appState.preferences.closeWindowBehavior,
       ),
     };
+    applyWhitelistNamesToState();
   }
   if (next.pomodoroSettings && typeof next.pomodoroSettings === 'object') {
     appState.pomodoroSettings = {

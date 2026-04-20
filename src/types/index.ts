@@ -89,7 +89,12 @@ export interface ProcessTagRuntimeStat {
 export interface WindowGroupItem {
   classificationKey: string;
   displayName: string;
-  objectType: ObjectType;
+  objectType?: ObjectType;
+  processName?: string;
+  matchMode?: 'exact' | 'pattern';
+  namePattern?: string;
+  typePattern?: string;
+  processPattern?: string;
 }
 
 export interface FocusSubject {
@@ -132,6 +137,7 @@ export interface SoundBalanceCache {
 
 export interface UrlWhitelistRule {
   id: string;
+  name: string;
   pattern: string;
   createdAt: string;
   updatedAt: string;

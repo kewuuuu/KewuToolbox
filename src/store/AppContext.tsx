@@ -25,6 +25,7 @@ import {
 import { createInitialState } from '@/data/mockData';
 import { createDefaultSoundFiles } from '@/data/defaultSoundFiles';
 import { buildReminderStamp, normalizeTodoTask, shouldTriggerReminder, validateTodoTask } from '@/lib/todo';
+import { matchesAnyWindowGroup } from '@/lib/windowGroupMatcher';
 import { playSoundById, resolveSoundPlaybackForEvent } from '@/lib/sound';
 import { toast } from 'sonner';
 
@@ -370,6 +371,12 @@ function normalizePreferences(
   fallback: AppPreferences,
 ): AppPreferences {
   const normalizePattern = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const normalizeWhitelistName = (value: unknown, pattern: string) => {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+    return pattern;
+  };
   const normalizeUrlWhitelist = (raw: unknown, fallbackValue: UrlWhitelistRule[]) => {
     if (!Array.isArray(raw)) {
       return fallbackValue;
@@ -388,6 +395,7 @@ function normalizePreferences(
             typeof value.id === 'string' && value.id.trim().length > 0
               ? value.id
               : `wl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          name: normalizeWhitelistName(value.name, pattern),
           pattern,
           createdAt: typeof value.createdAt === 'string' ? value.createdAt : now,
           updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : now,
@@ -855,9 +863,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const hasTargetWindows = currentItem.windowGroup.length > 0;
         const focusedClassificationKey = prev.currentFocusedWindow?.classificationKey;
         const hasIdentifiedFocus = typeof focusedClassificationKey === 'string' && focusedClassificationKey.length > 0;
-        const isFocusedInTarget = hasIdentifiedFocus && currentItem.windowGroup.some(
-          item => item.classificationKey === focusedClassificationKey,
-        );
+        const isFocusedInTarget =
+          hasIdentifiedFocus && matchesAnyWindowGroup(currentItem.windowGroup, prev.currentFocusedWindow);
         const shouldTreatUnknownFocusAsOffTarget = hasTargetWindows && !hasIdentifiedFocus;
         const isDefinitelyOffTarget =
           hasTargetWindows &&

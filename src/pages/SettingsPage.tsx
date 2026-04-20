@@ -101,6 +101,7 @@ export default function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [manualPath, setManualPath] = useState('');
   const [manualName, setManualName] = useState('');
+  const [urlNameInput, setUrlNameInput] = useState('');
   const [urlPatternInput, setUrlPatternInput] = useState('');
   const [blacklistNameInput, setBlacklistNameInput] = useState('');
   const [blacklistTypeInput, setBlacklistTypeInput] = useState('');
@@ -353,6 +354,7 @@ export default function SettingsPage() {
   };
 
   const addUrlWhitelistRule = () => {
+    const name = urlNameInput.trim();
     const pattern = urlPatternInput.trim();
     if (!pattern) {
       toast.error('请输入白名单网址模式');
@@ -361,24 +363,37 @@ export default function SettingsPage() {
     const now = new Date().toISOString();
     const nextRule: UrlWhitelistRule = {
       id: makeRuleId('wl'),
+      name: name || pattern,
       pattern,
       createdAt: now,
       updatedAt: now,
     };
     updatePreferences({ urlWhitelist: [nextRule, ...state.preferences.urlWhitelist] });
+    setUrlNameInput('');
     setUrlPatternInput('');
   };
 
-  const updateUrlWhitelistRule = (ruleId: string, pattern: string) => {
-    const normalizedPattern = pattern.trim();
-    if (!normalizedPattern) {
+  const updateUrlWhitelistRule = (ruleId: string, key: 'name' | 'pattern', value: string) => {
+    const trimmedValue = value.trim();
+    if (key === 'pattern' && !trimmedValue) {
       updatePreferences({ urlWhitelist: state.preferences.urlWhitelist.filter(rule => rule.id !== ruleId) });
       return;
     }
     const now = new Date().toISOString();
     updatePreferences({
       urlWhitelist: state.preferences.urlWhitelist.map(rule =>
-        rule.id === ruleId ? { ...rule, pattern: normalizedPattern, updatedAt: now } : rule,
+        rule.id === ruleId
+          ? {
+              ...rule,
+              ...(key === 'name'
+                ? { name: trimmedValue || rule.pattern }
+                : {
+                    pattern: trimmedValue,
+                    name: rule.name === rule.pattern ? trimmedValue : rule.name,
+                  }),
+              updatedAt: now,
+            }
+          : rule,
       ),
     });
   };
@@ -732,7 +747,18 @@ export default function SettingsPage() {
                     命中白名单的网址将按“独立页面”统计，不再按域名合并。示例：`https://leetcode.com/problemset/*`
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="grid grid-cols-1 md:grid-cols-[220px_1fr_auto] gap-2">
+                  <Input
+                    value={urlNameInput}
+                    onChange={event => setUrlNameInput(event.target.value)}
+                    placeholder="规则名称，如 LeetCode 题库"
+                    className="h-8"
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        addUrlWhitelistRule();
+                      }
+                    }}
+                  />
                   <Input
                     value={urlPatternInput}
                     onChange={event => setUrlPatternInput(event.target.value)}
@@ -750,11 +776,21 @@ export default function SettingsPage() {
                 </div>
                 <div className="space-y-2">
                   {state.preferences.urlWhitelist.map(rule => (
-                    <div key={rule.id} className="flex items-center gap-2">
+                    <div
+                      key={rule.id}
+                      className="grid grid-cols-1 md:grid-cols-[220px_1fr_auto] gap-2 items-center"
+                    >
+                      <Input
+                        defaultValue={rule.name}
+                        className="h-8"
+                        placeholder="规则名称"
+                        onBlur={event => updateUrlWhitelistRule(rule.id, 'name', event.target.value)}
+                      />
                       <Input
                         defaultValue={rule.pattern}
                         className="h-8"
-                        onBlur={event => updateUrlWhitelistRule(rule.id, event.target.value)}
+                        placeholder="网址通配规则"
+                        onBlur={event => updateUrlWhitelistRule(rule.id, 'pattern', event.target.value)}
                       />
                       <Button
                         type="button"

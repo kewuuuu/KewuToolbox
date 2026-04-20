@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
-import { ChevronDown, ChevronRight, Edit2, Plus, Trash2 } from 'lucide-react';
+import { Ban, ChevronDown, ChevronRight, Edit2, Plus, Trash2 } from 'lucide-react';
 
 type ProcessRow = {
   classificationKey: string;
@@ -45,6 +45,7 @@ type SortState = {
 
 const DESKTOP_KEY = 'desktop';
 const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain|';
+const BROWSER_WHITELIST_KEY_PREFIX = 'browser-whitelist|';
 
 function parseCurrentKeyFallback(classificationKey: string) {
   if (classificationKey === DESKTOP_KEY) {
@@ -60,6 +61,16 @@ function parseCurrentKeyFallback(classificationKey: string) {
     const domain = classificationKey.slice(BROWSER_DOMAIN_KEY_PREFIX.length) || 'browser';
     return {
       displayName: domain,
+      objectType: 'BrowserTab',
+      processName: 'browser',
+      category: '其他',
+    };
+  }
+
+  if (classificationKey.startsWith(BROWSER_WHITELIST_KEY_PREFIX)) {
+    const ruleId = classificationKey.slice(BROWSER_WHITELIST_KEY_PREFIX.length) || 'rule';
+    return {
+      displayName: `白名单规则 ${ruleId}`,
       objectType: 'BrowserTab',
       processName: 'browser',
       category: '其他',
@@ -108,6 +119,7 @@ export default function MonitoringPage() {
     deleteProcessTag,
     setProcessTagForProfile,
     updateUiState,
+    updatePreferences,
   } = useAppState();
 
   const monitoringUi = state.uiState.monitoring;
@@ -389,6 +401,43 @@ export default function MonitoringPage() {
     return sort.direction === 'asc' ? ' ↑' : ' ↓';
   };
 
+  const handleBlockProcess = useCallback(
+    (row: ProcessRow) => {
+      const processPattern = row.processName?.trim();
+      if (!processPattern) {
+        toast.error('当前进程名为空，无法屏蔽');
+        return;
+      }
+
+      const typePattern = row.objectType?.trim() || 'AppWindow';
+      const existed = state.preferences.processBlacklist.some(rule => {
+        const ruleProcess = (rule.processPattern || '').trim().toLowerCase();
+        const ruleType = (rule.typePattern || '').trim().toLowerCase();
+        return ruleProcess === processPattern.toLowerCase() && ruleType === typePattern.toLowerCase();
+      });
+      if (existed) {
+        toast.info('该进程已在黑名单中');
+        return;
+      }
+
+      const now = new Date().toISOString();
+      updatePreferences({
+        processBlacklist: [
+          {
+            id: `bl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            typePattern,
+            processPattern,
+            createdAt: now,
+            updatedAt: now,
+          },
+          ...state.preferences.processBlacklist,
+        ],
+      });
+      toast.success(`已屏蔽 ${processPattern}`);
+    },
+    [state.preferences.processBlacklist, updatePreferences],
+  );
+
   const renderSortHeader = (
     scope: 'history' | 'current',
     key: SortKey,
@@ -465,6 +514,17 @@ export default function MonitoringPage() {
           <td className="py-1.5 px-2 text-right text-muted-foreground">
             {row.lastFocus ? new Date(row.lastFocus).toLocaleString('zh-CN') : '-'}
           </td>
+          <td className="py-1.5 px-2 text-right">
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+              onClick={() => handleBlockProcess(row)}
+              title="屏蔽"
+            >
+              <Ban className="w-3.5 h-3.5" />
+            </Button>
+          </td>
         </tr>
       );
     });
@@ -510,6 +570,7 @@ export default function MonitoringPage() {
           <td className="py-2 px-2 text-right text-muted-foreground">
             {group.stat?.lastFocusAt ? new Date(group.stat.lastFocusAt).toLocaleString('zh-CN') : '-'}
           </td>
+          <td className="py-2 px-2" />
         </tr>,
       );
 
@@ -611,6 +672,7 @@ export default function MonitoringPage() {
                     {renderSortHeader('history', 'focusTime', '焦点时长', 'text-right py-2 px-2')}
                     {renderSortHeader('history', 'longestContinuousFocus', '最长焦点连续时长', 'text-right py-2 px-2')}
                     {renderSortHeader('history', 'lastFocus', '最后焦点时间', 'text-right py-2 px-2')}
+                    <th className="text-right py-2 px-2">屏蔽</th>
                   </tr>
                 </thead>
                 <tbody>{renderHistoryGroupedRows()}</tbody>
@@ -640,6 +702,7 @@ export default function MonitoringPage() {
                     {renderSortHeader('current', 'focusTime', '焦点时长', 'text-right py-2 px-2')}
                     {renderSortHeader('current', 'longestContinuousFocus', '最长焦点连续时长', 'text-right py-2 px-2')}
                     {renderSortHeader('current', 'lastFocus', '最后焦点时间', 'text-right py-2 px-2')}
+                    <th className="text-right py-2 px-2">屏蔽</th>
                   </tr>
                 </thead>
                 <tbody>{renderProcessRows(currentRows, true)}</tbody>
