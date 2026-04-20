@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, powerMonitor, Notification, Tray, Menu } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, powerMonitor, Notification, Tray, Menu, shell } = require('electron');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
@@ -10,7 +10,7 @@ const DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS = 60;
 
 const DESKTOP_KEY = 'desktop';
 const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain';
-const BROWSER_WHITELIST_KEY_PREFIX = 'browser-whitelist';
+const PROCESS_WHITELIST_KEY_PREFIX = 'process-whitelist';
 const DEFAULT_CATEGORY = '其他';
 const DESKTOP_CATEGORY = '休息';
 const DEFAULT_DISPLAY_MODE = '显示性质';
@@ -19,6 +19,7 @@ const BUILTIN_WARNING_SOUND_ID = 'builtin-warning';
 
 const BROWSER_BRIDGE_PORT = 17321;
 const BROWSER_BRIDGE_ROUTE = '/browser-bridge';
+const PLUGIN_BRIDGE_ROUTE = '/plugin-bridge';
 const BROWSER_BRIDGE_HEALTH_ROUTE = '/health';
 const BROWSER_BRIDGE_STALE_MS = 90 * 1000;
 
@@ -66,6 +67,11 @@ const browserBridgeState = {
   byBrowser: new Map(),
 };
 
+const pluginBridgeState = {
+  /** @type {Map<string, {pluginId: string, pluginName: string, pluginVersion: string, protocolVersion?: string, homepageUrl?: string, source?: string, isOfficial?: boolean, records: any[], suppressRules: any[], focusedClassificationKey: string | null, connectedAt: string, updatedAtMs: number, updatedAtIso: string}>} */
+  byPlugin: new Map(),
+};
+
 const pendingWindowRuntime = new Map();
 const codeWindowIdentityCache = new Map();
 
@@ -104,7 +110,7 @@ function createEmptyState() {
       recordWindowThresholdSeconds: DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS,
       uiTheme: 'dark',
       autoLaunchEnabled: false,
-      urlWhitelist: [],
+      processWhitelist: [],
       processBlacklist: createDefaultProcessBlacklistRules(),
       countdownCompletedTaskBehavior: 'keep',
       closeWindowBehavior: 'ask',
@@ -137,6 +143,7 @@ function createEmptyState() {
     todos: [],
     archives: [],
     powerEvents: [],
+    pluginConnections: [],
     currentFocusedWindow: null,
     isWindowHiddenToTray: false,
     displayMode: DEFAULT_DISPLAY_MODE,
@@ -639,29 +646,34 @@ function normalizePatternInput(input) {
   return typeof input === 'string' ? input.trim() : '';
 }
 
-function normalizeWhitelistName(input, pattern) {
+function normalizeWhitelistName(input, fallbackName) {
   if (typeof input === 'string' && input.trim()) {
     return input.trim();
   }
-  return pattern;
+  return fallbackName;
 }
 
-function normalizeUrlWhitelistRules(raw, fallback = []) {
+function normalizeProcessWhitelistRules(raw, fallback = []) {
   if (!Array.isArray(raw)) {
     return fallback;
   }
   return raw
     .filter(item => item && typeof item === 'object')
     .map(item => {
-      const pattern = normalizePatternInput(item.pattern);
-      if (!pattern) {
+      const legacyPattern = normalizePatternInput(item.pattern);
+      const namePattern = normalizePatternInput(item.namePattern) || legacyPattern;
+      const typePattern = normalizePatternInput(item.typePattern);
+      const processPattern = normalizePatternInput(item.processPattern);
+      if (!namePattern && !typePattern && !processPattern) {
         return null;
       }
       const now = new Date().toISOString();
       return {
         id: typeof item.id === 'string' && item.id.trim() ? item.id : makeId('wl'),
-        name: normalizeWhitelistName(item.name, pattern),
-        pattern,
+        name: normalizeWhitelistName(item.name, namePattern || typePattern || processPattern || '白名单规则'),
+        namePattern: namePattern || undefined,
+        typePattern: typePattern || undefined,
+        processPattern: processPattern || undefined,
         createdAt: typeof item.createdAt === 'string' ? item.createdAt : now,
         updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : now,
       };
@@ -713,14 +725,53 @@ function wildcardMatch(pattern, value) {
   }
 }
 
-function findMatchingUrlWhitelistRules(url) {
-  const normalizedUrl = normalizeWebUrl(url);
-  if (!normalizedUrl) {
+function matchesRuleField(pattern, values) {
+  const normalizedPattern = normalizePatternInput(pattern);
+  if (!normalizedPattern) {
+    return true;
+  }
+  return values.some(value => wildcardMatch(normalizedPattern, value));
+}
+
+function matchesProcessRule(rule, profile) {
+  if (!rule || !profile) {
+    return false;
+  }
+
+  const nameValues = [];
+  const pushNameValue = value => {
+    if (typeof value !== 'string') {
+      return;
+    }
+    const normalized = value.trim();
+    if (!normalized) {
+      return;
+    }
+    nameValues.push(normalized);
+    nameValues.push(normalized.replace(/^https?:\/\//i, ''));
+  };
+
+  pushNameValue(profile.displayName);
+  pushNameValue(profile.normalizedTitle);
+  pushNameValue(profile.domain);
+  if (profile.domain) {
+    pushNameValue(`https://${profile.domain}`);
+    pushNameValue(`http://${profile.domain}`);
+  }
+
+  return (
+    matchesRuleField(rule.namePattern, nameValues) &&
+    matchesRuleField(rule.typePattern, [profile.objectType || '']) &&
+    matchesRuleField(rule.processPattern, [profile.processName || ''])
+  );
+}
+
+function findMatchingProcessWhitelistRules(profile) {
+  if (!profile) {
     return [];
   }
-  const withoutProtocol = normalizedUrl.replace(/^https?:\/\//i, '');
-  const rules = appState.preferences?.urlWhitelist ?? [];
-  return rules.filter(rule => wildcardMatch(rule.pattern, normalizedUrl) || wildcardMatch(rule.pattern, withoutProtocol));
+  const rules = appState.preferences?.processWhitelist ?? [];
+  return rules.filter(rule => matchesProcessRule(rule, profile));
 }
 
 function shouldIgnoreByBlacklist(profile) {
@@ -728,30 +779,11 @@ function shouldIgnoreByBlacklist(profile) {
     return false;
   }
   const rules = appState.preferences?.processBlacklist ?? [];
-  for (const rule of rules) {
-    const hasName = Boolean(rule.namePattern && rule.namePattern.trim());
-    const hasType = Boolean(rule.typePattern && rule.typePattern.trim());
-    const hasProcess = Boolean(rule.processPattern && rule.processPattern.trim());
-    if (!hasName && !hasType && !hasProcess) {
-      continue;
-    }
-
-    if (hasName && !wildcardMatch(rule.namePattern, profile.displayName || profile.normalizedTitle || '')) {
-      continue;
-    }
-    if (hasType && !wildcardMatch(rule.typePattern, profile.objectType || '')) {
-      continue;
-    }
-    if (hasProcess && !wildcardMatch(rule.processPattern, profile.processName || '')) {
-      continue;
-    }
-    return true;
-  }
-  return false;
+  return rules.some(rule => matchesProcessRule(rule, profile));
 }
 
 function applyWhitelistNamesToState() {
-  const rules = appState.preferences?.urlWhitelist ?? [];
+  const rules = appState.preferences?.processWhitelist ?? [];
   if (!Array.isArray(rules) || rules.length === 0) {
     return;
   }
@@ -762,8 +794,9 @@ function applyWhitelistNamesToState() {
     if (!rule || typeof rule.id !== 'string') {
       continue;
     }
-    const key = `${BROWSER_WHITELIST_KEY_PREFIX}|${rule.id}`;
-    nameMap.set(key, normalizeWhitelistName(rule.name, rule.pattern || key));
+    const key = `${PROCESS_WHITELIST_KEY_PREFIX}|${rule.id}`;
+    const fallbackName = rule.namePattern || rule.typePattern || rule.processPattern || key;
+    nameMap.set(key, normalizeWhitelistName(rule.name, fallbackName));
   }
   if (nameMap.size === 0) {
     return;
@@ -1000,9 +1033,9 @@ function normalizeSavedState(input) {
         rawPreferences.autoLaunchEnabled,
         base.preferences.autoLaunchEnabled,
       ),
-      urlWhitelist: normalizeUrlWhitelistRules(
-        rawPreferences.urlWhitelist,
-        base.preferences.urlWhitelist,
+      processWhitelist: normalizeProcessWhitelistRules(
+        rawPreferences.processWhitelist ?? rawPreferences.urlWhitelist,
+        base.preferences.processWhitelist,
       ),
       processBlacklist: normalizeProcessBlacklistRules(
         rawPreferences.processBlacklist,
@@ -1024,6 +1057,7 @@ function normalizeSavedState(input) {
     todos: Array.isArray(raw.todos) ? raw.todos : [],
     archives: Array.isArray(raw.archives) ? raw.archives : [],
     powerEvents: Array.isArray(raw.powerEvents) ? raw.powerEvents : [],
+    pluginConnections: Array.isArray(raw.pluginConnections) ? raw.pluginConnections : [],
     currentFocusedWindow: raw.currentFocusedWindow ?? null,
     isWindowHiddenToTray: Boolean(raw.isWindowHiddenToTray),
     displayMode: typeof raw.displayMode === 'string' ? raw.displayMode : DEFAULT_DISPLAY_MODE,
@@ -1136,7 +1170,9 @@ function resetRuntimeTrackingState() {
   monitorCursor.tagFocusStreakSeconds = 0;
   pendingWindowRuntime.clear();
   browserBridgeState.byBrowser.clear();
+  pluginBridgeState.byPlugin.clear();
   codeWindowIdentityCache.clear();
+  syncPluginConnectionsToState([]);
 }
 
 function clearAllData() {
@@ -1301,7 +1337,7 @@ function getBridgeSnapshotForProcess(processName) {
   return snapshot;
 }
 
-function toDomainProfile(domain, processName = 'browser') {
+function toDomainProfile(domain, processName = 'browser', normalizedTitle = undefined) {
   const normalized = normalizeDomain(domain);
   if (!normalized) {
     return null;
@@ -1313,7 +1349,10 @@ function toDomainProfile(domain, processName = 'browser') {
     displayName: normalized,
     objectType: 'BrowserTab',
     processName,
-    normalizedTitle: normalized,
+    normalizedTitle:
+      typeof normalizedTitle === 'string' && normalizedTitle.trim()
+        ? normalizedTitle.trim()
+        : normalized,
     domain: normalized,
     category: DEFAULT_CATEGORY,
     isBuiltIn: false,
@@ -1321,54 +1360,32 @@ function toDomainProfile(domain, processName = 'browser') {
   };
 }
 
-function toWhitelistRuleProfile(rule, url, processName = 'browser') {
-  if (!rule || typeof rule !== 'object' || typeof rule.id !== 'string') {
+function toProcessWhitelistProfile(rule, sourceProfile) {
+  if (!rule || typeof rule !== 'object' || typeof rule.id !== 'string' || !sourceProfile) {
     return null;
   }
-  const normalizedUrl = normalizeWebUrl(url);
-  if (!normalizedUrl) {
-    return null;
-  }
+  const fallbackName = rule.namePattern || rule.typePattern || rule.processPattern || sourceProfile.displayName;
+  const displayName = normalizeWhitelistName(rule.name, fallbackName);
 
   return {
+    ...sourceProfile,
     id: makeId('profile'),
-    classificationKey: `${BROWSER_WHITELIST_KEY_PREFIX}|${rule.id}`.slice(0, 300),
-    displayName: normalizeWhitelistName(rule.name, rule.pattern || normalizedUrl),
-    objectType: 'BrowserTab',
-    processName: processName || 'browser',
-    normalizedTitle: normalizedUrl,
-    domain: safeParseDomainFromUrl(normalizedUrl) || undefined,
+    classificationKey: `${PROCESS_WHITELIST_KEY_PREFIX}|${rule.id}`.slice(0, 300),
+    displayName,
+    normalizedTitle: displayName,
     category: DEFAULT_CATEGORY,
-    isBuiltIn: false,
     updatedAt: new Date().toISOString(),
   };
 }
 
-function getFocusedBrowserWhitelistProfiles(rawWindow, processName) {
-  if (!rawWindow || !BROWSER_PROCESS_NAMES.has(processName)) {
-    return [];
-  }
-
-  const bridgeSnapshot = getBridgeSnapshotForProcess(processName);
-  const bridgeActiveUrl = normalizeWebUrl(bridgeSnapshot?.activeUrl);
-  const activeWinUrl = normalizeWebUrl(rawWindow.url);
-  const activeUrl = bridgeActiveUrl || activeWinUrl;
-  if (!activeUrl) {
-    return [];
-  }
-
-  const matchedRules = findMatchingUrlWhitelistRules(activeUrl);
+function applyProcessWhitelistToProfile(profile) {
+  const matchedRules = findMatchingProcessWhitelistRules(profile);
   if (matchedRules.length === 0) {
-    return [];
+    return [profile];
   }
-
   return matchedRules
-    .map(rule => toWhitelistRuleProfile(rule, activeUrl, processName))
-    .filter(Boolean)
-    .map(profile => ({
-      ...profile,
-      browserName: rawWindow.owner?.name || undefined,
-    }));
+    .map(rule => toProcessWhitelistProfile(rule, profile))
+    .filter(Boolean);
 }
 
 function toNonBrowserProfile(rawWindow) {
@@ -1450,11 +1467,6 @@ function toFocusedWindowProfile(rawWindow) {
   }
 
   if (BROWSER_PROCESS_NAMES.has(processName)) {
-    const whitelistProfiles = getFocusedBrowserWhitelistProfiles(rawWindow, processName);
-    if (whitelistProfiles.length > 0) {
-      return whitelistProfiles[0];
-    }
-
     const bridgeSnapshot = getBridgeSnapshotForProcess(processName);
     const bridgeActiveUrl = normalizeWebUrl(bridgeSnapshot?.activeUrl);
     const activeWinUrl = normalizeWebUrl(rawWindow.url);
@@ -1571,18 +1583,11 @@ function getFreshBridgeOpenProfiles() {
           continue;
         }
 
-        const matchedRules = findMatchingUrlWhitelistRules(openUrl);
-        if (matchedRules.length > 0) {
-          for (const rule of matchedRules) {
-            const whitelistProfile = toWhitelistRuleProfile(rule, openUrl, processName);
-            if (whitelistProfile) {
-              candidateMap.set(whitelistProfile.classificationKey, whitelistProfile);
-            }
-          }
-          continue;
-        }
-
-        const domainProfile = toDomainProfile(safeParseDomainFromUrl(openUrl), processName);
+        const domainProfile = toDomainProfile(
+          safeParseDomainFromUrl(openUrl),
+          processName,
+          openUrl,
+        );
         if (domainProfile) {
           candidateMap.set(domainProfile.classificationKey, domainProfile);
         }
@@ -1598,6 +1603,41 @@ function getFreshBridgeOpenProfiles() {
     }
   }
 
+  return [...candidateMap.values()];
+}
+
+function collectPluginSuppressRules(activeSnapshots) {
+  const rules = [];
+  for (const snapshot of activeSnapshots) {
+    if (!snapshot || !Array.isArray(snapshot.suppressRules)) {
+      continue;
+    }
+    rules.push(...snapshot.suppressRules);
+  }
+  return rules;
+}
+
+function shouldSuppressByPluginRules(profile, suppressRules) {
+  if (!profile || !Array.isArray(suppressRules) || suppressRules.length === 0) {
+    return false;
+  }
+  return suppressRules.some(rule => matchesProcessRule(rule, profile));
+}
+
+function getFreshPluginProfiles(activeSnapshots) {
+  const candidateMap = new Map();
+  for (const snapshot of activeSnapshots) {
+    for (const record of snapshot.records || []) {
+      if (!record || typeof record.classificationKey !== 'string') {
+        continue;
+      }
+      candidateMap.set(record.classificationKey, {
+        ...record,
+        id: makeId('profile'),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  }
   return [...candidateMap.values()];
 }
 
@@ -1783,6 +1823,179 @@ function parseBrowserBridgePayload(rawPayload) {
   };
 }
 
+function normalizeProfileObjectType(value, fallback = 'AppWindow') {
+  return value === 'BrowserTab' || value === 'Desktop' ? value : fallback;
+}
+
+function normalizePluginRecord(record, pluginId) {
+  if (!record || typeof record !== 'object') {
+    return null;
+  }
+  const explicitKey = typeof record.classificationKey === 'string' ? record.classificationKey.trim() : '';
+  const fallbackKey = typeof record.key === 'string' ? record.key.trim() : '';
+  const keyPart = explicitKey || fallbackKey;
+  if (!keyPart) {
+    return null;
+  }
+
+  const classificationKey = explicitKey || `plugin|${pluginId}|${keyPart}`.slice(0, 300);
+  const displayName =
+    typeof record.displayName === 'string' && record.displayName.trim()
+      ? record.displayName.trim()
+      : classificationKey;
+  const normalizedTitle =
+    typeof record.normalizedTitle === 'string' && record.normalizedTitle.trim()
+      ? record.normalizedTitle.trim()
+      : displayName;
+  const processName =
+    typeof record.processName === 'string' && record.processName.trim()
+      ? record.processName.trim().toLowerCase()
+      : 'plugin';
+
+  return {
+    id: makeId('profile'),
+    classificationKey,
+    displayName,
+    objectType: normalizeProfileObjectType(record.objectType),
+    processName,
+    browserName: typeof record.browserName === 'string' ? record.browserName : undefined,
+    normalizedTitle,
+    domain: typeof record.domain === 'string' ? normalizeDomain(record.domain) || undefined : undefined,
+    category: DEFAULT_CATEGORY,
+    isBuiltIn: false,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function normalizePluginSuppressRules(rawRules) {
+  if (!Array.isArray(rawRules)) {
+    return [];
+  }
+  return rawRules
+    .filter(item => item && typeof item === 'object')
+    .map(item => {
+      const namePattern = normalizePatternInput(item.namePattern);
+      const typePattern = normalizePatternInput(item.typePattern);
+      const processPattern = normalizePatternInput(item.processPattern);
+      if (!namePattern && !typePattern && !processPattern) {
+        return null;
+      }
+      return {
+        namePattern: namePattern || undefined,
+        typePattern: typePattern || undefined,
+        processPattern: processPattern || undefined,
+      };
+    })
+    .filter(Boolean);
+}
+
+function parsePluginBridgePayload(rawPayload) {
+  if (!rawPayload || typeof rawPayload !== 'object') {
+    return null;
+  }
+
+  const rawPlugin = rawPayload.plugin && typeof rawPayload.plugin === 'object' ? rawPayload.plugin : {};
+  const pluginId = typeof rawPlugin.id === 'string' ? rawPlugin.id.trim() : '';
+  const pluginName = typeof rawPlugin.name === 'string' ? rawPlugin.name.trim() : '';
+  const pluginVersion = typeof rawPlugin.version === 'string' ? rawPlugin.version.trim() : '';
+  if (!pluginId || !pluginName || !pluginVersion) {
+    return null;
+  }
+
+  const snapshot = rawPayload.snapshot && typeof rawPayload.snapshot === 'object' ? rawPayload.snapshot : rawPayload;
+  const normalizedRecords = (Array.isArray(snapshot.records) ? snapshot.records : [])
+    .map(record => normalizePluginRecord(record, pluginId))
+    .filter(Boolean);
+  const focusedClassificationKey =
+    typeof snapshot.focusedClassificationKey === 'string' && snapshot.focusedClassificationKey.trim()
+      ? snapshot.focusedClassificationKey.trim()
+      : null;
+
+  const nowIso = new Date().toISOString();
+  const existing = pluginBridgeState.byPlugin.get(pluginId);
+  return {
+    pluginId,
+    pluginName,
+    pluginVersion,
+    protocolVersion:
+      typeof rawPayload.protocolVersion === 'string'
+        ? rawPayload.protocolVersion
+        : typeof rawPlugin.protocolVersion === 'string'
+          ? rawPlugin.protocolVersion
+          : undefined,
+    homepageUrl:
+      typeof rawPlugin.homepageUrl === 'string' && rawPlugin.homepageUrl.trim()
+        ? rawPlugin.homepageUrl.trim()
+        : undefined,
+    source:
+      typeof rawPayload.source === 'string' && rawPayload.source.trim()
+        ? rawPayload.source.trim()
+        : undefined,
+    isOfficial: Boolean(rawPlugin.isOfficial),
+    records: normalizedRecords,
+    suppressRules: normalizePluginSuppressRules(snapshot.suppressRules),
+    focusedClassificationKey,
+    connectedAt: existing?.connectedAt || nowIso,
+    updatedAtIso: nowIso,
+    updatedAtMs: Date.now(),
+  };
+}
+
+function getActivePluginSnapshots(nowMs = Date.now()) {
+  const activeSnapshots = [];
+  for (const [pluginId, snapshot] of pluginBridgeState.byPlugin.entries()) {
+    if (!snapshot || nowMs - snapshot.updatedAtMs > BROWSER_BRIDGE_STALE_MS) {
+      pluginBridgeState.byPlugin.delete(pluginId);
+      continue;
+    }
+    activeSnapshots.push(snapshot);
+  }
+  return activeSnapshots;
+}
+
+function syncPluginConnectionsToState(activeSnapshots = getActivePluginSnapshots()) {
+  appState.pluginConnections = activeSnapshots
+    .map(snapshot => ({
+      pluginId: snapshot.pluginId,
+      pluginName: snapshot.pluginName,
+      pluginVersion: snapshot.pluginVersion,
+      protocolVersion: snapshot.protocolVersion,
+      homepageUrl: snapshot.homepageUrl,
+      source: snapshot.source,
+      connectedAt: snapshot.connectedAt,
+      lastSeenAt: snapshot.updatedAtIso,
+      isOfficial: snapshot.isOfficial,
+      recordCount: Array.isArray(snapshot.records) ? snapshot.records.length : 0,
+    }))
+    .sort((a, b) => new Date(b.lastSeenAt).getTime() - new Date(a.lastSeenAt).getTime());
+}
+
+function getFocusedProfileFromPlugins(activeSnapshots) {
+  let selected = null;
+  for (const snapshot of activeSnapshots) {
+    if (!snapshot || !snapshot.focusedClassificationKey) {
+      continue;
+    }
+    const record = (snapshot.records || []).find(
+      item => item && item.classificationKey === snapshot.focusedClassificationKey,
+    );
+    if (!record) {
+      continue;
+    }
+    if (!selected || snapshot.updatedAtMs > selected.updatedAtMs) {
+      selected = {
+        updatedAtMs: snapshot.updatedAtMs,
+        profile: {
+          ...record,
+          id: makeId('profile'),
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    }
+  }
+  return selected?.profile ?? null;
+}
+
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -1805,7 +2018,7 @@ function startBrowserBridgeServer() {
     if (req.method === 'GET' && req.url === BROWSER_BRIDGE_HEALTH_ROUTE) {
       return sendJson(res, 200, { ok: true, port: BROWSER_BRIDGE_PORT });
     }
-    if (req.method !== 'POST' || req.url !== BROWSER_BRIDGE_ROUTE) {
+    if (req.method !== 'POST' || (req.url !== BROWSER_BRIDGE_ROUTE && req.url !== PLUGIN_BRIDGE_ROUTE)) {
       return sendJson(res, 404, { ok: false, error: 'not_found' });
     }
 
@@ -1825,21 +2038,33 @@ function startBrowserBridgeServer() {
         return sendJson(res, 400, { ok: false, error: 'invalid_json' });
       }
 
-      const normalized = parseBrowserBridgePayload(parsed);
-      if (!normalized) {
+      if (req.url === BROWSER_BRIDGE_ROUTE) {
+        const normalized = parseBrowserBridgePayload(parsed);
+        if (!normalized) {
+          return sendJson(res, 400, { ok: false, error: 'invalid_payload' });
+        }
+
+        browserBridgeState.byBrowser.set(normalized.browserId, {
+          activeDomain: normalized.activeDomain,
+          activeUrl: normalized.activeUrl,
+          openDomains: normalized.openDomains,
+          openUrls: normalized.openUrls,
+          updatedAtMs: normalized.updatedAtMs,
+          updatedAtIso: normalized.updatedAtIso,
+        });
+
+        return sendJson(res, 200, { ok: true });
+      }
+
+      const normalizedPlugin = parsePluginBridgePayload(parsed);
+      if (!normalizedPlugin) {
         return sendJson(res, 400, { ok: false, error: 'invalid_payload' });
       }
 
-      browserBridgeState.byBrowser.set(normalized.browserId, {
-        activeDomain: normalized.activeDomain,
-        activeUrl: normalized.activeUrl,
-        openDomains: normalized.openDomains,
-        openUrls: normalized.openUrls,
-        updatedAtMs: normalized.updatedAtMs,
-        updatedAtIso: normalized.updatedAtIso,
-      });
-
-      sendJson(res, 200, { ok: true });
+      pluginBridgeState.byPlugin.set(normalizedPlugin.pluginId, normalizedPlugin);
+      syncPluginConnectionsToState();
+      emitState();
+      return sendJson(res, 200, { ok: true });
     });
   });
 
@@ -1883,40 +2108,72 @@ async function monitorTick() {
 
   const activeWin = await getActiveWinApi();
   const [focusedRaw, openWindows] = await Promise.all([activeWin(), activeWin.getOpenWindows()]);
+  const activePluginSnapshots = getActivePluginSnapshots();
+  syncPluginConnectionsToState(activePluginSnapshots);
+  const pluginSuppressRules = collectPluginSuppressRules(activePluginSnapshots);
 
   const bucket = new Map();
   for (const rawWindow of openWindows) {
     const candidate = toNonBrowserProfile(rawWindow);
-    if (!candidate || shouldIgnoreByBlacklist(candidate)) {
+    if (!candidate || shouldIgnoreByBlacklist(candidate) || shouldSuppressByPluginRules(candidate, pluginSuppressRules)) {
       continue;
     }
-    bucket.set(candidate.classificationKey, candidate);
+    const expandedProfiles = applyProcessWhitelistToProfile(candidate);
+    for (const expandedProfile of expandedProfiles) {
+      if (!expandedProfile || shouldIgnoreByBlacklist(expandedProfile)) {
+        continue;
+      }
+      bucket.set(expandedProfile.classificationKey, expandedProfile);
+    }
   }
 
   for (const candidate of getFreshBridgeOpenProfiles()) {
     if (!candidate || shouldIgnoreByBlacklist(candidate)) {
       continue;
     }
-    bucket.set(candidate.classificationKey, candidate);
+    const expandedProfiles = applyProcessWhitelistToProfile(candidate);
+    for (const expandedProfile of expandedProfiles) {
+      if (!expandedProfile || shouldIgnoreByBlacklist(expandedProfile)) {
+        continue;
+      }
+      bucket.set(expandedProfile.classificationKey, expandedProfile);
+    }
+  }
+
+  for (const pluginProfile of getFreshPluginProfiles(activePluginSnapshots)) {
+    if (!pluginProfile || shouldIgnoreByBlacklist(pluginProfile)) {
+      continue;
+    }
+    const expandedProfiles = applyProcessWhitelistToProfile(pluginProfile);
+    for (const expandedProfile of expandedProfiles) {
+      if (!expandedProfile || shouldIgnoreByBlacklist(expandedProfile)) {
+        continue;
+      }
+      bucket.set(expandedProfile.classificationKey, expandedProfile);
+    }
   }
 
   let focusedCandidate = toFocusedWindowProfile(focusedRaw);
-  if (focusedCandidate && shouldIgnoreByBlacklist(focusedCandidate)) {
+  if (
+    focusedCandidate &&
+    (shouldIgnoreByBlacklist(focusedCandidate) ||
+      shouldSuppressByPluginRules(focusedCandidate, pluginSuppressRules))
+  ) {
     focusedCandidate = null;
   }
-  const focusedWhitelistCandidates =
-    focusedRaw && focusedCandidate && focusedCandidate.classificationKey.startsWith(`${BROWSER_WHITELIST_KEY_PREFIX}|`)
-      ? getFocusedBrowserWhitelistProfiles(
-          focusedRaw,
-          normalizeProcessName(focusedRaw.owner?.path, focusedRaw.owner?.name),
-        ).filter(profile => !shouldIgnoreByBlacklist(profile))
-      : [];
+  if (!focusedCandidate) {
+    focusedCandidate = getFocusedProfileFromPlugins(activePluginSnapshots);
+  }
+  const focusedCandidates = focusedCandidate
+    ? applyProcessWhitelistToProfile(focusedCandidate).filter(profile => !shouldIgnoreByBlacklist(profile))
+    : [];
+  const primaryFocusedCandidate = focusedCandidates[0] ?? null;
 
   const focusedKeySet = new Set();
-  if (focusedCandidate) {
-    focusedKeySet.add(focusedCandidate.classificationKey);
+  if (primaryFocusedCandidate) {
+    focusedKeySet.add(primaryFocusedCandidate.classificationKey);
   }
-  for (const profile of focusedWhitelistCandidates) {
+  for (const profile of focusedCandidates) {
     focusedKeySet.add(profile.classificationKey);
     bucket.set(profile.classificationKey, profile);
   }
@@ -1924,8 +2181,8 @@ async function monitorTick() {
   let focusedProfile = null;
   let currentFocusedWindow = null;
 
-  if (focusedCandidate) {
-    bucket.set(focusedCandidate.classificationKey, focusedCandidate);
+  if (primaryFocusedCandidate) {
+    bucket.set(primaryFocusedCandidate.classificationKey, primaryFocusedCandidate);
   }
 
   const recordedKeys = new Set(appState.windowStats.map(item => item.classificationKey));
@@ -1970,14 +2227,14 @@ async function monitorTick() {
         longestContinuousFocusSeconds: pending.longestContinuousFocusSeconds,
       });
       pending.recorded = true;
-      if (isFocusedWindow && focusedCandidate && key === focusedCandidate.classificationKey) {
+      if (isFocusedWindow && primaryFocusedCandidate && key === primaryFocusedCandidate.classificationKey) {
         focusedProfile = profile;
         currentFocusedWindow = profile;
       } else if (isFocusedWindow && !currentFocusedWindow) {
         currentFocusedWindow = profile;
       }
     } else if (isFocusedWindow) {
-      if (focusedCandidate && key === focusedCandidate.classificationKey) {
+      if (primaryFocusedCandidate && key === primaryFocusedCandidate.classificationKey) {
         currentFocusedWindow = profile;
       } else if (!currentFocusedWindow) {
         currentFocusedWindow = profile;
@@ -2088,9 +2345,9 @@ function mergeUserStateFromRenderer(partial) {
       next.preferences.autoLaunchEnabled,
       appState.preferences.autoLaunchEnabled,
     );
-    const normalizedUrlWhitelist = normalizeUrlWhitelistRules(
-      next.preferences.urlWhitelist,
-      appState.preferences.urlWhitelist,
+    const normalizedProcessWhitelist = normalizeProcessWhitelistRules(
+      next.preferences.processWhitelist ?? next.preferences.urlWhitelist,
+      appState.preferences.processWhitelist,
     );
     const normalizedProcessBlacklist = normalizeProcessBlacklistRules(
       next.preferences.processBlacklist,
@@ -2108,7 +2365,7 @@ function mergeUserStateFromRenderer(partial) {
       ),
       uiTheme: normalizeUiTheme(next.preferences.uiTheme, appState.preferences.uiTheme),
       autoLaunchEnabled: resolvedAutoLaunchEnabled,
-      urlWhitelist: normalizedUrlWhitelist,
+      processWhitelist: normalizedProcessWhitelist,
       processBlacklist: normalizedProcessBlacklist,
       countdownCompletedTaskBehavior: normalizeCountdownCompletedTaskBehavior(
         next.preferences.countdownCompletedTaskBehavior,
@@ -2244,6 +2501,19 @@ function notifySystem(payload) {
 
 function registerIpc() {
   ipcMain.handle('app:get-state', () => appState);
+  ipcMain.handle('app:get-app-version', () => app.getVersion());
+  ipcMain.handle('app:open-external-url', async (_event, payload) => {
+    const targetUrl = typeof payload?.url === 'string' ? payload.url.trim() : '';
+    if (!targetUrl) {
+      return { ok: false, error: 'invalid_url' };
+    }
+    try {
+      await shell.openExternal(targetUrl);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'open_failed' };
+    }
+  });
   ipcMain.handle('app:get-data-file-path', () => getStatePath());
   ipcMain.handle('app:set-data-file-path', (_event, payload) =>
     setDataFilePath(payload?.targetPath, Boolean(payload?.createIfMissing)),

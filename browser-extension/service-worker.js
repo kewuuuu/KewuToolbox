@@ -1,6 +1,9 @@
-const BRIDGE_ENDPOINT = 'http://127.0.0.1:17321/browser-bridge';
+const BRIDGE_ENDPOINT = 'http://127.0.0.1:17321/plugin-bridge';
 const HEARTBEAT_ALARM = 'mindful_bridge_heartbeat';
 const HEARTBEAT_MINUTES = 0.5;
+const PLUGIN_ID = 'official-browser-bridge';
+const PLUGIN_NAME = 'Kewu 浏览器桥接插件';
+const PROTOCOL_VERSION = '1.0';
 
 let pushQueued = false;
 
@@ -71,35 +74,60 @@ async function collectSnapshot() {
     chrome.tabs.query({ active: true, lastFocusedWindow: true }),
   ]);
 
-  const openDomainsSet = new Set();
-  const openUrlsSet = new Set();
+  const recordMap = new Map();
+  const processName = `${detectBrowser()}.exe`;
+  let focusedClassificationKey = null;
   for (const tab of allTabs) {
     const normalizedUrl = normalizeWebUrlFromUrl(tab.url);
-    if (normalizedUrl) {
-      openUrlsSet.add(normalizedUrl);
+    if (!normalizedUrl) {
+      continue;
     }
-    const domain = normalizeDomainFromUrl(normalizedUrl || tab.url);
-    if (domain) {
-      openDomainsSet.add(domain);
+    const domain = normalizeDomainFromUrl(normalizedUrl || tab.url) || undefined;
+    const classificationKey = `plugin-browser-tab|${normalizedUrl}`;
+    if (!recordMap.has(classificationKey)) {
+      const displayName =
+        typeof tab.title === 'string' && tab.title.trim().length > 0
+          ? tab.title.trim()
+          : domain || normalizedUrl;
+      recordMap.set(classificationKey, {
+        classificationKey,
+        displayName,
+        normalizedTitle: normalizedUrl,
+        objectType: 'BrowserTab',
+        processName,
+        domain,
+      });
     }
   }
 
   const activeUrl = normalizeWebUrlFromUrl(activeTabs[0]?.url);
-  const activeDomain = normalizeDomainFromUrl(activeUrl || activeTabs[0]?.url);
   if (activeUrl) {
-    openUrlsSet.add(activeUrl);
-  }
-  if (activeDomain) {
-    openDomainsSet.add(activeDomain);
+    focusedClassificationKey = `plugin-browser-tab|${activeUrl}`;
   }
 
   return {
-    browser: detectBrowser(),
-    activeUrl: activeUrl || null,
-    activeDomain: activeDomain || null,
-    openUrls: [...openUrlsSet],
-    openDomains: [...openDomainsSet],
-    timestamp: new Date().toISOString(),
+    protocolVersion: PROTOCOL_VERSION,
+    source: 'browser-extension',
+    plugin: {
+      id: PLUGIN_ID,
+      name: PLUGIN_NAME,
+      version: chrome.runtime.getManifest().version,
+      homepageUrl: chrome.runtime.getManifest().homepage_url || undefined,
+      isOfficial: true,
+    },
+    snapshot: {
+      records: [...recordMap.values()],
+      focusedClassificationKey,
+      suppressRules: [
+        { typePattern: 'AppWindow', processPattern: 'chrome.exe' },
+        { typePattern: 'AppWindow', processPattern: 'msedge.exe' },
+        { typePattern: 'AppWindow', processPattern: 'brave.exe' },
+        { typePattern: 'AppWindow', processPattern: 'firefox.exe' },
+        { typePattern: 'AppWindow', processPattern: 'opera.exe' },
+        { typePattern: 'AppWindow', processPattern: 'vivaldi.exe' },
+      ],
+      timestamp: new Date().toISOString(),
+    },
   };
 }
 

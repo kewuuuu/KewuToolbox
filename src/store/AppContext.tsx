@@ -11,9 +11,9 @@ import {
   FocusSubject,
   ProcessTag,
   ProcessBlacklistRule,
+  ProcessWhitelistRule,
   PomodoroSettings,
   SoundBalanceCache,
-  UrlWhitelistRule,
   SoundFileItem,
   SoundVolumeMode,
   StopwatchLap,
@@ -371,37 +371,43 @@ function normalizePreferences(
   fallback: AppPreferences,
 ): AppPreferences {
   const normalizePattern = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
-  const normalizeWhitelistName = (value: unknown, pattern: string) => {
+  const normalizeWhitelistName = (value: unknown, fallbackName: string) => {
     if (typeof value === 'string' && value.trim().length > 0) {
       return value.trim();
     }
-    return pattern;
+    return fallbackName;
   };
-  const normalizeUrlWhitelist = (raw: unknown, fallbackValue: UrlWhitelistRule[]) => {
+  const normalizeProcessWhitelist = (raw: unknown, fallbackValue: ProcessWhitelistRule[]) => {
     if (!Array.isArray(raw)) {
       return fallbackValue;
     }
     return raw
       .filter(item => item && typeof item === 'object')
       .map(item => {
-        const value = item as Partial<UrlWhitelistRule>;
-        const pattern = normalizePattern(value.pattern);
-        if (!pattern) {
+        const value = item as Partial<ProcessWhitelistRule> & { pattern?: string };
+        const legacyPattern = normalizePattern(value.pattern);
+        const namePattern = normalizePattern(value.namePattern) || legacyPattern;
+        const typePattern = normalizePattern(value.typePattern);
+        const processPattern = normalizePattern(value.processPattern);
+        if (!namePattern && !typePattern && !processPattern) {
           return null;
         }
+        const fallbackName = namePattern || typePattern || processPattern || '白名单规则';
         const now = new Date().toISOString();
         return {
           id:
             typeof value.id === 'string' && value.id.trim().length > 0
               ? value.id
               : `wl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          name: normalizeWhitelistName(value.name, pattern),
-          pattern,
+          name: normalizeWhitelistName(value.name, fallbackName),
+          namePattern: namePattern || undefined,
+          typePattern: typePattern || undefined,
+          processPattern: processPattern || undefined,
           createdAt: typeof value.createdAt === 'string' ? value.createdAt : now,
           updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : now,
-        } satisfies UrlWhitelistRule;
+        } satisfies ProcessWhitelistRule;
       })
-      .filter((item): item is UrlWhitelistRule => item !== null);
+      .filter((item): item is ProcessWhitelistRule => item !== null);
   };
   const normalizeProcessBlacklist = (raw: unknown, fallbackValue: ProcessBlacklistRule[]) => {
     if (!Array.isArray(raw)) {
@@ -447,7 +453,11 @@ function normalizePreferences(
     uiTheme: input?.uiTheme === 'light' || input?.uiTheme === 'dark' ? input.uiTheme : fallback.uiTheme,
     autoLaunchEnabled:
       typeof input?.autoLaunchEnabled === 'boolean' ? input.autoLaunchEnabled : fallback.autoLaunchEnabled,
-    urlWhitelist: normalizeUrlWhitelist(input?.urlWhitelist, fallback.urlWhitelist),
+    processWhitelist: normalizeProcessWhitelist(
+      (input as { processWhitelist?: unknown; urlWhitelist?: unknown } | undefined)?.processWhitelist ??
+        (input as { processWhitelist?: unknown; urlWhitelist?: unknown } | undefined)?.urlWhitelist,
+      fallback.processWhitelist,
+    ),
     processBlacklist: normalizeProcessBlacklist(input?.processBlacklist, fallback.processBlacklist),
     countdownCompletedTaskBehavior:
       input?.countdownCompletedTaskBehavior === 'delete' ? 'delete' : fallback.countdownCompletedTaskBehavior,
@@ -573,6 +583,7 @@ function normalizeState(raw: unknown): AppState {
     todos: (Array.isArray(input.todos) ? input.todos : initial.todos).map(task => normalizeTodoTask(task)),
     archives: Array.isArray(input.archives) ? input.archives : initial.archives,
     powerEvents: Array.isArray(input.powerEvents) ? input.powerEvents : initial.powerEvents,
+    pluginConnections: Array.isArray(input.pluginConnections) ? input.pluginConnections : initial.pluginConnections,
     pomodoroSettings: {
       ...normalizedSettings,
       completionSoundFileId:
@@ -657,6 +668,7 @@ function mergeLiveState(prev: AppState, incoming: AppState): AppState {
         : 0,
     })),
     powerEvents: incoming.powerEvents,
+    pluginConnections: incoming.pluginConnections,
     currentFocusedWindow: focused,
     isWindowHiddenToTray: Boolean(incoming.isWindowHiddenToTray),
   };

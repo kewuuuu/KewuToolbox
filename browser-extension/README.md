@@ -1,12 +1,12 @@
 # KewuToolbox Browser Bridge
 
-用于把浏览器标签页域名同步到 `KewuToolbox`。
+用于把浏览器标签页对象通过统一插件协议同步到 `KewuToolbox`。
 
 规则：
 
-- 只识别 URL 的域名（例如 `https://www.bilibili.com/xxx` -> `bilibili.com`）
-- 忽略路径、参数、锚点
-- 同域名多个标签页算同一事项（覆盖关系，不重复累计）
+- 上报标签页记录（`BrowserTab`）及当前焦点标签。
+- 上报抑制规则，用于抑制原生浏览器 `AppWindow` 记录。
+- 由桌面端进行白名单/黑名单/分类等后续处理。
 
 ## 安装（开发者模式）
 
@@ -19,4 +19,4 @@
 
 扩展只向本机发送数据：
 
-`http://127.0.0.1:17321/browser-bridge`
+`http://127.0.0.1:17321/plugin-bridge`

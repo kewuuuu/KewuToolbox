@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('desktopApi', {
   isElectron: true,
   getState: () => ipcRenderer.invoke('app:get-state'),
+  getAppVersion: () => ipcRenderer.invoke('app:get-app-version'),
+  openExternalUrl: (payload) => ipcRenderer.invoke('app:open-external-url', payload),
   getDataFilePath: () => ipcRenderer.invoke('app:get-data-file-path'),
   setDataFilePath: (payload) => ipcRenderer.invoke('app:set-data-file-path', payload),
   selectDataFilePath: () => ipcRenderer.invoke('app:select-data-file-path'),

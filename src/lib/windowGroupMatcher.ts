@@ -42,7 +42,7 @@ function normalizeObjectType(typePattern: unknown): ObjectType | null {
   return null;
 }
 
-function matchesBrowserNamePattern(
+function matchesNamePattern(
   namePattern: string,
   candidate: WindowGroupMatchCandidate,
 ) {
@@ -76,19 +76,6 @@ function matchesBrowserNamePattern(
   return false;
 }
 
-function matchesGenericNamePattern(
-  namePattern: string,
-  candidate: WindowGroupMatchCandidate,
-) {
-  if (!namePattern) {
-    return true;
-  }
-  return (
-    wildcardMatch(namePattern, candidate.displayName) ||
-    wildcardMatch(namePattern, candidate.normalizedTitle)
-  );
-}
-
 export function matchesWindowGroupItem(
   item: WindowGroupItem,
   candidate: WindowGroupMatchCandidate | null | undefined,
@@ -107,29 +94,16 @@ export function matchesWindowGroupItem(
   const namePattern = normalizePatternInput(item.namePattern);
   const typePattern = normalizePatternInput(item.typePattern);
   const processPattern = normalizePatternInput(item.processPattern);
-  const canonicalType = normalizeObjectType(typePattern);
 
   if (typePattern && !wildcardMatch(typePattern, candidate.objectType)) {
     return false;
   }
 
-  const processIgnored = canonicalType === 'BrowserTab';
-  if (!processIgnored && processPattern && !wildcardMatch(processPattern, candidate.processName)) {
+  if (processPattern && !wildcardMatch(processPattern, candidate.processName)) {
     return false;
   }
 
-  if (canonicalType === 'BrowserTab') {
-    return matchesBrowserNamePattern(namePattern, candidate);
-  }
-
-  if (candidate.objectType === 'BrowserTab') {
-    return (
-      matchesBrowserNamePattern(namePattern, candidate) ||
-      matchesGenericNamePattern(namePattern, candidate)
-    );
-  }
-
-  return matchesGenericNamePattern(namePattern, candidate);
+  return matchesNamePattern(namePattern, candidate);
 }
 
 export function matchesAnyWindowGroup(

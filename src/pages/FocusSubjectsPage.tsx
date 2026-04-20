@@ -33,10 +33,6 @@ function toCanonicalObjectType(input: string) {
   return undefined;
 }
 
-function isBrowserTabType(input: string) {
-  return input.trim().toLowerCase() === 'browsertab';
-}
-
 function hasPatternMatcher(item: WindowGroupItem) {
   return Boolean(item.matchMode === 'pattern' || item.namePattern || item.typePattern || item.processPattern);
 }
@@ -138,12 +134,9 @@ export default function FocusSubjectsPage() {
   const addManualRule = () => {
     const namePattern = manualNamePattern.trim();
     const typePattern = manualTypePattern.trim();
-    const browserTabType = isBrowserTabType(typePattern);
-    const processPattern = browserTabType ? '' : manualProcessPattern.trim();
+    const processPattern = manualProcessPattern.trim();
     const canonicalType = toCanonicalObjectType(typePattern);
-    const displayName = `规则: 名称 ${namePattern || '*'} / 类型 ${typePattern || '*'} / 进程 ${
-      browserTabType ? '(忽略)' : processPattern || '*'
-    }`;
+    const displayName = `规则: 名称 ${namePattern || '*'} / 类型 ${typePattern || '*'} / 进程 ${processPattern || '*'}`;
 
     setSelectedWindows(prev => [
       ...prev,
@@ -315,15 +308,12 @@ export default function FocusSubjectsPage() {
                       <div className="space-y-1.5">
                         {selectedWindows.map(item => {
                           const patternMode = hasPatternMatcher(item);
-                          const browserTabRule = isBrowserTabType(item.typePattern || '');
                           const nameText = patternMode ? item.namePattern?.trim() || '任意' : item.displayName;
                           const typeText = patternMode
                             ? item.typePattern?.trim() || '任意'
                             : item.objectType || '任意';
                           const processText = patternMode
-                            ? browserTabRule
-                              ? '(已忽略)'
-                              : item.processPattern?.trim() || '任意'
+                            ? item.processPattern?.trim() || '任意'
                             : item.processName || '—';
                           return (
                             <div
@@ -360,11 +350,7 @@ export default function FocusSubjectsPage() {
                     <Input
                       value={manualNamePattern}
                       onChange={event => setManualNamePattern(event.target.value)}
-                      placeholder={
-                        isBrowserTabType(manualTypePattern)
-                          ? '名称/网址通配，如 https://*.bilibili.com/*'
-                          : '名称通配，如 *Visual Studio Code*'
-                      }
+                      placeholder="名称通配，如 *Visual Studio Code* 或 https://*.bilibili.com/*"
                       className="h-8"
                       onKeyDown={event => {
                         if (event.key === 'Enter') {
@@ -386,9 +372,8 @@ export default function FocusSubjectsPage() {
                     <Input
                       value={manualProcessPattern}
                       onChange={event => setManualProcessPattern(event.target.value)}
-                      placeholder={isBrowserTabType(manualTypePattern) ? 'BrowserTab 类型下将忽略' : '进程通配，如 code.exe'}
+                      placeholder="进程通配，如 code.exe"
                       className="h-8"
-                      disabled={isBrowserTabType(manualTypePattern)}
                       onKeyDown={event => {
                         if (event.key === 'Enter') {
                           addManualRule();
@@ -400,7 +385,7 @@ export default function FocusSubjectsPage() {
                     </Button>
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    规则为空字段表示“匹配全部”。当类型填写 BrowserTab 时，名称按网址通配匹配，进程字段自动忽略。
+                    规则为空字段表示“匹配全部”。名称字段可同时用于窗口标题或网址模式匹配。
                   </p>
                 </div>
 

@@ -45,7 +45,7 @@ type SortState = {
 
 const DESKTOP_KEY = 'desktop';
 const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain|';
-const BROWSER_WHITELIST_KEY_PREFIX = 'browser-whitelist|';
+const PROCESS_WHITELIST_KEY_PREFIX = 'process-whitelist|';
 
 function parseCurrentKeyFallback(classificationKey: string) {
   if (classificationKey === DESKTOP_KEY) {
@@ -67,8 +67,8 @@ function parseCurrentKeyFallback(classificationKey: string) {
     };
   }
 
-  if (classificationKey.startsWith(BROWSER_WHITELIST_KEY_PREFIX)) {
-    const ruleId = classificationKey.slice(BROWSER_WHITELIST_KEY_PREFIX.length) || 'rule';
+  if (classificationKey.startsWith(PROCESS_WHITELIST_KEY_PREFIX)) {
+    const ruleId = classificationKey.slice(PROCESS_WHITELIST_KEY_PREFIX.length) || 'rule';
     return {
       displayName: `白名单规则 ${ruleId}`,
       objectType: 'BrowserTab',

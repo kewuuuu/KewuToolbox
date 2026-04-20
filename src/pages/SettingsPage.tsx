@@ -2,7 +2,7 @@ import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from
 import { useSearchParams } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { useAppState } from '@/store/AppContext';
-import { ProcessBlacklistRule, SoundBalanceCache, UrlWhitelistRule } from '@/types';
+import { ProcessBlacklistRule, ProcessWhitelistRule, SoundBalanceCache } from '@/types';
 import {
   analyzeSoundFileLoudness,
   calculateBalancedGainFromAnalysis,
@@ -29,9 +29,9 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
-import { FolderOpen, MoonStar, Play, Plus, Sun, Trash2 } from 'lucide-react';
+import { Download, FolderOpen, MoonStar, Play, Plus, Sun, Trash2 } from 'lucide-react';
 
-type SettingsTab = 'general' | 'sounds';
+type SettingsTab = 'general' | 'plugins' | 'sounds';
 const NONE_SOUND_ID = '__none__';
 type SoundEventConfig = {
   eventType: SoundEventType;
@@ -101,8 +101,10 @@ export default function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [manualPath, setManualPath] = useState('');
   const [manualName, setManualName] = useState('');
-  const [urlNameInput, setUrlNameInput] = useState('');
-  const [urlPatternInput, setUrlPatternInput] = useState('');
+  const [whitelistNameInput, setWhitelistNameInput] = useState('');
+  const [whitelistNamePatternInput, setWhitelistNamePatternInput] = useState('');
+  const [whitelistTypePatternInput, setWhitelistTypePatternInput] = useState('');
+  const [whitelistProcessPatternInput, setWhitelistProcessPatternInput] = useState('');
   const [blacklistNameInput, setBlacklistNameInput] = useState('');
   const [blacklistTypeInput, setBlacklistTypeInput] = useState('');
   const [blacklistProcessInput, setBlacklistProcessInput] = useState('');
@@ -111,6 +113,7 @@ export default function SettingsPage() {
   const [isChangingDataPath, setIsChangingDataPath] = useState(false);
   const [isClearingAllData, setIsClearingAllData] = useState(false);
   const [applyingBalanceEventType, setApplyingBalanceEventType] = useState<SoundEventType | null>(null);
+  const [appVersion, setAppVersion] = useState('0.0.0');
   const [thresholdInput, setThresholdInput] = useState(
     String(state.preferences.recordWindowThresholdSeconds),
   );
@@ -122,17 +125,22 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (!window.desktopApi?.isElectron) {
+      setAppVersion('0.3.0');
       return;
     }
 
     let disposed = false;
-    const loadPath = async () => {
+    const loadDesktopMeta = async () => {
       try {
-        const currentPath = await window.desktopApi!.getDataFilePath();
+        const [currentPath, version] = await Promise.all([
+          window.desktopApi!.getDataFilePath(),
+          window.desktopApi!.getAppVersion?.() ?? Promise.resolve('0.3.0'),
+        ]);
         if (disposed) {
           return;
         }
         setDataFilePathInput(currentPath);
+        setAppVersion(version || '0.3.0');
       } catch {
         if (!disposed) {
           toast.error('读取数据文件路径失败');
@@ -140,14 +148,19 @@ export default function SettingsPage() {
       }
     };
 
-    void loadPath();
+    void loadDesktopMeta();
     return () => {
       disposed = true;
     };
   }, []);
 
   const tabParam = searchParams.get('tab');
-  const tab: SettingsTab = tabParam === 'sounds' ? 'sounds' : 'general';
+  const tab: SettingsTab =
+    tabParam === 'sounds'
+      ? 'sounds'
+      : tabParam === 'plugins'
+        ? 'plugins'
+        : 'general';
 
   const sortedSoundFiles = useMemo(
     () =>
@@ -159,7 +172,8 @@ export default function SettingsPage() {
   const isElectronRuntime = Boolean(window.desktopApi?.isElectron);
 
   const handleTabChange = (nextTab: string) => {
-    const normalized: SettingsTab = nextTab === 'sounds' ? 'sounds' : 'general';
+    const normalized: SettingsTab =
+      nextTab === 'sounds' ? 'sounds' : nextTab === 'plugins' ? 'plugins' : 'general';
     if (normalized === 'general') {
       setSearchParams({});
       return;
@@ -353,53 +367,82 @@ export default function SettingsPage() {
     }
   };
 
-  const addUrlWhitelistRule = () => {
-    const name = urlNameInput.trim();
-    const pattern = urlPatternInput.trim();
-    if (!pattern) {
-      toast.error('请输入白名单网址模式');
+  const addProcessWhitelistRule = () => {
+    const name = whitelistNameInput.trim();
+    const namePattern = whitelistNamePatternInput.trim();
+    const typePattern = whitelistTypePatternInput.trim();
+    const processPattern = whitelistProcessPatternInput.trim();
+    if (!namePattern && !typePattern && !processPattern) {
+      toast.error('至少填写名称、类型、进程中的一个匹配字段');
       return;
     }
+    const fallbackName = namePattern || typePattern || processPattern || '白名单规则';
     const now = new Date().toISOString();
-    const nextRule: UrlWhitelistRule = {
+    const nextRule: ProcessWhitelistRule = {
       id: makeRuleId('wl'),
-      name: name || pattern,
-      pattern,
+      name: name || fallbackName,
+      namePattern: namePattern || undefined,
+      typePattern: typePattern || undefined,
+      processPattern: processPattern || undefined,
       createdAt: now,
       updatedAt: now,
     };
-    updatePreferences({ urlWhitelist: [nextRule, ...state.preferences.urlWhitelist] });
-    setUrlNameInput('');
-    setUrlPatternInput('');
+    updatePreferences({ processWhitelist: [nextRule, ...state.preferences.processWhitelist] });
+    setWhitelistNameInput('');
+    setWhitelistNamePatternInput('');
+    setWhitelistTypePatternInput('');
+    setWhitelistProcessPatternInput('');
   };
 
-  const updateUrlWhitelistRule = (ruleId: string, key: 'name' | 'pattern', value: string) => {
+  const updateProcessWhitelistRule = (
+    ruleId: string,
+    key: 'name' | 'namePattern' | 'typePattern' | 'processPattern',
+    value: string,
+  ) => {
     const trimmedValue = value.trim();
-    if (key === 'pattern' && !trimmedValue) {
-      updatePreferences({ urlWhitelist: state.preferences.urlWhitelist.filter(rule => rule.id !== ruleId) });
-      return;
-    }
     const now = new Date().toISOString();
+    const nextRules = state.preferences.processWhitelist
+      .map(rule => {
+        if (rule.id !== ruleId) {
+          return rule;
+        }
+        const nextRule: ProcessWhitelistRule = {
+          ...rule,
+          [key]: key === 'name' ? trimmedValue || rule.name : trimmedValue || undefined,
+          updatedAt: now,
+        };
+        if (!nextRule.namePattern && !nextRule.typePattern && !nextRule.processPattern) {
+          return null;
+        }
+        const fallbackName =
+          nextRule.namePattern || nextRule.typePattern || nextRule.processPattern || rule.name;
+        if (!nextRule.name || !nextRule.name.trim()) {
+          nextRule.name = fallbackName;
+        }
+        return nextRule;
+      })
+      .filter((rule): rule is ProcessWhitelistRule => Boolean(rule));
+
+    updatePreferences({ processWhitelist: nextRules });
+  };
+
+  const deleteProcessWhitelistRule = (ruleId: string) => {
     updatePreferences({
-      urlWhitelist: state.preferences.urlWhitelist.map(rule =>
-        rule.id === ruleId
-          ? {
-              ...rule,
-              ...(key === 'name'
-                ? { name: trimmedValue || rule.pattern }
-                : {
-                    pattern: trimmedValue,
-                    name: rule.name === rule.pattern ? trimmedValue : rule.name,
-                  }),
-              updatedAt: now,
-            }
-          : rule,
-      ),
+      processWhitelist: state.preferences.processWhitelist.filter(rule => rule.id !== ruleId),
     });
   };
 
-  const deleteUrlWhitelistRule = (ruleId: string) => {
-    updatePreferences({ urlWhitelist: state.preferences.urlWhitelist.filter(rule => rule.id !== ruleId) });
+  const openOfficialBrowserPluginDownload = async () => {
+    const versionTag = `v${appVersion || '0.3.0'}`;
+    const targetUrl = `https://github.com/kewuuuu/KewuToolbox/releases/download/${versionTag}/browser-extension.zip`;
+    if (window.desktopApi?.isElectron && window.desktopApi.openExternalUrl) {
+      const result = await window.desktopApi.openExternalUrl({ url: targetUrl });
+      if (!result.ok) {
+        toast.error('打开下载链接失败');
+      }
+      return;
+    }
+    window.open(targetUrl, '_blank');
   };
 
   const addProcessBlacklistRule = () => {
@@ -569,6 +612,7 @@ export default function SettingsPage() {
         <Tabs value={tab} onValueChange={handleTabChange} className="space-y-4">
           <TabsList className="bg-secondary">
             <TabsTrigger value="general">通用配置</TabsTrigger>
+            <TabsTrigger value="plugins">插件</TabsTrigger>
             <TabsTrigger value="sounds">提示音管理</TabsTrigger>
           </TabsList>
 
@@ -742,68 +786,108 @@ export default function SettingsPage() {
 
               <div className="space-y-3 rounded-lg border border-border/70 p-3">
                 <div className="space-y-1">
-                  <p className="text-sm font-medium text-foreground">网页白名单（支持通配符）</p>
+                  <p className="text-sm font-medium text-foreground">白名单规则（支持通配符）</p>
                   <p className="text-xs text-muted-foreground">
-                    命中白名单的网址将按“独立页面”统计，不再按域名合并。示例：`https://leetcode.com/problemset/*`
+                    匹配字段与黑名单一致：名称 / 类型 / 进程。命中白名单后将按规则名归并统计，并覆盖原本进程显示名。
                   </p>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-[220px_1fr_auto] gap-2">
+                <div className="grid grid-cols-1 md:grid-cols-[220px_1fr_160px_1fr_auto] gap-2 items-end">
                   <Input
-                    value={urlNameInput}
-                    onChange={event => setUrlNameInput(event.target.value)}
-                    placeholder="规则名称，如 LeetCode 题库"
+                    value={whitelistNameInput}
+                    onChange={event => setWhitelistNameInput(event.target.value)}
+                    placeholder="命名（替代显示名）"
                     className="h-8"
                     onKeyDown={event => {
                       if (event.key === 'Enter') {
-                        addUrlWhitelistRule();
+                        addProcessWhitelistRule();
                       }
                     }}
                   />
                   <Input
-                    value={urlPatternInput}
-                    onChange={event => setUrlPatternInput(event.target.value)}
-                    placeholder="输入网址模式，如 https://example.com/path/*"
+                    value={whitelistNamePatternInput}
+                    onChange={event => setWhitelistNamePatternInput(event.target.value)}
+                    placeholder="名称模式，如 *bilibili* 或 https://*.bilibili.com/*"
                     className="h-8"
                     onKeyDown={event => {
                       if (event.key === 'Enter') {
-                        addUrlWhitelistRule();
+                        addProcessWhitelistRule();
                       }
                     }}
                   />
-                  <Button type="button" size="sm" onClick={addUrlWhitelistRule}>
+                  <Input
+                    value={whitelistTypePatternInput}
+                    onChange={event => setWhitelistTypePatternInput(event.target.value)}
+                    placeholder="类型模式，如 BrowserTab"
+                    className="h-8"
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        addProcessWhitelistRule();
+                      }
+                    }}
+                  />
+                  <Input
+                    value={whitelistProcessPatternInput}
+                    onChange={event => setWhitelistProcessPatternInput(event.target.value)}
+                    placeholder="进程模式，如 msedge.exe"
+                    className="h-8"
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        addProcessWhitelistRule();
+                      }
+                    }}
+                  />
+                  <Button type="button" size="sm" onClick={addProcessWhitelistRule}>
                     添加
                   </Button>
                 </div>
                 <div className="space-y-2">
-                  {state.preferences.urlWhitelist.map(rule => (
+                  {state.preferences.processWhitelist.map(rule => (
                     <div
                       key={rule.id}
-                      className="grid grid-cols-1 md:grid-cols-[220px_1fr_auto] gap-2 items-center"
+                      className="grid grid-cols-1 md:grid-cols-[220px_1fr_160px_1fr_auto] gap-2 items-center"
                     >
                       <Input
                         defaultValue={rule.name}
                         className="h-8"
                         placeholder="规则名称"
-                        onBlur={event => updateUrlWhitelistRule(rule.id, 'name', event.target.value)}
+                        onBlur={event => updateProcessWhitelistRule(rule.id, 'name', event.target.value)}
                       />
                       <Input
-                        defaultValue={rule.pattern}
+                        defaultValue={rule.namePattern ?? ''}
                         className="h-8"
-                        placeholder="网址通配规则"
-                        onBlur={event => updateUrlWhitelistRule(rule.id, 'pattern', event.target.value)}
+                        placeholder="名称模式"
+                        onBlur={event =>
+                          updateProcessWhitelistRule(rule.id, 'namePattern', event.target.value)
+                        }
+                      />
+                      <Input
+                        defaultValue={rule.typePattern ?? ''}
+                        className="h-8"
+                        placeholder="类型模式"
+                        onBlur={event =>
+                          updateProcessWhitelistRule(rule.id, 'typePattern', event.target.value)
+                        }
+                      />
+                      <Input
+                        defaultValue={rule.processPattern ?? ''}
+                        className="h-8"
+                        placeholder="进程模式"
+                        onBlur={event =>
+                          updateProcessWhitelistRule(rule.id, 'processPattern', event.target.value)
+                        }
                       />
                       <Button
                         type="button"
                         size="icon"
                         variant="ghost"
                         className="text-destructive"
-                        onClick={() => deleteUrlWhitelistRule(rule.id)}
+                        onClick={() => deleteProcessWhitelistRule(rule.id)}
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
                     </div>
                   ))}
-                  {state.preferences.urlWhitelist.length === 0 && (
+                  {state.preferences.processWhitelist.length === 0 && (
                     <p className="text-xs text-muted-foreground">暂无白名单规则</p>
                   )}
                 </div>
@@ -1194,6 +1278,71 @@ export default function SettingsPage() {
                 ))}
                 {sortedSoundFiles.length === 0 && (
                   <p className="text-xs text-muted-foreground text-center py-6">暂无提示音文件</p>
+                )}
+              </div>
+            </Card>
+          </TabsContent>
+          <TabsContent value="plugins" className="space-y-4">
+            <Card className="p-4 bg-card border-border space-y-4">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-foreground">官方插件下载</h3>
+                <p className="text-xs text-muted-foreground">
+                  当前版本：v{appVersion}。可下载官方浏览器插件并在浏览器扩展管理页加载。
+                </p>
+              </div>
+
+              <div className="rounded-lg border border-border/70 p-3 flex items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">浏览器桥接插件</p>
+                  <p className="text-xs text-muted-foreground">
+                    下载地址将自动拼接到 Release：`browser-extension.zip`
+                  </p>
+                </div>
+                <Button type="button" className="gap-1.5" onClick={() => void openOfficialBrowserPluginDownload()}>
+                  <Download className="w-4 h-4" />
+                  下载官方插件
+                </Button>
+              </div>
+
+              <div className="space-y-3 rounded-lg border border-border/70 p-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">已连接插件</p>
+                  <p className="text-xs text-muted-foreground">
+                    下列信息由插件上报。若插件停止心跳，列表会自动移除。
+                  </p>
+                </div>
+                {state.pluginConnections.length === 0 ? (
+                  <p className="text-xs text-muted-foreground py-3 text-center">暂无已连接插件</p>
+                ) : (
+                  <div className="space-y-2">
+                    {state.pluginConnections.map(plugin => (
+                      <div
+                        key={plugin.pluginId}
+                        className="grid grid-cols-1 md:grid-cols-[1.4fr_0.8fr_0.7fr_0.9fr] gap-2 rounded border border-border/60 p-2"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm text-foreground" title={plugin.pluginName}>
+                            {plugin.pluginName}
+                          </p>
+                          <p className="truncate text-[11px] text-muted-foreground" title={plugin.pluginId}>
+                            ID: {plugin.pluginId}
+                          </p>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          <p>版本: {plugin.pluginVersion}</p>
+                          <p>协议: {plugin.protocolVersion || '-'}</p>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          <p>记录数: {plugin.recordCount}</p>
+                          <p>{plugin.isOfficial ? '官方插件' : '第三方插件'}</p>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          <p>最近上报:</p>
+                          <p>{new Date(plugin.lastSeenAt).toLocaleString('zh-CN')}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </Card>

@@ -15,6 +15,8 @@ declare global {
     desktopApi?: {
       isElectron: boolean;
       getState: () => Promise<AppState>;
+      getAppVersion: () => Promise<string>;
+      openExternalUrl: (payload: { url: string }) => Promise<{ ok: boolean; error?: string }>;
       getDataFilePath: () => Promise<string>;
       setDataFilePath: (payload: {
         targetPath: string;

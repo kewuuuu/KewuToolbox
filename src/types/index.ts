@@ -135,10 +135,12 @@ export interface SoundBalanceCache {
   generatedAt: string;
 }
 
-export interface UrlWhitelistRule {
+export interface ProcessWhitelistRule {
   id: string;
   name: string;
-  pattern: string;
+  namePattern?: string;
+  typePattern?: string;
+  processPattern?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -156,10 +158,23 @@ export interface AppPreferences {
   recordWindowThresholdSeconds: number;
   uiTheme: UiTheme;
   autoLaunchEnabled: boolean;
-  urlWhitelist: UrlWhitelistRule[];
+  processWhitelist: ProcessWhitelistRule[];
   processBlacklist: ProcessBlacklistRule[];
   countdownCompletedTaskBehavior: CountdownCompletedTaskBehavior;
   closeWindowBehavior: CloseWindowBehavior;
+}
+
+export interface PluginConnectionInfo {
+  pluginId: string;
+  pluginName: string;
+  pluginVersion: string;
+  protocolVersion?: string;
+  homepageUrl?: string;
+  source?: string;
+  connectedAt: string;
+  lastSeenAt: string;
+  isOfficial?: boolean;
+  recordCount: number;
 }
 
 export interface PomodoroSettings {
@@ -328,6 +343,7 @@ export interface AppState {
   todos: TodoTask[];
   archives: TodoArchiveRecord[];
   powerEvents: PowerEventRecord[];
+  pluginConnections: PluginConnectionInfo[];
   currentFocusedWindow: WindowClassificationProfile | null;
   isWindowHiddenToTray: boolean;
   displayMode: string;
