@@ -25,6 +25,7 @@ export function createInitialState(): AppState {
     profiles: [],
     sessions: [],
     windowStats: [],
+    processTimeline: [],
     currentProcessKeys: [],
     currentProcessRuntimeStats: [],
     processTags: [],

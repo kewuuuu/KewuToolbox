@@ -558,10 +558,20 @@ function normalizeState(raw: unknown): AppState {
             : 0,
         }))
       : initial.windowStats,
+    processTimeline: Array.isArray(input.processTimeline)
+      ? input.processTimeline.map(item => ({
+          ...item,
+          durationSeconds: Number.isFinite(Number(item.durationSeconds))
+            ? Math.max(0, Math.floor(Number(item.durationSeconds)))
+            : 0,
+          isOpen: Boolean(item.isOpen),
+        }))
+      : initial.processTimeline,
     currentProcessKeys: Array.isArray(input.currentProcessKeys) ? input.currentProcessKeys : initial.currentProcessKeys,
     currentProcessRuntimeStats: Array.isArray(input.currentProcessRuntimeStats)
       ? input.currentProcessRuntimeStats.map(item => ({
           ...item,
+          firstSeenAt: typeof item.firstSeenAt === 'string' ? item.firstSeenAt : '',
           totalVisibleSeconds: Number.isFinite(Number(item.totalVisibleSeconds))
             ? Math.max(0, Math.floor(Number(item.totalVisibleSeconds)))
             : 0,
@@ -576,6 +586,12 @@ function normalizeState(raw: unknown): AppState {
             : 0,
           lastFocusAt: typeof item.lastFocusAt === 'string' ? item.lastFocusAt : '',
           recorded: Boolean(item.recorded),
+          processTimelineId: typeof item.processTimelineId === 'string' ? item.processTimelineId : undefined,
+          focusSegmentStartedAt:
+            typeof item.focusSegmentStartedAt === 'string' ? item.focusSegmentStartedAt : undefined,
+          focusSegmentRecordedSeconds: Number.isFinite(Number(item.focusSegmentRecordedSeconds))
+            ? Math.max(0, Math.floor(Number(item.focusSegmentRecordedSeconds)))
+            : 0,
         }))
       : initial.currentProcessRuntimeStats,
     processTags: Array.isArray(input.processTags) ? input.processTags : initial.processTags,
@@ -688,6 +704,7 @@ function mergeLiveState(prev: AppState, incoming: AppState): AppState {
         ? Math.max(0, Math.floor(Number(item.longestContinuousFocusSeconds)))
         : 0,
     })),
+    processTimeline: Array.isArray(incoming.processTimeline) ? incoming.processTimeline : prev.processTimeline,
     currentProcessKeys: incoming.currentProcessKeys,
     currentProcessRuntimeStats: incoming.currentProcessRuntimeStats,
     processTagStats: incoming.processTagStats.map(item => ({
@@ -1458,6 +1475,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         profiles: s.profiles.filter(profile => !keySet.has(profile.classificationKey)),
         sessions: s.sessions.filter(session => !keySet.has(session.classificationKey)),
         windowStats: s.windowStats.filter(stat => !keySet.has(stat.classificationKey)),
+        processTimeline: s.processTimeline.filter(item => !keySet.has(item.classificationKey)),
         currentProcessKeys: s.currentProcessKeys.filter(key => !keySet.has(key)),
         currentProcessRuntimeStats: s.currentProcessRuntimeStats.filter(item => !keySet.has(item.classificationKey)),
         processTagAssignments: s.processTagAssignments.filter(assignment => !keySet.has(assignment.classificationKey)),

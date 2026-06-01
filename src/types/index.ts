@@ -64,14 +64,32 @@ export interface WindowRuntimeStat {
   longestContinuousFocusSeconds: number;
 }
 
+export interface ProcessTimelineRecord {
+  id: string;
+  classificationKey: string;
+  displayName: string;
+  objectType: ObjectType;
+  processName: string;
+  domain?: string;
+  categoryAtThatTime: Category;
+  startAt: string;
+  endAt: string;
+  durationSeconds: number;
+  isOpen: boolean;
+}
+
 export interface PendingWindowRuntimeStat {
   classificationKey: string;
+  firstSeenAt: string;
   totalVisibleSeconds: number;
   totalFocusSeconds: number;
   currentContinuousFocusSeconds: number;
   longestContinuousFocusSeconds: number;
   lastFocusAt: string;
   recorded: boolean;
+  processTimelineId?: string;
+  focusSegmentStartedAt?: string;
+  focusSegmentRecordedSeconds?: number;
 }
 
 export interface DiagnosticLogEntry {
@@ -347,6 +365,7 @@ export interface AppState {
   profiles: WindowClassificationProfile[];
   sessions: FocusSession[];
   windowStats: WindowRuntimeStat[];
+  processTimeline: ProcessTimelineRecord[];
   currentProcessKeys: string[];
   currentProcessRuntimeStats: PendingWindowRuntimeStat[];
   processTags: ProcessTag[];
