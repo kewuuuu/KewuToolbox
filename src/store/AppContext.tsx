@@ -47,6 +47,7 @@ interface AppContextType {
   updateRuntimeState: (r: Partial<AppRuntimeState>) => void;
   updatePreferences: (p: Partial<AppPreferences>) => void;
   clearAllData: () => Promise<void>;
+  clearDiagnosticLogs: () => Promise<void>;
   addSoundFile: (name: string, filePath: string, defaultVolumeMultiplier?: number) => SoundFileItem | null;
   updateSoundFile: (file: SoundFileItem) => void;
   deleteSoundFile: (id: string) => void;
@@ -558,6 +559,25 @@ function normalizeState(raw: unknown): AppState {
         }))
       : initial.windowStats,
     currentProcessKeys: Array.isArray(input.currentProcessKeys) ? input.currentProcessKeys : initial.currentProcessKeys,
+    currentProcessRuntimeStats: Array.isArray(input.currentProcessRuntimeStats)
+      ? input.currentProcessRuntimeStats.map(item => ({
+          ...item,
+          totalVisibleSeconds: Number.isFinite(Number(item.totalVisibleSeconds))
+            ? Math.max(0, Math.floor(Number(item.totalVisibleSeconds)))
+            : 0,
+          totalFocusSeconds: Number.isFinite(Number(item.totalFocusSeconds))
+            ? Math.max(0, Math.floor(Number(item.totalFocusSeconds)))
+            : 0,
+          currentContinuousFocusSeconds: Number.isFinite(Number(item.currentContinuousFocusSeconds))
+            ? Math.max(0, Math.floor(Number(item.currentContinuousFocusSeconds)))
+            : 0,
+          longestContinuousFocusSeconds: Number.isFinite(Number(item.longestContinuousFocusSeconds))
+            ? Math.max(0, Math.floor(Number(item.longestContinuousFocusSeconds)))
+            : 0,
+          lastFocusAt: typeof item.lastFocusAt === 'string' ? item.lastFocusAt : '',
+          recorded: Boolean(item.recorded),
+        }))
+      : initial.currentProcessRuntimeStats,
     processTags: Array.isArray(input.processTags) ? input.processTags : initial.processTags,
     processTagAssignments: Array.isArray(input.processTagAssignments) ? input.processTagAssignments : initial.processTagAssignments,
     processTagStats: Array.isArray(input.processTagStats)
@@ -584,6 +604,20 @@ function normalizeState(raw: unknown): AppState {
     archives: Array.isArray(input.archives) ? input.archives : initial.archives,
     powerEvents: Array.isArray(input.powerEvents) ? input.powerEvents : initial.powerEvents,
     pluginConnections: Array.isArray(input.pluginConnections) ? input.pluginConnections : initial.pluginConnections,
+    diagnosticLogs: Array.isArray(input.diagnosticLogs)
+      ? input.diagnosticLogs
+          .filter(item => item && typeof item.message === 'string' && item.message.trim())
+          .map(item => ({
+            id: typeof item.id === 'string' && item.id.trim() ? item.id : `log-${Date.now()}`,
+            level: item.level === 'warn' || item.level === 'error' ? item.level : 'info',
+            message: item.message.trim(),
+            detail: typeof item.detail === 'string' ? item.detail : '',
+            occurredAt: typeof item.occurredAt === 'string' ? item.occurredAt : new Date().toISOString(),
+          }))
+      : initial.diagnosticLogs,
+    dataDirectoryPath:
+      typeof input.dataDirectoryPath === 'string' ? input.dataDirectoryPath : initial.dataDirectoryPath,
+    logFilePath: typeof input.logFilePath === 'string' ? input.logFilePath : initial.logFilePath,
     pomodoroSettings: {
       ...normalizedSettings,
       completionSoundFileId:
@@ -655,6 +689,7 @@ function mergeLiveState(prev: AppState, incoming: AppState): AppState {
         : 0,
     })),
     currentProcessKeys: incoming.currentProcessKeys,
+    currentProcessRuntimeStats: incoming.currentProcessRuntimeStats,
     processTagStats: incoming.processTagStats.map(item => ({
       ...item,
       lastFocusAt:
@@ -669,6 +704,9 @@ function mergeLiveState(prev: AppState, incoming: AppState): AppState {
     })),
     powerEvents: incoming.powerEvents,
     pluginConnections: incoming.pluginConnections,
+    diagnosticLogs: incoming.diagnosticLogs,
+    dataDirectoryPath: incoming.dataDirectoryPath,
+    logFilePath: incoming.logFilePath,
     currentFocusedWindow: focused,
     isWindowHiddenToTray: Boolean(incoming.isWindowHiddenToTray),
   };
@@ -1244,6 +1282,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
   }, []);
 
+  const clearDiagnosticLogs = useCallback(async () => {
+    if (isElectronRuntime() && window.desktopApi?.clearDiagnosticLogs) {
+      await window.desktopApi.clearDiagnosticLogs();
+      return;
+    }
+    setState(s => ({ ...s, diagnosticLogs: [] }));
+  }, []);
+
   const addSoundFile = useCallback((name: string, filePath: string, defaultVolumeMultiplier = 1) => {
     const trimmedName = name.trim();
     const trimmedPath = filePath.trim();
@@ -1413,6 +1459,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         sessions: s.sessions.filter(session => !keySet.has(session.classificationKey)),
         windowStats: s.windowStats.filter(stat => !keySet.has(stat.classificationKey)),
         currentProcessKeys: s.currentProcessKeys.filter(key => !keySet.has(key)),
+        currentProcessRuntimeStats: s.currentProcessRuntimeStats.filter(item => !keySet.has(item.classificationKey)),
         processTagAssignments: s.processTagAssignments.filter(assignment => !keySet.has(assignment.classificationKey)),
         currentFocusedWindow,
       };
@@ -1515,6 +1562,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       updateRuntimeState,
       updatePreferences,
       clearAllData,
+      clearDiagnosticLogs,
       addSoundFile,
       updateSoundFile,
       deleteSoundFile,
@@ -1547,6 +1595,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       updateRuntimeState,
       updatePreferences,
       clearAllData,
+      clearDiagnosticLogs,
       addSoundFile,
       updateSoundFile,
       deleteSoundFile,

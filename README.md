@@ -238,4 +238,4 @@ npm run build:deliver
 
 ### 6. 浏览器扩展版本
 
-扩展版本在 `browser-extension/manifest.json` 的 `version` 字段中维护，当前为 `0.3.0`。
+扩展版本在 `browser-extension/manifest.json` 和 `vscode-extension/package.json` 的 `version` 字段中维护，当前为 `0.4.0`。

@@ -64,6 +64,24 @@ export interface WindowRuntimeStat {
   longestContinuousFocusSeconds: number;
 }
 
+export interface PendingWindowRuntimeStat {
+  classificationKey: string;
+  totalVisibleSeconds: number;
+  totalFocusSeconds: number;
+  currentContinuousFocusSeconds: number;
+  longestContinuousFocusSeconds: number;
+  lastFocusAt: string;
+  recorded: boolean;
+}
+
+export interface DiagnosticLogEntry {
+  id: string;
+  level: 'info' | 'warn' | 'error';
+  message: string;
+  detail?: string;
+  occurredAt: string;
+}
+
 export interface ProcessTag {
   id: string;
   name: string;
@@ -330,6 +348,7 @@ export interface AppState {
   sessions: FocusSession[];
   windowStats: WindowRuntimeStat[];
   currentProcessKeys: string[];
+  currentProcessRuntimeStats: PendingWindowRuntimeStat[];
   processTags: ProcessTag[];
   processTagAssignments: ProcessTagAssignment[];
   processTagStats: ProcessTagRuntimeStat[];
@@ -344,6 +363,9 @@ export interface AppState {
   archives: TodoArchiveRecord[];
   powerEvents: PowerEventRecord[];
   pluginConnections: PluginConnectionInfo[];
+  diagnosticLogs: DiagnosticLogEntry[];
+  dataDirectoryPath: string;
+  logFilePath: string;
   currentFocusedWindow: WindowClassificationProfile | null;
   isWindowHiddenToTray: boolean;
   displayMode: string;

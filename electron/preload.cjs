@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
   selectDataFilePath: () => ipcRenderer.invoke('app:select-data-file-path'),
   saveUserState: (partial) => ipcRenderer.invoke('app:save-user-state', partial),
   clearAllData: () => ipcRenderer.invoke('app:clear-all-data'),
+  clearDiagnosticLogs: () => ipcRenderer.invoke('app:clear-diagnostic-logs'),
   notify: (payload) => ipcRenderer.invoke('app:notify', payload),
   hideToTray: () => ipcRenderer.invoke('app:hide-to-tray'),
   selectAudioFile: () => ipcRenderer.invoke('app:select-audio-file'),

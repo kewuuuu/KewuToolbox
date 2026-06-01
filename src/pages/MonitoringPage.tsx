@@ -182,8 +182,12 @@ export default function MonitoringPage() {
     const statMap = new Map(
       state.windowStats.map(stat => [stat.classificationKey, stat]),
     );
+    const runtimeMap = new Map(
+      state.currentProcessRuntimeStats.map(stat => [stat.classificationKey, stat]),
+    );
     return state.currentProcessKeys.map(classificationKey => {
       const stat = statMap.get(classificationKey);
+      const runtimeStat = runtimeMap.get(classificationKey);
       const profile = profileMap.get(classificationKey);
       const assignment = assignmentMap.get(classificationKey);
       const fallback = parseCurrentKeyFallback(classificationKey);
@@ -194,15 +198,16 @@ export default function MonitoringPage() {
         displayName: stat?.displayName ?? profile?.displayName ?? fallback.displayName,
         objectType: stat?.objectType ?? profile?.objectType ?? fallback.objectType,
         processName: stat?.processName ?? profile?.processName ?? fallback.processName,
-        totalVisible: stat?.totalVisibleSeconds ?? 0,
-        focusTime: stat?.focusSeconds ?? 0,
-        lastFocus: stat?.lastFocusAt ?? '',
-        longestContinuousFocus: stat?.longestContinuousFocusSeconds ?? 0,
+        totalVisible: stat?.totalVisibleSeconds ?? runtimeStat?.totalVisibleSeconds ?? 0,
+        focusTime: stat?.focusSeconds ?? runtimeStat?.totalFocusSeconds ?? 0,
+        lastFocus: stat?.lastFocusAt ?? runtimeStat?.lastFocusAt ?? '',
+        longestContinuousFocus:
+          stat?.longestContinuousFocusSeconds ?? runtimeStat?.longestContinuousFocusSeconds ?? 0,
         category: profile?.category ?? stat?.category ?? fallback.category,
         tagId: assignment?.tagId,
       };
     });
-  }, [assignmentMap, profileMap, state.currentProcessKeys, state.windowStats]);
+  }, [assignmentMap, profileMap, state.currentProcessKeys, state.currentProcessRuntimeStats, state.windowStats]);
 
   const compareString = useCallback(
     (a: string, b: string) => collator.compare(a || '', b || ''),
@@ -327,9 +332,17 @@ export default function MonitoringPage() {
   const partialSelected = selectedKeys.size > 0 && !allSelected;
 
   const formatDuration = (seconds: number) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) {
+      return `${h}h ${m}m ${s}s`;
+    }
+    if (m > 0) {
+      return `${m}m ${s}s`;
+    }
+    return `${s}s`;
   };
 
   const toggleRow = (classificationKey: string, checked: boolean) => {

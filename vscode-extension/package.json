@@ -1,0 +1,26 @@
+{
+  "name": "kewu-toolbox-vscode-bridge",
+  "displayName": "KewuToolbox VSCode Bridge",
+  "description": "将 VSCode 工作区按统一插件协议同步到 KewuToolbox。",
+  "version": "0.4.0",
+  "publisher": "kewuuuu",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:kewuToolboxVscodeBridge.forceSync"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "kewuToolboxVscodeBridge.forceSync",
+        "title": "KewuToolbox: 立即同步工作区"
+      }
+    ]
+  }
+}

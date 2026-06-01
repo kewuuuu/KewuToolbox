@@ -16,6 +16,40 @@ const DESKTOP_CATEGORY = '休息';
 const DEFAULT_DISPLAY_MODE = '显示性质';
 const BUILTIN_COMPLETION_SOUND_ID = 'builtin-completion';
 const BUILTIN_WARNING_SOUND_ID = 'builtin-warning';
+const DEFAULT_STORAGE_DIR_NAME = 'state-data';
+const LEGACY_STATE_FILE_NAME = 'app-state.json';
+const STORAGE_META_FILE_NAME = 'state-meta.json';
+const LOG_DIR_NAME = 'logs';
+const LOG_FILE_NAME = 'app.log';
+const MAX_DIAGNOSTIC_LOGS = 500;
+const MAX_LOG_FILE_SIZE_BYTES = 5 * 1024 * 1024;
+
+const STATE_SECTION_FILES = {
+  profiles: 'profiles.json',
+  sessions: 'sessions.json',
+  windowStats: 'window-stats.json',
+  currentProcessKeys: 'current-process-keys.json',
+  processTags: 'process-tags.json',
+  processTagAssignments: 'process-tag-assignments.json',
+  processTagStats: 'process-tag-stats.json',
+  soundFiles: 'sound-files.json',
+  preferences: 'preferences.json',
+  subjects: 'subjects.json',
+  queue: 'queue.json',
+  pomodoroSettings: 'pomodoro-settings.json',
+  stopwatchRecords: 'stopwatch-records.json',
+  countdownTasks: 'countdown-tasks.json',
+  todos: 'todos.json',
+  archives: 'archives.json',
+  powerEvents: 'power-events.json',
+  pluginConnections: 'plugin-connections.json',
+  currentFocusedWindow: 'current-focused-window.json',
+  isWindowHiddenToTray: 'window-hidden-to-tray.json',
+  displayMode: 'display-mode.json',
+  uiState: 'ui-state.json',
+  runtimeState: 'runtime-state.json',
+  diagnosticLogs: 'diagnostic-logs.json',
+};
 
 const BROWSER_BRIDGE_PORT = 17321;
 const BROWSER_BRIDGE_ROUTE = '/browser-bridge';
@@ -34,7 +68,6 @@ const BROWSER_PROCESS_TO_ID = {
 const BROWSER_PROCESS_NAMES = new Set(Object.keys(BROWSER_PROCESS_TO_ID));
 const VS_CODE_PROCESS_NAMES = new Set(['code.exe', 'code - insiders.exe', 'codium.exe']);
 const PORTABLE_DATA_DIR_NAME = 'data';
-const STATE_FILE_NAME = 'app-state.json';
 const STORAGE_CONFIG_FILE_NAME = 'storage-config.json';
 const PACKAGED_RUNTIME_DIR_NAME = 'electron-runtime';
 const CODE_WINDOW_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -44,14 +77,15 @@ let monitorTimer = null;
 let saveTimer = null;
 let activeWinApi = null;
 let browserBridgeServer = null;
-let resolvedStatePath = null;
-let preferredStatePath = null;
+let resolvedDataDirPath = null;
+let preferredDataDirPath = null;
 let appTray = null;
 let forceQuitRequested = false;
 let isHandlingCloseDecision = false;
 
 /** @type {import('../src/types').AppState} */
 let appState = createEmptyState();
+let consoleCaptureInstalled = false;
 
 const monitorCursor = {
   lastTickAtMs: null,
@@ -74,6 +108,20 @@ const pluginBridgeState = {
 
 const pendingWindowRuntime = new Map();
 const codeWindowIdentityCache = new Map();
+
+function formatConsoleArg(value) {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value instanceof Error) {
+    return value.stack || value.message || String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
 
 function createDefaultSoundFiles(now = new Date().toISOString()) {
   return [
@@ -102,6 +150,7 @@ function createEmptyState() {
     sessions: [],
     windowStats: [],
     currentProcessKeys: [],
+    currentProcessRuntimeStats: [],
     processTags: [],
     processTagAssignments: [],
     processTagStats: [],
@@ -144,6 +193,9 @@ function createEmptyState() {
     archives: [],
     powerEvents: [],
     pluginConnections: [],
+    diagnosticLogs: [],
+    dataDirectoryPath: '',
+    logFilePath: '',
     currentFocusedWindow: null,
     isWindowHiddenToTray: false,
     displayMode: DEFAULT_DISPLAY_MODE,
@@ -295,7 +347,7 @@ function configurePackagedRuntimePaths() {
   }
 }
 
-function resolveStatePathInput(inputPath) {
+function resolveDataDirInput(inputPath) {
   if (typeof inputPath !== 'string') {
     return null;
   }
@@ -307,46 +359,215 @@ function resolveStatePathInput(inputPath) {
     candidate = path.resolve(candidate);
   }
 
-  const looksLikeDirectory =
-    candidate.endsWith(path.sep) ||
-    candidate.endsWith('/') ||
-    candidate.endsWith('\\') ||
-    path.extname(candidate).trim() === '';
-  return looksLikeDirectory ? path.join(candidate, STATE_FILE_NAME) : candidate;
+  const looksLikeFile = path.extname(candidate).trim() === '.json';
+  if (looksLikeFile) {
+    return path.dirname(candidate);
+  }
+  return candidate;
+}
+
+function getLegacyStateFilePath(dataDirPath) {
+  return path.join(dataDirPath, LEGACY_STATE_FILE_NAME);
+}
+
+function getStateMetaPath(dataDirPath) {
+  return path.join(dataDirPath, STORAGE_META_FILE_NAME);
+}
+
+function getLogFilePath(dataDirPath = getStatePath()) {
+  return path.join(dataDirPath, LOG_DIR_NAME, LOG_FILE_NAME);
+}
+
+function getSectionFilePath(dataDirPath, sectionKey) {
+  const fileName = STATE_SECTION_FILES[sectionKey];
+  if (!fileName) {
+    return null;
+  }
+  return path.join(dataDirPath, fileName);
+}
+
+function ensureWritableDataDir(dataDirPath) {
+  try {
+    ensureDir(dataDirPath);
+    const probePath = path.join(dataDirPath, '.write-probe');
+    fs.writeFileSync(probePath, 'ok', 'utf8');
+    fs.unlinkSync(probePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ensureWritableLogFile(logFilePath) {
+  try {
+    ensureDir(path.dirname(logFilePath));
+    if (!fs.existsSync(logFilePath)) {
+      fs.writeFileSync(logFilePath, '', 'utf8');
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function formatLogLine(level, message, detail) {
+  const nowIso = new Date().toISOString();
+  const detailText = typeof detail === 'string' && detail.trim() ? ` | ${detail.trim()}` : '';
+  return `[${nowIso}] [${level.toUpperCase()}] ${message}${detailText}`;
+}
+
+function appendLogToFile(level, message, detail = '') {
+  const logFilePath = getLogFilePath();
+  if (!ensureWritableLogFile(logFilePath)) {
+    return;
+  }
+  const line = `${formatLogLine(level, message, detail)}\n`;
+  try {
+    const stats = fs.statSync(logFilePath);
+    if (stats.size > MAX_LOG_FILE_SIZE_BYTES) {
+      const rotatedPath = `${logFilePath}.1`;
+      try {
+        if (fs.existsSync(rotatedPath)) {
+          fs.unlinkSync(rotatedPath);
+        }
+      } catch {
+        // Ignore deletion failure for rotated log.
+      }
+      try {
+        fs.renameSync(logFilePath, rotatedPath);
+      } catch {
+        // Ignore rotate failure and continue append.
+      }
+    }
+    fs.appendFileSync(logFilePath, line, 'utf8');
+  } catch {
+    // Ignore file append failures.
+  }
+}
+
+function addDiagnosticLog(level, message, detail = '') {
+  const normalizedLevel = level === 'error' || level === 'warn' ? level : 'info';
+  const entry = {
+    id: makeId('log'),
+    level: normalizedLevel,
+    message: typeof message === 'string' ? message : String(message ?? ''),
+    detail: typeof detail === 'string' ? detail : String(detail ?? ''),
+    occurredAt: new Date().toISOString(),
+  };
+
+  appState.diagnosticLogs = [...(appState.diagnosticLogs || []), entry];
+  if (appState.diagnosticLogs.length > MAX_DIAGNOSTIC_LOGS) {
+    appState.diagnosticLogs = appState.diagnosticLogs.slice(-MAX_DIAGNOSTIC_LOGS);
+  }
+
+  appendLogToFile(normalizedLevel, entry.message, entry.detail);
+}
+
+function setupConsoleCapture() {
+  if (consoleCaptureInstalled) {
+    return;
+  }
+  consoleCaptureInstalled = true;
+
+  const levels = ['log', 'info', 'warn', 'error'];
+  for (const level of levels) {
+    const original = console[level].bind(console);
+    console[level] = (...args) => {
+      original(...args);
+      const joined = args.map(arg => formatConsoleArg(arg)).join(' ');
+      const normalizedLevel = level === 'error' || level === 'warn' ? level : 'info';
+      addDiagnosticLog(normalizedLevel, joined.slice(0, 5000));
+      emitState();
+    };
+  }
+}
+
+function syncStorageMetaToState() {
+  appState.dataDirectoryPath = getStatePath();
+  appState.logFilePath = getLogFilePath();
+}
+
+function readStateSections(dataDirPath) {
+  const rawState = {};
+  let hasSection = false;
+  for (const sectionKey of Object.keys(STATE_SECTION_FILES)) {
+    const sectionPath = getSectionFilePath(dataDirPath, sectionKey);
+    if (!sectionPath || !fs.existsSync(sectionPath)) {
+      continue;
+    }
+    const section = readJsonSafe(sectionPath);
+    if (section === null) {
+      continue;
+    }
+    hasSection = true;
+    rawState[sectionKey] = section;
+  }
+  return hasSection ? rawState : null;
+}
+
+function writeStateSections(dataDirPath, statePayload) {
+  if (!ensureWritableDataDir(dataDirPath)) {
+    return false;
+  }
+
+  for (const sectionKey of Object.keys(STATE_SECTION_FILES)) {
+    const sectionPath = getSectionFilePath(dataDirPath, sectionKey);
+    if (!sectionPath) {
+      continue;
+    }
+    const sectionPayload = statePayload[sectionKey];
+    if (!writeJsonSafe(sectionPath, sectionPayload)) {
+      return false;
+    }
+  }
+
+  writeJsonSafe(getStateMetaPath(dataDirPath), {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+  });
+  return true;
+}
+
+function getDefaultStatePath() {
+  if (!app.isPackaged) {
+    return path.join(app.getPath('userData'), DEFAULT_STORAGE_DIR_NAME);
+  }
+  return path.join(getPackagedDataDir(), DEFAULT_STORAGE_DIR_NAME);
+}
+
+function getPreviousDefaultStateFilePath() {
+  if (!app.isPackaged) {
+    return path.join(app.getPath('userData'), LEGACY_STATE_FILE_NAME);
+  }
+  return path.join(getPackagedDataDir(), LEGACY_STATE_FILE_NAME);
 }
 
 configurePackagedRuntimePaths();
 
-function getDefaultStatePath() {
-  if (!app.isPackaged) {
-    return path.join(app.getPath('userData'), STATE_FILE_NAME);
-  }
-
-  return path.join(getPackagedDataDir(), STATE_FILE_NAME);
-}
-
 function loadStorageConfig() {
   const config = readJsonSafe(getStorageConfigPath());
-  const configuredPath = resolveStatePathInput(config?.stateFilePath);
-  preferredStatePath = configuredPath;
+  const configuredPath = resolveDataDirInput(config?.dataDirectoryPath ?? config?.stateFilePath);
+  preferredDataDirPath = configuredPath;
   return configuredPath;
 }
 
 function persistStorageConfig() {
   const payload = {
-    stateFilePath: preferredStatePath || '',
+    dataDirectoryPath: preferredDataDirPath || '',
+    // Keep legacy field for backward compatibility.
+    stateFilePath: preferredDataDirPath || '',
     updatedAt: new Date().toISOString(),
   };
   writeJsonSafe(getStorageConfigPath(), payload);
 }
 
 function getStatePath() {
-  if (resolvedStatePath) {
-    return resolvedStatePath;
+  if (resolvedDataDirPath) {
+    return resolvedDataDirPath;
   }
 
-  resolvedStatePath = preferredStatePath || getDefaultStatePath();
-  return resolvedStatePath;
+  resolvedDataDirPath = preferredDataDirPath || getDefaultStatePath();
+  return resolvedDataDirPath;
 }
 
 function resolveAppIconPath() {
@@ -451,21 +672,6 @@ function setWindowHiddenToTray(hidden) {
   appState.isWindowHiddenToTray = normalized;
   scheduleSave();
   emitState();
-}
-
-function ensureWritableStatePath(targetPath) {
-  try {
-    const dir = path.dirname(targetPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    const probePath = path.join(dir, '.write-probe');
-    fs.writeFileSync(probePath, 'ok', 'utf8');
-    fs.unlinkSync(probePath);
-    return targetPath;
-  } catch {
-    return null;
-  }
 }
 
 function makeId(prefix) {
@@ -579,18 +785,6 @@ function readJsonSafe(filePath) {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
   } catch {
     return null;
-  }
-}
-
-function readJsonWithStatus(filePath) {
-  if (!fs.existsSync(filePath)) {
-    return { exists: false, data: null, error: null };
-  }
-  try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    return { exists: true, data: JSON.parse(content), error: null };
-  } catch (error) {
-    return { exists: true, data: null, error };
   }
 }
 
@@ -851,8 +1045,9 @@ function applyWhitelistNamesToState() {
 }
 
 function persistState() {
-  const primaryPath = getStatePath();
-  if (writeJsonSafe(primaryPath, appState)) {
+  syncStorageMetaToState();
+  const dataDirPath = getStatePath();
+  if (writeStateSections(dataDirPath, appState)) {
     return;
   }
 
@@ -860,9 +1055,9 @@ function persistState() {
     return;
   }
 
-  const fallbackPath = path.join(app.getPath('userData'), STATE_FILE_NAME);
-  if (fallbackPath !== primaryPath && writeJsonSafe(fallbackPath, appState)) {
-    applyStatePath(fallbackPath);
+  const fallbackDataDir = path.join(app.getPath('userData'), DEFAULT_STORAGE_DIR_NAME);
+  if (fallbackDataDir !== dataDirPath && writeStateSections(fallbackDataDir, appState)) {
+    applyStatePath(fallbackDataDir);
   }
 }
 
@@ -958,6 +1153,47 @@ function normalizeProcessTagRuntimeStat(item) {
   };
 }
 
+function normalizePendingRuntimeStat(item) {
+  if (!item || typeof item !== 'object' || typeof item.classificationKey !== 'string') {
+    return null;
+  }
+  return {
+    classificationKey: item.classificationKey,
+    totalVisibleSeconds: Number.isFinite(Number(item.totalVisibleSeconds))
+      ? Math.max(0, Math.floor(Number(item.totalVisibleSeconds)))
+      : 0,
+    totalFocusSeconds: Number.isFinite(Number(item.totalFocusSeconds))
+      ? Math.max(0, Math.floor(Number(item.totalFocusSeconds)))
+      : 0,
+    currentContinuousFocusSeconds: Number.isFinite(Number(item.currentContinuousFocusSeconds))
+      ? Math.max(0, Math.floor(Number(item.currentContinuousFocusSeconds)))
+      : 0,
+    longestContinuousFocusSeconds: Number.isFinite(Number(item.longestContinuousFocusSeconds))
+      ? Math.max(0, Math.floor(Number(item.longestContinuousFocusSeconds)))
+      : 0,
+    lastFocusAt: typeof item.lastFocusAt === 'string' ? item.lastFocusAt : '',
+    recorded: Boolean(item.recorded),
+  };
+}
+
+function normalizeDiagnosticLog(item) {
+  if (!item || typeof item !== 'object') {
+    return null;
+  }
+  const message = typeof item.message === 'string' ? item.message.trim() : '';
+  if (!message) {
+    return null;
+  }
+  const level = item.level === 'error' || item.level === 'warn' ? item.level : 'info';
+  return {
+    id: typeof item.id === 'string' && item.id.trim() ? item.id : makeId('log'),
+    level,
+    message,
+    detail: typeof item.detail === 'string' ? item.detail : '',
+    occurredAt: typeof item.occurredAt === 'string' ? item.occurredAt : new Date().toISOString(),
+  };
+}
+
 function normalizeSavedState(input) {
   const base = createEmptyState();
   if (!input || typeof input !== 'object') {
@@ -1015,6 +1251,11 @@ function normalizeSavedState(input) {
           .filter(Boolean)
       : [],
     currentProcessKeys: Array.isArray(raw.currentProcessKeys) ? raw.currentProcessKeys : [],
+    currentProcessRuntimeStats: Array.isArray(raw.currentProcessRuntimeStats)
+      ? raw.currentProcessRuntimeStats
+          .map(item => normalizePendingRuntimeStat(item))
+          .filter(Boolean)
+      : [],
     processTags,
     processTagAssignments: processTagAssignments.filter(item => validTagSet.has(item.tagId)),
     processTagStats: Array.isArray(raw.processTagStats)
@@ -1058,6 +1299,14 @@ function normalizeSavedState(input) {
     archives: Array.isArray(raw.archives) ? raw.archives : [],
     powerEvents: Array.isArray(raw.powerEvents) ? raw.powerEvents : [],
     pluginConnections: Array.isArray(raw.pluginConnections) ? raw.pluginConnections : [],
+    diagnosticLogs: Array.isArray(raw.diagnosticLogs)
+      ? raw.diagnosticLogs
+          .map(item => normalizeDiagnosticLog(item))
+          .filter(Boolean)
+          .slice(-MAX_DIAGNOSTIC_LOGS)
+      : [],
+    dataDirectoryPath: typeof raw.dataDirectoryPath === 'string' ? raw.dataDirectoryPath : '',
+    logFilePath: typeof raw.logFilePath === 'string' ? raw.logFilePath : '',
     currentFocusedWindow: raw.currentFocusedWindow ?? null,
     isWindowHiddenToTray: Boolean(raw.isWindowHiddenToTray),
     displayMode: typeof raw.displayMode === 'string' ? raw.displayMode : DEFAULT_DISPLAY_MODE,
@@ -1089,64 +1338,87 @@ function normalizeSavedState(input) {
 }
 
 function loadPersistedState() {
-  const primaryPath = getStatePath();
-  let saved = readJsonSafe(primaryPath);
+  const primaryDataDir = getStatePath();
+  ensureDir(primaryDataDir);
 
-  if (!saved && !preferredStatePath && !app.isPackaged) {
-    const fallbackPath = path.join(app.getPath('userData'), STATE_FILE_NAME);
-    if (fallbackPath !== primaryPath) {
-      saved = readJsonSafe(fallbackPath);
-      if (saved) {
-        writeJsonSafe(primaryPath, saved);
+  let savedRaw = readStateSections(primaryDataDir);
+  if (!savedRaw) {
+    const legacyPrimaryPath = getLegacyStateFilePath(primaryDataDir);
+    savedRaw = readJsonSafe(legacyPrimaryPath);
+    if (savedRaw) {
+      writeStateSections(primaryDataDir, normalizeSavedState(savedRaw));
+    }
+  }
+
+  if (!savedRaw && !preferredDataDirPath && !app.isPackaged) {
+    const fallbackDataDir = path.join(app.getPath('userData'), DEFAULT_STORAGE_DIR_NAME);
+    if (fallbackDataDir !== primaryDataDir) {
+      const fallbackRaw = readStateSections(fallbackDataDir) || readJsonSafe(getLegacyStateFilePath(fallbackDataDir));
+      if (fallbackRaw) {
+        savedRaw = fallbackRaw;
+        writeStateSections(primaryDataDir, normalizeSavedState(fallbackRaw));
       }
     }
   }
 
-  appState = normalizeSavedState(saved);
+  if (!savedRaw && !preferredDataDirPath) {
+    const previousDefaultRaw = readJsonSafe(getPreviousDefaultStateFilePath());
+    if (previousDefaultRaw) {
+      savedRaw = previousDefaultRaw;
+      writeStateSections(primaryDataDir, normalizeSavedState(previousDefaultRaw));
+    }
+  }
+
+  appState = normalizeSavedState(savedRaw);
+  syncStorageMetaToState();
   applyWhitelistNamesToState();
 }
 
 function applyStatePath(newPath) {
-  preferredStatePath = newPath;
-  resolvedStatePath = newPath;
+  preferredDataDirPath = newPath;
+  resolvedDataDirPath = newPath;
   persistStorageConfig();
+  syncStorageMetaToState();
 }
 
 function setDataFilePath(targetPath, createIfMissing = false) {
-  const normalizedPath = resolveStatePathInput(targetPath);
-  if (!normalizedPath) {
+  const normalizedDataDir = resolveDataDirInput(targetPath);
+  if (!normalizedDataDir) {
     return { ok: false, error: 'invalid_path' };
   }
 
-  const exists = fs.existsSync(normalizedPath);
+  const exists = fs.existsSync(normalizedDataDir);
   if (!exists && !createIfMissing) {
-    return { ok: false, requiresCreate: true, path: normalizedPath };
+    return { ok: false, requiresCreate: true, path: normalizedDataDir };
   }
 
-  if (!ensureWritableStatePath(normalizedPath)) {
-    return { ok: false, error: 'path_not_writable', path: normalizedPath };
+  if (!ensureWritableDataDir(normalizedDataDir)) {
+    return { ok: false, error: 'path_not_writable', path: normalizedDataDir };
   }
 
-  const jsonState = readJsonWithStatus(normalizedPath);
-  if (jsonState.exists && jsonState.error) {
-    return { ok: false, error: 'invalid_json', path: normalizedPath };
-  }
+  const sectionState = readStateSections(normalizedDataDir);
+  const legacyState = readJsonSafe(getLegacyStateFilePath(normalizedDataDir));
+  const loadedRaw = sectionState || legacyState;
 
   let nextState = createEmptyState();
   let created = false;
-  if (jsonState.exists && jsonState.data) {
-    nextState = normalizeSavedState(jsonState.data);
-  } else if (jsonState.exists && !jsonState.data) {
-    return { ok: false, error: 'invalid_json', path: normalizedPath };
+  if (loadedRaw) {
+    nextState = normalizeSavedState(loadedRaw);
   } else {
-    created = true;
-    if (!writeJsonSafe(normalizedPath, nextState)) {
-      return { ok: false, error: 'create_failed', path: normalizedPath };
+    if (!createIfMissing) {
+      return { ok: false, requiresCreate: true, path: normalizedDataDir };
     }
+    created = true;
   }
 
-  applyStatePath(normalizedPath);
+  if (!writeStateSections(normalizedDataDir, nextState)) {
+    return { ok: false, error: 'create_failed', path: normalizedDataDir };
+  }
+
+  applyStatePath(normalizedDataDir);
   appState = nextState;
+  syncStorageMetaToState();
+  addDiagnosticLog('info', '数据目录已切换', normalizedDataDir);
   appState.preferences.autoLaunchEnabled = applySystemAutoLaunchEnabled(appState.preferences.autoLaunchEnabled);
   resetRuntimeTrackingState();
   scheduleSave();
@@ -1154,7 +1426,7 @@ function setDataFilePath(targetPath, createIfMissing = false) {
 
   return {
     ok: true,
-    path: normalizedPath,
+    path: normalizedDataDir,
     existed: !created,
     created,
     state: appState,
@@ -1169,6 +1441,7 @@ function resetRuntimeTrackingState() {
   monitorCursor.activeTagId = null;
   monitorCursor.tagFocusStreakSeconds = 0;
   pendingWindowRuntime.clear();
+  appState.currentProcessRuntimeStats = [];
   browserBridgeState.byBrowser.clear();
   pluginBridgeState.byPlugin.clear();
   codeWindowIdentityCache.clear();
@@ -1177,6 +1450,8 @@ function resetRuntimeTrackingState() {
 
 function clearAllData() {
   appState = createEmptyState();
+  syncStorageMetaToState();
+  addDiagnosticLog('warn', '用户执行清空所有数据');
   appState.preferences.autoLaunchEnabled = applySystemAutoLaunchEnabled(false);
   resetRuntimeTrackingState();
   scheduleSave();
@@ -1711,6 +1986,33 @@ function updateProcessTagStats(openKeys, focusedKey, deltaSeconds, nowIso, focus
   appState.processTagStats = [...statMap.values()].filter(item => validTagSet.has(item.tagId));
 }
 
+function syncCurrentProcessRuntimeStats() {
+  const runtimeStats = [];
+  for (const [classificationKey, pending] of pendingWindowRuntime.entries()) {
+    if (!pending || typeof pending !== 'object') {
+      continue;
+    }
+    runtimeStats.push({
+      classificationKey,
+      totalVisibleSeconds: Number.isFinite(Number(pending.totalVisibleSeconds))
+        ? Math.max(0, Math.floor(Number(pending.totalVisibleSeconds)))
+        : 0,
+      totalFocusSeconds: Number.isFinite(Number(pending.totalFocusSeconds))
+        ? Math.max(0, Math.floor(Number(pending.totalFocusSeconds)))
+        : 0,
+      currentContinuousFocusSeconds: Number.isFinite(Number(pending.currentContinuousFocusSeconds))
+        ? Math.max(0, Math.floor(Number(pending.currentContinuousFocusSeconds)))
+        : 0,
+      longestContinuousFocusSeconds: Number.isFinite(Number(pending.longestContinuousFocusSeconds))
+        ? Math.max(0, Math.floor(Number(pending.longestContinuousFocusSeconds)))
+        : 0,
+      lastFocusAt: typeof pending.lastFocusAt === 'string' ? pending.lastFocusAt : '',
+      recorded: Boolean(pending.recorded),
+    });
+  }
+  appState.currentProcessRuntimeStats = runtimeStats;
+}
+
 function upsertActiveSession(profile, nowIso) {
   if (monitorCursor.activeSessionId && monitorCursor.activeClassificationKey === profile.classificationKey) {
     appState.sessions = appState.sessions.map(session => {
@@ -1941,6 +2243,89 @@ function parsePluginBridgePayload(rawPayload) {
   };
 }
 
+function normalizePluginRuleMatchCandidates(rawCandidates) {
+  if (!Array.isArray(rawCandidates)) {
+    return [];
+  }
+  return rawCandidates
+    .filter(item => item && typeof item === 'object')
+    .map(item => {
+      const candidateKey =
+        typeof item.candidateKey === 'string' && item.candidateKey.trim()
+          ? item.candidateKey.trim()
+          : typeof item.key === 'string' && item.key.trim()
+            ? item.key.trim()
+            : '';
+      if (!candidateKey) {
+        return null;
+      }
+      const displayName =
+        typeof item.displayName === 'string' && item.displayName.trim()
+          ? item.displayName.trim()
+          : candidateKey;
+      const normalizedTitle =
+        typeof item.normalizedTitle === 'string' && item.normalizedTitle.trim()
+          ? item.normalizedTitle.trim()
+          : displayName;
+      const processName =
+        typeof item.processName === 'string' && item.processName.trim()
+          ? item.processName.trim().toLowerCase()
+          : 'plugin';
+      const domain =
+        typeof item.domain === 'string' && item.domain.trim()
+          ? normalizeDomain(item.domain)
+          : safeParseDomainFromUrl(normalizedTitle);
+
+      return {
+        candidateKey,
+        profile: {
+          classificationKey: candidateKey,
+          displayName,
+          objectType: normalizeProfileObjectType(item.objectType, 'BrowserTab'),
+          processName,
+          normalizedTitle,
+          domain: domain || undefined,
+        },
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildRuleMatchResponse(rawCandidates) {
+  const candidates = normalizePluginRuleMatchCandidates(rawCandidates);
+  const whitelistRules = appState.preferences?.processWhitelist ?? [];
+  const blacklistRules = appState.preferences?.processBlacklist ?? [];
+
+  return candidates.map(candidate => {
+    const whitelist = whitelistRules
+      .filter(rule => matchesProcessRule(rule, candidate.profile))
+      .map(rule => ({
+        id: rule.id,
+        name: normalizeWhitelistName(
+          rule.name,
+          rule.namePattern || rule.typePattern || rule.processPattern || rule.id,
+        ),
+        namePattern: rule.namePattern || '',
+        typePattern: rule.typePattern || '',
+        processPattern: rule.processPattern || '',
+      }));
+    const blacklist = blacklistRules
+      .filter(rule => matchesProcessRule(rule, candidate.profile))
+      .map(rule => ({
+        id: rule.id,
+        namePattern: rule.namePattern || '',
+        typePattern: rule.typePattern || '',
+        processPattern: rule.processPattern || '',
+      }));
+
+    return {
+      candidateKey: candidate.candidateKey,
+      whitelist,
+      blacklist,
+    };
+  });
+}
+
 function getActivePluginSnapshots(nowMs = Date.now()) {
   const activeSnapshots = [];
   for (const [pluginId, snapshot] of pluginBridgeState.byPlugin.entries()) {
@@ -2056,6 +2441,16 @@ function startBrowserBridgeServer() {
         return sendJson(res, 200, { ok: true });
       }
 
+      if (parsed && parsed.requestType === 'match-rules') {
+        const matches = buildRuleMatchResponse(parsed.candidates);
+        return sendJson(res, 200, {
+          ok: true,
+          requestType: 'match-rules',
+          matches,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+
       const normalizedPlugin = parsePluginBridgePayload(parsed);
       if (!normalizedPlugin) {
         return sendJson(res, 400, { ok: false, error: 'invalid_payload' });
@@ -2107,7 +2502,25 @@ async function monitorTick() {
   monitorCursor.carryMs = totalMs - deltaSeconds * 1000;
 
   const activeWin = await getActiveWinApi();
-  const [focusedRaw, openWindows] = await Promise.all([activeWin(), activeWin.getOpenWindows()]);
+  let focusedRaw = null;
+  let openWindows = [];
+
+  const focusedPromise =
+    typeof activeWin === 'function' ? activeWin().catch(() => null) : Promise.resolve(null);
+  const openWindowsPromise =
+    typeof activeWin?.getOpenWindows === 'function'
+      ? activeWin.getOpenWindows().catch(() => [])
+      : Promise.resolve([]);
+
+  [focusedRaw, openWindows] = await Promise.all([focusedPromise, openWindowsPromise]);
+  if (!Array.isArray(openWindows)) {
+    openWindows = [];
+  }
+
+  // Keep monitoring usable on environments where open-window enumeration is flaky.
+  if (focusedRaw && !openWindows.some(item => item && item.id === focusedRaw.id)) {
+    openWindows.push(focusedRaw);
+  }
   const activePluginSnapshots = getActivePluginSnapshots();
   syncPluginConnectionsToState(activePluginSnapshots);
   const pluginSuppressRules = collectPluginSuppressRules(activePluginSnapshots);
@@ -2250,6 +2663,7 @@ async function monitorTick() {
     }
   }
 
+  syncCurrentProcessRuntimeStats();
   appState.currentProcessKeys = [...bucket.keys()];
   appState.currentFocusedWindow = currentFocusedWindow;
 
@@ -2298,8 +2712,8 @@ function startMonitoring() {
   monitorCursor.activeTagId = null;
   monitorCursor.tagFocusStreakSeconds = 0;
   monitorTimer = setInterval(() => {
-    monitorTick().catch(() => {
-      // Ignore single-tick failure.
+    monitorTick().catch(error => {
+      console.error('[monitorTick] tick failed', error);
     });
   }, POLL_INTERVAL_MS);
 
@@ -2452,6 +2866,9 @@ function mergeUserStateFromRenderer(partial) {
 
     appState.sessions = appState.sessions.filter(session => incomingKeySet.has(session.classificationKey));
     appState.currentProcessKeys = appState.currentProcessKeys.filter(key => incomingKeySet.has(key));
+    appState.currentProcessRuntimeStats = (appState.currentProcessRuntimeStats || []).filter(item =>
+      incomingKeySet.has(item.classificationKey),
+    );
     appState.processTagAssignments = appState.processTagAssignments.filter(
       assignment =>
         validTagSet.has(assignment.tagId) && incomingKeySet.has(assignment.classificationKey),
@@ -2500,7 +2917,10 @@ function notifySystem(payload) {
 }
 
 function registerIpc() {
-  ipcMain.handle('app:get-state', () => appState);
+  ipcMain.handle('app:get-state', () => {
+    syncStorageMetaToState();
+    return appState;
+  });
   ipcMain.handle('app:get-app-version', () => app.getVersion());
   ipcMain.handle('app:open-external-url', async (_event, payload) => {
     const targetUrl = typeof payload?.url === 'string' ? payload.url.trim() : '';
@@ -2520,20 +2940,15 @@ function registerIpc() {
   );
   ipcMain.handle('app:select-data-file-path', async () => {
     const currentPath = getStatePath();
-    const result = await dialog.showSaveDialog(mainWindow ?? undefined, {
-      title: '选择数据文件路径',
+    const result = await dialog.showOpenDialog(mainWindow ?? undefined, {
+      title: '选择数据目录',
       defaultPath: currentPath,
-      filters: [
-        {
-          name: 'JSON',
-          extensions: ['json'],
-        },
-      ],
+      properties: ['openDirectory', 'createDirectory'],
     });
-    if (result.canceled || !result.filePath) {
+    if (result.canceled || result.filePaths.length === 0) {
       return null;
     }
-    return result.filePath;
+    return result.filePaths[0];
   });
   ipcMain.handle('app:save-user-state', (_event, partial) => {
     mergeUserStateFromRenderer(partial);
@@ -2542,6 +2957,19 @@ function registerIpc() {
     return { ok: true };
   });
   ipcMain.handle('app:clear-all-data', () => clearAllData());
+  ipcMain.handle('app:clear-diagnostic-logs', () => {
+    appState.diagnosticLogs = [];
+    try {
+      const logFilePath = getLogFilePath();
+      ensureWritableLogFile(logFilePath);
+      fs.writeFileSync(logFilePath, '', 'utf8');
+    } catch {
+      // Ignore clear-log file failures.
+    }
+    scheduleSave();
+    emitState();
+    return { ok: true };
+  });
   ipcMain.handle('app:notify', (_event, payload) => notifySystem(payload));
   ipcMain.handle('app:hide-to-tray', () => ({ ok: hideMainWindowToTray() }));
   ipcMain.handle('app:select-audio-file', async () => {
@@ -2685,9 +3113,12 @@ function createWindow() {
 app.whenReady().then(() => {
   loadStorageConfig();
   loadPersistedState();
+  syncStorageMetaToState();
+  setupConsoleCapture();
   appState.preferences.autoLaunchEnabled = applySystemAutoLaunchEnabled(
     appState.preferences.autoLaunchEnabled,
   );
+  addDiagnosticLog('info', '应用启动', getStatePath());
   registerIpc();
   registerPowerEvents();
   startBrowserBridgeServer();

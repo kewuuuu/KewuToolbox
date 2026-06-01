@@ -24,6 +24,35 @@ function detectBrowser() {
   return 'chrome';
 }
 
+function browserIdToProcessName(browserId) {
+  switch (browserId) {
+    case 'edge':
+      return 'msedge.exe';
+    case 'brave':
+      return 'brave.exe';
+    case 'firefox':
+      return 'firefox.exe';
+    case 'opera':
+      return 'opera.exe';
+    case 'vivaldi':
+      return 'vivaldi.exe';
+    case 'chrome':
+    default:
+      return 'chrome.exe';
+  }
+}
+
+function getPluginMeta() {
+  const manifest = chrome.runtime.getManifest();
+  return {
+    id: PLUGIN_ID,
+    name: PLUGIN_NAME,
+    version: manifest.version,
+    homepageUrl: manifest.homepage_url || undefined,
+    isOfficial: true,
+  };
+}
+
 function normalizeDomainFromUrl(url) {
   if (!url || typeof url !== 'string') {
     return null;
@@ -69,66 +98,156 @@ function normalizeWebUrlFromUrl(url) {
 }
 
 async function collectSnapshot() {
+  const browserId = detectBrowser();
+  const processName = browserIdToProcessName(browserId);
   const [allTabs, activeTabs] = await Promise.all([
     chrome.tabs.query({}),
     chrome.tabs.query({ active: true, lastFocusedWindow: true }),
   ]);
 
-  const recordMap = new Map();
-  const processName = `${detectBrowser()}.exe`;
-  let focusedClassificationKey = null;
+  const tabItems = [];
   for (const tab of allTabs) {
     const normalizedUrl = normalizeWebUrlFromUrl(tab.url);
     if (!normalizedUrl) {
       continue;
     }
-    const domain = normalizeDomainFromUrl(normalizedUrl || tab.url) || undefined;
-    const classificationKey = `plugin-browser-tab|${normalizedUrl}`;
-    if (!recordMap.has(classificationKey)) {
-      const displayName =
-        typeof tab.title === 'string' && tab.title.trim().length > 0
-          ? tab.title.trim()
-          : domain || normalizedUrl;
-      recordMap.set(classificationKey, {
-        classificationKey,
-        displayName,
-        normalizedTitle: normalizedUrl,
-        objectType: 'BrowserTab',
-        processName,
-        domain,
-      });
-    }
+    const domain = normalizeDomainFromUrl(normalizedUrl || tab.url) || '';
+    const displayName =
+      typeof tab.title === 'string' && tab.title.trim().length > 0
+        ? tab.title.trim()
+        : domain || normalizedUrl;
+    tabItems.push({
+      normalizedUrl,
+      domain,
+      displayName,
+    });
   }
 
   const activeUrl = normalizeWebUrlFromUrl(activeTabs[0]?.url);
-  if (activeUrl) {
-    focusedClassificationKey = `plugin-browser-tab|${activeUrl}`;
+  const ruleMatchMap = await requestRuleMatches(
+    tabItems.map(item => ({
+      candidateKey: item.normalizedUrl,
+      displayName: item.displayName,
+      normalizedTitle: item.normalizedUrl,
+      objectType: 'BrowserTab',
+      processName,
+      domain: item.domain || undefined,
+    })),
+  );
+
+  const recordMap = new Map();
+  let focusedClassificationKey = null;
+  for (const tabItem of tabItems) {
+    const match = ruleMatchMap.get(tabItem.normalizedUrl) || {
+      whitelist: [],
+      blacklist: [],
+    };
+
+    if (Array.isArray(match.blacklist) && match.blacklist.length > 0) {
+      continue;
+    }
+
+    if (Array.isArray(match.whitelist) && match.whitelist.length > 0) {
+      for (const whitelistRule of match.whitelist) {
+        const ruleId = typeof whitelistRule.id === 'string' ? whitelistRule.id : '';
+        if (!ruleId) {
+          continue;
+        }
+        const key = `plugin-whitelist|${ruleId}`;
+        if (!recordMap.has(key)) {
+          const ruleName =
+            typeof whitelistRule.name === 'string' && whitelistRule.name.trim().length > 0
+              ? whitelistRule.name.trim()
+              : `白名单规则 ${ruleId}`;
+          recordMap.set(key, {
+            classificationKey: key,
+            displayName: ruleName,
+            normalizedTitle: tabItem.normalizedUrl,
+            objectType: 'BrowserTab',
+            processName,
+            domain: tabItem.domain || undefined,
+          });
+        }
+      }
+      if (activeUrl === tabItem.normalizedUrl && !focusedClassificationKey) {
+        const firstRule = match.whitelist[0];
+        if (firstRule && typeof firstRule.id === 'string' && firstRule.id) {
+          focusedClassificationKey = `plugin-whitelist|${firstRule.id}`;
+        }
+      }
+      continue;
+    }
+
+    const domainKey = tabItem.domain
+      ? `plugin-browser-domain|${tabItem.domain}`
+      : `plugin-browser-url|${tabItem.normalizedUrl}`;
+    if (!recordMap.has(domainKey)) {
+      recordMap.set(domainKey, {
+        classificationKey: domainKey,
+        displayName: tabItem.domain || tabItem.normalizedUrl,
+        normalizedTitle: tabItem.domain || tabItem.normalizedUrl,
+        objectType: 'BrowserTab',
+        processName,
+        domain: tabItem.domain || undefined,
+      });
+    }
+    if (activeUrl === tabItem.normalizedUrl) {
+      focusedClassificationKey = domainKey;
+    }
   }
 
   return {
     protocolVersion: PROTOCOL_VERSION,
     source: 'browser-extension',
-    plugin: {
-      id: PLUGIN_ID,
-      name: PLUGIN_NAME,
-      version: chrome.runtime.getManifest().version,
-      homepageUrl: chrome.runtime.getManifest().homepage_url || undefined,
-      isOfficial: true,
-    },
+    plugin: getPluginMeta(),
     snapshot: {
       records: [...recordMap.values()],
       focusedClassificationKey,
       suppressRules: [
-        { typePattern: 'AppWindow', processPattern: 'chrome.exe' },
-        { typePattern: 'AppWindow', processPattern: 'msedge.exe' },
-        { typePattern: 'AppWindow', processPattern: 'brave.exe' },
-        { typePattern: 'AppWindow', processPattern: 'firefox.exe' },
-        { typePattern: 'AppWindow', processPattern: 'opera.exe' },
-        { typePattern: 'AppWindow', processPattern: 'vivaldi.exe' },
+        { typePattern: 'AppWindow', processPattern: processName },
       ],
       timestamp: new Date().toISOString(),
     },
   };
+}
+
+async function requestRuleMatches(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return new Map();
+  }
+  try {
+    const response = await fetch(BRIDGE_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        protocolVersion: PROTOCOL_VERSION,
+        source: 'browser-extension',
+        requestType: 'match-rules',
+        plugin: getPluginMeta(),
+        candidates,
+      }),
+    });
+    if (!response.ok) {
+      return new Map();
+    }
+    const data = await response.json();
+    if (!data || data.ok !== true || !Array.isArray(data.matches)) {
+      return new Map();
+    }
+    const map = new Map();
+    for (const item of data.matches) {
+      if (!item || typeof item.candidateKey !== 'string') {
+        continue;
+      }
+      map.set(item.candidateKey, {
+        whitelist: Array.isArray(item.whitelist) ? item.whitelist : [],
+        blacklist: Array.isArray(item.blacklist) ? item.blacklist : [],
+      });
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
 }
 
 async function pushSnapshot() {

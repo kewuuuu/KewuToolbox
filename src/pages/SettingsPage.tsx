@@ -29,9 +29,9 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
-import { Download, FolderOpen, MoonStar, Play, Plus, Sun, Trash2 } from 'lucide-react';
+import { Copy, Download, FolderOpen, MoonStar, Play, Plus, Sun, Trash2 } from 'lucide-react';
 
-type SettingsTab = 'general' | 'plugins' | 'sounds';
+type SettingsTab = 'general' | 'plugins' | 'sounds' | 'console';
 const NONE_SOUND_ID = '__none__';
 type SoundEventConfig = {
   eventType: SoundEventType;
@@ -97,7 +97,16 @@ function makeRuleId(prefix: string) {
 }
 
 export default function SettingsPage() {
-  const { state, updatePreferences, updateSettings, clearAllData, addSoundFile, updateSoundFile, deleteSoundFile } = useAppState();
+  const {
+    state,
+    updatePreferences,
+    updateSettings,
+    clearAllData,
+    clearDiagnosticLogs,
+    addSoundFile,
+    updateSoundFile,
+    deleteSoundFile,
+  } = useAppState();
   const [searchParams, setSearchParams] = useSearchParams();
   const [manualPath, setManualPath] = useState('');
   const [manualName, setManualName] = useState('');
@@ -112,6 +121,7 @@ export default function SettingsPage() {
   const [pendingCreatePath, setPendingCreatePath] = useState('');
   const [isChangingDataPath, setIsChangingDataPath] = useState(false);
   const [isClearingAllData, setIsClearingAllData] = useState(false);
+  const [isClearingLogs, setIsClearingLogs] = useState(false);
   const [applyingBalanceEventType, setApplyingBalanceEventType] = useState<SoundEventType | null>(null);
   const [appVersion, setAppVersion] = useState('0.0.0');
   const [thresholdInput, setThresholdInput] = useState(
@@ -143,7 +153,7 @@ export default function SettingsPage() {
         setAppVersion(version || '0.3.0');
       } catch {
         if (!disposed) {
-          toast.error('读取数据文件路径失败');
+      toast.error('读取数据目录失败');
         }
       }
     };
@@ -160,6 +170,8 @@ export default function SettingsPage() {
       ? 'sounds'
       : tabParam === 'plugins'
         ? 'plugins'
+        : tabParam === 'console'
+          ? 'console'
         : 'general';
 
   const sortedSoundFiles = useMemo(
@@ -173,7 +185,13 @@ export default function SettingsPage() {
 
   const handleTabChange = (nextTab: string) => {
     const normalized: SettingsTab =
-      nextTab === 'sounds' ? 'sounds' : nextTab === 'plugins' ? 'plugins' : 'general';
+      nextTab === 'sounds'
+        ? 'sounds'
+        : nextTab === 'plugins'
+          ? 'plugins'
+          : nextTab === 'console'
+            ? 'console'
+            : 'general';
     if (normalized === 'general') {
       setSearchParams({});
       return;
@@ -308,7 +326,7 @@ export default function SettingsPage() {
 
   const handlePickDataFilePath = async () => {
     if (!window.desktopApi?.isElectron) {
-      toast.info('当前环境不支持选择数据文件路径');
+      toast.info('当前环境不支持选择数据目录');
       return;
     }
     const pickedPath = await window.desktopApi.selectDataFilePath();
@@ -321,11 +339,11 @@ export default function SettingsPage() {
   const commitDataFilePath = async (createIfMissing: boolean) => {
     const targetPath = dataFilePathInput.trim();
     if (!targetPath) {
-      toast.error('请输入数据文件路径');
+      toast.error('请输入数据目录路径');
       return;
     }
     if (!window.desktopApi?.isElectron) {
-      toast.info('当前环境不支持修改数据文件路径');
+      toast.info('当前环境不支持修改数据目录');
       return;
     }
     if (isChangingDataPath) {
@@ -342,7 +360,7 @@ export default function SettingsPage() {
       if (result.ok && result.path) {
         setDataFilePathInput(result.path);
         setPendingCreatePath('');
-        toast.success(result.created ? '已创建并加载新数据文件' : '已加载数据文件');
+        toast.success(result.created ? '已创建并加载新数据目录' : '已加载数据目录');
         return;
       }
 
@@ -352,16 +370,16 @@ export default function SettingsPage() {
       }
 
       if (result.error === 'invalid_json') {
-        toast.error('目标文件不是有效的 JSON 数据文件');
+        toast.error('目标目录中的数据文件损坏');
       } else if (result.error === 'path_not_writable') {
         toast.error('该路径不可写，请更换路径');
       } else if (result.error === 'create_failed') {
-        toast.error('创建数据文件失败');
+        toast.error('创建数据目录失败');
       } else {
-        toast.error('修改数据文件路径失败');
+        toast.error('修改数据目录失败');
       }
     } catch {
-      toast.error('修改数据文件路径失败');
+      toast.error('修改数据目录失败');
     } finally {
       setIsChangingDataPath(false);
     }
@@ -432,9 +450,9 @@ export default function SettingsPage() {
     });
   };
 
-  const openOfficialBrowserPluginDownload = async () => {
+  const openOfficialPluginDownload = async (assetName: string) => {
     const versionTag = `v${appVersion || '0.3.0'}`;
-    const targetUrl = `https://github.com/kewuuuu/KewuToolbox/releases/download/${versionTag}/browser-extension.zip`;
+    const targetUrl = `https://github.com/kewuuuu/KewuToolbox/releases/download/${versionTag}/${assetName}`;
     if (window.desktopApi?.isElectron && window.desktopApi.openExternalUrl) {
       const result = await window.desktopApi.openExternalUrl({ url: targetUrl });
       if (!result.ok) {
@@ -443,6 +461,14 @@ export default function SettingsPage() {
       return;
     }
     window.open(targetUrl, '_blank');
+  };
+
+  const openOfficialBrowserPluginDownload = async () => {
+    await openOfficialPluginDownload('browser-extension.zip');
+  };
+
+  const openOfficialVsCodePluginDownload = async () => {
+    await openOfficialPluginDownload('vscode-extension.zip');
   };
 
   const addProcessBlacklistRule = () => {
@@ -606,6 +632,34 @@ export default function SettingsPage() {
     }
   };
 
+  const handleCopyLogs = async () => {
+    const lines = [...state.diagnosticLogs]
+      .sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime())
+      .map(item => {
+        const detail = item.detail?.trim() ? ` | ${item.detail.trim()}` : '';
+        return `[${item.occurredAt}] [${item.level.toUpperCase()}] ${item.message}${detail}`;
+      });
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      toast.success('日志已复制');
+    } catch {
+      toast.error('复制日志失败');
+    }
+  };
+
+  const handleClearLogs = async () => {
+    if (isClearingLogs) {
+      return;
+    }
+    setIsClearingLogs(true);
+    try {
+      await clearDiagnosticLogs();
+      toast.success('已清空日志');
+    } finally {
+      setIsClearingLogs(false);
+    }
+  };
+
   return (
     <DashboardLayout pageTitle="设置">
       <div className="max-w-5xl mx-auto">
@@ -614,6 +668,7 @@ export default function SettingsPage() {
             <TabsTrigger value="general">通用配置</TabsTrigger>
             <TabsTrigger value="plugins">插件</TabsTrigger>
             <TabsTrigger value="sounds">提示音管理</TabsTrigger>
+            <TabsTrigger value="console">控制台</TabsTrigger>
           </TabsList>
 
           <TabsContent value="general" className="space-y-4">
@@ -748,9 +803,9 @@ export default function SettingsPage() {
 
               <div className="space-y-3 rounded-lg border border-border/70 p-3">
                 <div className="space-y-1">
-                  <p className="text-sm font-medium text-foreground">数据文件路径</p>
+                  <p className="text-sm font-medium text-foreground">数据目录路径</p>
                   <p className="text-xs text-muted-foreground">
-                    当前数据库（数据文件）路径如下。修改后若目标文件存在会直接加载；若不存在会提示是否创建新文件。
+                    程序会把数据拆分为多个文件存放在该目录中（并包含日志目录）。切换后若目录中存在历史数据会直接加载。
                   </p>
                 </div>
                 <div className="space-y-2">
@@ -758,7 +813,7 @@ export default function SettingsPage() {
                     <Input
                       value={dataFilePathInput}
                       onChange={event => setDataFilePathInput(event.target.value)}
-                      placeholder="输入新的数据文件路径（可填目录或 .json 文件）"
+                      placeholder="输入新的数据目录路径（也兼容旧 .json 路径）"
                       className="h-8 font-mono text-[11px]"
                     />
                     <Button
@@ -985,9 +1040,9 @@ export default function SettingsPage() {
               >
                 <AlertDialogContent className="bg-card border-border">
                   <AlertDialogHeader>
-                    <AlertDialogTitle>目标数据文件不存在</AlertDialogTitle>
+                    <AlertDialogTitle>目标数据目录不存在</AlertDialogTitle>
                     <AlertDialogDescription>
-                      将在以下路径创建新的数据文件并切换：
+                      将在以下路径创建新的数据目录并切换：
                       <span className="block mt-1 font-mono text-[11px] break-all">{pendingCreatePath}</span>
                     </AlertDialogDescription>
                   </AlertDialogHeader>
@@ -1304,6 +1359,19 @@ export default function SettingsPage() {
                 </Button>
               </div>
 
+              <div className="rounded-lg border border-border/70 p-3 flex items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">VSCode 工作区桥接插件</p>
+                  <p className="text-xs text-muted-foreground">
+                    下载地址将自动拼接到 Release：`vscode-extension.zip`
+                  </p>
+                </div>
+                <Button type="button" className="gap-1.5" onClick={() => void openOfficialVsCodePluginDownload()}>
+                  <Download className="w-4 h-4" />
+                  下载官方插件
+                </Button>
+              </div>
+
               <div className="space-y-3 rounded-lg border border-border/70 p-3">
                 <div className="space-y-1">
                   <p className="text-sm font-medium text-foreground">已连接插件</p>
@@ -1342,6 +1410,77 @@ export default function SettingsPage() {
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+              </div>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="console" className="space-y-4">
+            <Card className="p-4 bg-card border-border space-y-4">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-foreground">运行日志</h3>
+                <p className="text-xs text-muted-foreground">
+                  显示主进程输出的错误与关键事件，日志文件会写入数据目录。
+                </p>
+              </div>
+
+              <div className="rounded-lg border border-border/70 p-3 space-y-1">
+                <p className="text-xs text-muted-foreground">数据目录</p>
+                <p className="text-[11px] font-mono break-all text-foreground">
+                  {state.dataDirectoryPath || dataFilePathInput || '-'}
+                </p>
+                <p className="text-xs text-muted-foreground mt-2">日志文件</p>
+                <p className="text-[11px] font-mono break-all text-foreground">
+                  {state.logFilePath || '-'}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={() => void handleCopyLogs()} className="gap-1.5">
+                  <Copy className="w-3.5 h-3.5" />
+                  复制日志
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  disabled={isClearingLogs}
+                  onClick={() => void handleClearLogs()}
+                  className="gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  {isClearingLogs ? '清空中...' : '清空日志'}
+                </Button>
+              </div>
+
+              <div className="rounded-lg border border-border/70 p-2 max-h-[440px] overflow-auto bg-secondary/10">
+                {state.diagnosticLogs.length === 0 ? (
+                  <p className="text-xs text-muted-foreground text-center py-8">暂无日志</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {[...state.diagnosticLogs]
+                      .sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime())
+                      .map(item => (
+                        <div key={item.id} className="rounded border border-border/60 p-2 text-[11px]">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground">{new Date(item.occurredAt).toLocaleString('zh-CN')}</span>
+                            <span
+                              className={
+                                item.level === 'error'
+                                  ? 'text-destructive'
+                                  : item.level === 'warn'
+                                    ? 'text-amber-500'
+                                    : 'text-muted-foreground'
+                              }
+                            >
+                              {item.level.toUpperCase()}
+                            </span>
+                          </div>
+                          <p className="text-foreground break-all">{item.message}</p>
+                          {item.detail ? <p className="text-muted-foreground break-all">{item.detail}</p> : null}
+                        </div>
+                      ))}
                   </div>
                 )}
               </div>

@@ -6,6 +6,7 @@ Set-Location -LiteralPath $repoRoot
 $releaseDir = Join-Path $repoRoot 'release'
 $deliverDir = Join-Path $releaseDir 'deliver'
 $extensionSource = Join-Path $repoRoot 'browser-extension'
+$vscodeExtensionSource = Join-Path $repoRoot 'vscode-extension'
 
 $isWindowsHost = $env:OS -eq 'Windows_NT'
 $isMacHost = $false
@@ -66,6 +67,9 @@ New-Item -ItemType Directory -Path $deliverDir | Out-Null
 if (-not (Test-Path -LiteralPath $extensionSource)) {
   throw 'browser-extension folder not found.'
 }
+if (-not (Test-Path -LiteralPath $vscodeExtensionSource)) {
+  throw 'vscode-extension folder not found.'
+}
 
 Write-Host 'Step 5/6: Collect deliverables...'
 
@@ -84,6 +88,19 @@ if ($portableMacZip) {
 }
 
 Copy-Item -LiteralPath $extensionSource -Destination (Join-Path $deliverDir 'browser-extension') -Recurse -Force
+Copy-Item -LiteralPath $vscodeExtensionSource -Destination (Join-Path $deliverDir 'vscode-extension') -Recurse -Force
+
+$browserZipPath = Join-Path $deliverDir 'browser-extension.zip'
+if (Test-Path -LiteralPath $browserZipPath) {
+  Remove-Item -LiteralPath $browserZipPath -Force
+}
+Compress-Archive -Path (Join-Path $deliverDir 'browser-extension') -DestinationPath $browserZipPath -Force
+
+$vscodeZipPath = Join-Path $deliverDir 'vscode-extension.zip'
+if (Test-Path -LiteralPath $vscodeZipPath) {
+  Remove-Item -LiteralPath $vscodeZipPath -Force
+}
+Compress-Archive -Path (Join-Path $deliverDir 'vscode-extension') -DestinationPath $vscodeZipPath -Force
 
 $collectedArtifacts = Get-ChildItem -LiteralPath $deliverDir -File -ErrorAction SilentlyContinue
 if (-not $collectedArtifacts) {
