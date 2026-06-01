@@ -109,6 +109,7 @@ const pluginBridgeState = {
 };
 
 const pendingWindowRuntime = new Map();
+const recentlyClosedWindowRuntime = new Map();
 const codeWindowIdentityCache = new Map();
 
 function formatConsoleArg(value) {
@@ -1519,6 +1520,7 @@ function resetRuntimeTrackingState() {
   monitorCursor.activeTagId = null;
   monitorCursor.tagFocusStreakSeconds = 0;
   pendingWindowRuntime.clear();
+  recentlyClosedWindowRuntime.clear();
   appState.currentProcessRuntimeStats = [];
   browserBridgeState.byBrowser.clear();
   pluginBridgeState.byPlugin.clear();
@@ -2206,19 +2208,67 @@ function upsertActiveSession(profile, nowIso, options = {}) {
     typeof options.startAt === 'string' && options.startAt
       ? options.startAt
       : nowIso;
+  const durationDeltaSeconds = Number.isFinite(Number(options.durationDeltaSeconds))
+    ? Math.max(0, Math.floor(Number(options.durationDeltaSeconds)))
+    : undefined;
+  const mergeGapSeconds = Number.isFinite(Number(options.mergeGapSeconds))
+    ? Math.max(0, Math.floor(Number(options.mergeGapSeconds)))
+    : 0;
   if (monitorCursor.activeSessionId && monitorCursor.activeClassificationKey === profile.classificationKey) {
+    const activeSession = appState.sessions.find(session => session.id === monitorCursor.activeSessionId);
+    if (activeSession) {
+      const sessionStartMs = new Date(sessionStartAt).getTime();
+      const lastEndMs = new Date(activeSession.endAt).getTime();
+      const shouldContinueSession =
+        !Number.isFinite(sessionStartMs) ||
+        !Number.isFinite(lastEndMs) ||
+        Math.max(0, Math.floor((sessionStartMs - lastEndMs) / 1000)) <= mergeGapSeconds;
+
+      if (shouldContinueSession) {
+        appState.sessions = appState.sessions.map(session => {
+          if (session.id !== monitorCursor.activeSessionId) {
+            return session;
+          }
+          const durationSeconds = Math.max(
+            1,
+            Math.floor((new Date(nowIso).getTime() - new Date(session.startAt).getTime()) / 1000),
+          );
+          return {
+            ...session,
+            endAt: nowIso,
+            durationSeconds,
+          };
+        });
+        return;
+      }
+    }
+  }
+
+  if (monitorCursor.activeSessionId && monitorCursor.activeClassificationKey !== profile.classificationKey) {
     appState.sessions = appState.sessions.map(session => {
       if (session.id !== monitorCursor.activeSessionId) {
         return session;
       }
-      const durationSeconds = Math.max(1, Math.floor((new Date(nowIso).getTime() - new Date(session.startAt).getTime()) / 1000));
+      const targetEndMs = new Date(sessionStartAt).getTime();
+      const lastEndMs = new Date(session.endAt).getTime();
+      if (
+        !Number.isFinite(targetEndMs) ||
+        !Number.isFinite(lastEndMs) ||
+        targetEndMs <= lastEndMs ||
+        Math.max(0, Math.floor((targetEndMs - lastEndMs) / 1000)) > mergeGapSeconds
+      ) {
+        return session;
+      }
+      const fallbackDurationSeconds = Math.max(
+        1,
+        Math.floor((targetEndMs - new Date(session.startAt).getTime()) / 1000),
+      );
       return {
         ...session,
-        endAt: nowIso,
-        durationSeconds,
+        endAt: sessionStartAt,
+        durationSeconds: fallbackDurationSeconds,
       };
     });
-    return;
   }
 
   monitorCursor.activeSessionId = makeId('session');
@@ -2228,10 +2278,13 @@ function upsertActiveSession(profile, nowIso, options = {}) {
     id: monitorCursor.activeSessionId,
     startAt: sessionStartAt,
     endAt: nowIso,
-    durationSeconds: Math.max(
-      1,
-      Math.floor((new Date(nowIso).getTime() - new Date(sessionStartAt).getTime()) / 1000),
-    ),
+    durationSeconds:
+      durationDeltaSeconds === undefined
+        ? Math.max(
+            1,
+            Math.floor((new Date(nowIso).getTime() - new Date(sessionStartAt).getTime()) / 1000),
+          )
+        : Math.max(1, durationDeltaSeconds),
     classificationKey: profile.classificationKey,
     displayName: profile.displayName,
     objectType: profile.objectType,
@@ -2246,6 +2299,38 @@ function upsertActiveSession(profile, nowIso, options = {}) {
   if (appState.sessions.length > MAX_SESSIONS) {
     appState.sessions = appState.sessions.slice(-MAX_SESSIONS);
   }
+}
+
+function canResumeActiveFocusSession(classificationKey, focusSegmentStartedAt, mergeGapSeconds) {
+  if (!monitorCursor.activeSessionId || monitorCursor.activeClassificationKey !== classificationKey) {
+    return false;
+  }
+  const activeSession = appState.sessions.find(session => session.id === monitorCursor.activeSessionId);
+  if (!activeSession) {
+    return false;
+  }
+  const focusStartMs = new Date(focusSegmentStartedAt).getTime();
+  const lastEndMs = new Date(activeSession.endAt).getTime();
+  if (!Number.isFinite(focusStartMs) || !Number.isFinite(lastEndMs)) {
+    return true;
+  }
+  return Math.max(0, Math.floor((focusStartMs - lastEndMs) / 1000)) <= mergeGapSeconds;
+}
+
+function shouldExpireActiveFocusSession(nowIso, mergeGapSeconds) {
+  if (!monitorCursor.activeSessionId) {
+    return false;
+  }
+  const activeSession = appState.sessions.find(session => session.id === monitorCursor.activeSessionId);
+  if (!activeSession) {
+    return true;
+  }
+  const nowMs = new Date(nowIso).getTime();
+  const lastEndMs = new Date(activeSession.endAt).getTime();
+  if (!Number.isFinite(nowMs) || !Number.isFinite(lastEndMs)) {
+    return false;
+  }
+  return Math.max(0, Math.floor((nowMs - lastEndMs) / 1000)) > mergeGapSeconds;
 }
 
 function addPowerEvent(eventType, detail, markerColor) {
@@ -2807,30 +2892,51 @@ async function monitorTick() {
     const focusDelta = isFocusedWindow ? deltaSeconds : 0;
     const profile = ensureProfile(candidate);
     const existingPending = pendingWindowRuntime.get(key);
-    const pending = existingPending ?? {
-      firstSeenAt: new Date(nowMs - deltaSeconds * 1000).toISOString(),
-      totalVisibleSeconds: 0,
-      totalFocusSeconds: 0,
-      currentContinuousFocusSeconds: 0,
-      longestContinuousFocusSeconds: 0,
-      lastFocusAt: '',
-      recorded: false,
-      processTimelineId: undefined,
-      focusSegmentStartedAt: undefined,
-      focusSegmentRecordedSeconds: 0,
-    };
+    const recentlyClosed = !existingPending ? recentlyClosedWindowRuntime.get(key) : null;
+    const canResumeClosedRuntime =
+      recentlyClosed &&
+      Number.isFinite(Number(recentlyClosed.closedAtMs)) &&
+      nowMs - Number(recentlyClosed.closedAtMs) <= recordThresholdSeconds * 1000;
+    const pending = existingPending ?? (canResumeClosedRuntime
+      ? recentlyClosed
+      : {
+          firstSeenAt: new Date(nowMs - deltaSeconds * 1000).toISOString(),
+          totalVisibleSeconds: 0,
+          totalFocusSeconds: 0,
+          currentContinuousFocusSeconds: 0,
+          longestContinuousFocusSeconds: 0,
+          lastFocusAt: '',
+          recorded: false,
+          processTimelineId: undefined,
+          focusSegmentStartedAt: undefined,
+          focusSegmentRecordedSeconds: 0,
+        });
+    if (canResumeClosedRuntime) {
+      const closedGapSeconds = Math.max(
+        0,
+        Math.floor((nowMs - Number(recentlyClosed.closedAtMs)) / 1000),
+      );
+      pending.totalVisibleSeconds += closedGapSeconds;
+      delete pending.closedAtMs;
+      recentlyClosedWindowRuntime.delete(key);
+    }
     if (!pending.firstSeenAt) {
       pending.firstSeenAt = new Date(nowMs - deltaSeconds * 1000).toISOString();
     }
     pending.totalVisibleSeconds += deltaSeconds;
 
     let confirmedFocusDelta = 0;
-    const resumesActiveFocus = monitorCursor.activeClassificationKey === key;
+    let resumesActiveFocus = false;
     if (focusDelta > 0) {
       if (pending.currentContinuousFocusSeconds <= 0 || !pending.focusSegmentStartedAt) {
         pending.focusSegmentStartedAt = new Date(nowMs - focusDelta * 1000).toISOString();
         pending.focusSegmentRecordedSeconds = 0;
       }
+      resumesActiveFocus = canResumeActiveFocusSession(
+        key,
+        pending.focusSegmentStartedAt,
+        recordThresholdSeconds,
+      );
       pending.currentContinuousFocusSeconds += focusDelta;
       const reachedFocusThreshold = pending.currentContinuousFocusSeconds >= recordThresholdSeconds;
       if (resumesActiveFocus || reachedFocusThreshold) {
@@ -2897,8 +3003,23 @@ async function monitorTick() {
 
   for (const key of [...pendingWindowRuntime.keys()]) {
     if (!openKeys.has(key)) {
-      finalizeProcessTimeline(pendingWindowRuntime.get(key), nowIso);
+      const pending = pendingWindowRuntime.get(key);
+      finalizeProcessTimeline(pending, nowIso);
+      if (pending) {
+        pending.closedAtMs = nowMs;
+        recentlyClosedWindowRuntime.set(key, pending);
+      }
       pendingWindowRuntime.delete(key);
+    }
+  }
+
+  for (const [key, pending] of [...recentlyClosedWindowRuntime.entries()]) {
+    if (
+      !pending ||
+      !Number.isFinite(Number(pending.closedAtMs)) ||
+      nowMs - Number(pending.closedAtMs) > recordThresholdSeconds * 1000
+    ) {
+      recentlyClosedWindowRuntime.delete(key);
     }
   }
 
@@ -2932,10 +3053,14 @@ async function monitorTick() {
   if (focusedProfile && deltaSeconds > 0) {
     upsertActiveSession(focusedProfile, nowIso, {
       startAt: activeFocusSessionStartAt ?? nowIso,
+      durationDeltaSeconds: focusDeltasByKey.get(focusedProfile.classificationKey) || 0,
+      mergeGapSeconds: recordThresholdSeconds,
     });
   } else if (!currentFocusedWindow) {
-    monitorCursor.activeSessionId = null;
-    monitorCursor.activeClassificationKey = null;
+    if (shouldExpireActiveFocusSession(nowIso, recordThresholdSeconds)) {
+      monitorCursor.activeSessionId = null;
+      monitorCursor.activeClassificationKey = null;
+    }
     monitorCursor.activeTagId = null;
     monitorCursor.tagFocusStreakSeconds = 0;
   }

@@ -90,7 +90,7 @@ function tokenize(input: string): Token[] {
       }
       if (end < text.length && /[eE]/.test(text[end])) {
         end += 1;
-        if (end < text.length && /[+\-]/.test(text[end])) {
+        if (end < text.length && /[+-]/.test(text[end])) {
           end += 1;
         }
         while (end < text.length && /\d/.test(text[end])) {

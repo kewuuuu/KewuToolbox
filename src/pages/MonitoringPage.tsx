@@ -8,22 +8,16 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
+import {
+  buildMonitoringRows,
+  buildMonitoringTagStats,
+  formatDuration,
+  MonitoringDerivedRow,
+} from '@/lib/analyticsReadModel';
 import { toast } from 'sonner';
 import { Ban, ChevronDown, ChevronRight, Edit2, Plus, Trash2 } from 'lucide-react';
 
-type ProcessRow = {
-  classificationKey: string;
-  profileId: string;
-  displayName: string;
-  objectType: string;
-  processName: string;
-  totalVisible: number;
-  focusTime: number;
-  lastFocus: string;
-  longestContinuousFocus: number;
-  category: string;
-  tagId?: string;
-};
+type ProcessRow = MonitoringDerivedRow;
 
 type SortKey =
   | 'displayName'
@@ -42,60 +36,6 @@ type SortState = {
   key: SortKey;
   direction: SortDirection;
 };
-
-const DESKTOP_KEY = 'desktop';
-const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain|';
-const PROCESS_WHITELIST_KEY_PREFIX = 'process-whitelist|';
-
-function parseCurrentKeyFallback(classificationKey: string) {
-  if (classificationKey === DESKTOP_KEY) {
-    return {
-      displayName: '桌面',
-      objectType: 'Desktop',
-      processName: 'explorer.exe',
-      category: '休息',
-    };
-  }
-
-  if (classificationKey.startsWith(BROWSER_DOMAIN_KEY_PREFIX)) {
-    const domain = classificationKey.slice(BROWSER_DOMAIN_KEY_PREFIX.length) || 'browser';
-    return {
-      displayName: domain,
-      objectType: 'BrowserTab',
-      processName: 'browser',
-      category: '其他',
-    };
-  }
-
-  if (classificationKey.startsWith(PROCESS_WHITELIST_KEY_PREFIX)) {
-    const ruleId = classificationKey.slice(PROCESS_WHITELIST_KEY_PREFIX.length) || 'rule';
-    return {
-      displayName: `白名单规则 ${ruleId}`,
-      objectType: 'BrowserTab',
-      processName: 'browser',
-      category: '其他',
-    };
-  }
-
-  const appMatch = classificationKey.match(/^AppWindow\|([^|]+)\|(.*)$/);
-  if (appMatch) {
-    const processName = appMatch[1] || 'unknown';
-    const title = appMatch[2] || processName;
-    return {
-      displayName: title,
-      objectType: 'AppWindow',
-      processName,
-      category: '其他',
-    };
-  }
-
-  return {
-    displayName: classificationKey,
-    objectType: 'AppWindow',
-    processName: 'unknown',
-    category: '其他',
-  };
-}
 
 const DEFAULT_SORT_DIRECTION: Record<SortKey, SortDirection> = {
   displayName: 'asc',
@@ -141,73 +81,28 @@ export default function MonitoringPage() {
     [],
   );
 
-  const profileMap = useMemo(
-    () => new Map(state.profiles.map(profile => [profile.classificationKey, profile])),
-    [state.profiles],
-  );
   const tagMap = useMemo(
     () => new Map(state.processTags.map(tag => [tag.id, tag])),
     [state.processTags],
   );
-  const assignmentMap = useMemo(
-    () => new Map(state.processTagAssignments.map(item => [item.classificationKey, item])),
-    [state.processTagAssignments],
-  );
   const tagStatsMap = useMemo(
-    () => new Map(state.processTagStats.map(item => [item.tagId, item])),
-    [state.processTagStats],
+    () => new Map(buildMonitoringTagStats(state, {
+      mergeGapSeconds: state.preferences.recordWindowThresholdSeconds,
+    }).map(item => [item.tagId, item])),
+    [state],
   );
 
   const historyRowsRaw = useMemo<ProcessRow[]>(() => {
-    return state.windowStats.map(stat => {
-      const profile = profileMap.get(stat.classificationKey);
-      const assignment = assignmentMap.get(stat.classificationKey);
-      return {
-        classificationKey: stat.classificationKey,
-        profileId: profile?.id ?? stat.classificationKey,
-        displayName: stat.displayName,
-        objectType: stat.objectType,
-        processName: stat.processName,
-        totalVisible: stat.totalVisibleSeconds,
-        focusTime: stat.focusSeconds,
-        lastFocus: stat.lastFocusAt,
-        longestContinuousFocus: stat.longestContinuousFocusSeconds,
-        category: profile?.category ?? stat.category,
-        tagId: assignment?.tagId,
-      };
+    return buildMonitoringRows(state, 'history', {
+      mergeGapSeconds: state.preferences.recordWindowThresholdSeconds,
     });
-  }, [assignmentMap, profileMap, state.windowStats]);
+  }, [state]);
 
   const currentRowsRaw = useMemo<ProcessRow[]>(() => {
-    const statMap = new Map(
-      state.windowStats.map(stat => [stat.classificationKey, stat]),
-    );
-    const runtimeMap = new Map(
-      state.currentProcessRuntimeStats.map(stat => [stat.classificationKey, stat]),
-    );
-    return state.currentProcessKeys.map(classificationKey => {
-      const stat = statMap.get(classificationKey);
-      const runtimeStat = runtimeMap.get(classificationKey);
-      const profile = profileMap.get(classificationKey);
-      const assignment = assignmentMap.get(classificationKey);
-      const fallback = parseCurrentKeyFallback(classificationKey);
-
-      return {
-        classificationKey,
-        profileId: profile?.id ?? classificationKey,
-        displayName: stat?.displayName ?? profile?.displayName ?? fallback.displayName,
-        objectType: stat?.objectType ?? profile?.objectType ?? fallback.objectType,
-        processName: stat?.processName ?? profile?.processName ?? fallback.processName,
-        totalVisible: stat?.totalVisibleSeconds ?? runtimeStat?.totalVisibleSeconds ?? 0,
-        focusTime: stat?.focusSeconds ?? runtimeStat?.totalFocusSeconds ?? 0,
-        lastFocus: stat?.lastFocusAt ?? runtimeStat?.lastFocusAt ?? '',
-        longestContinuousFocus:
-          stat?.longestContinuousFocusSeconds ?? runtimeStat?.longestContinuousFocusSeconds ?? 0,
-        category: profile?.category ?? stat?.category ?? fallback.category,
-        tagId: assignment?.tagId,
-      };
+    return buildMonitoringRows(state, 'current', {
+      mergeGapSeconds: state.preferences.recordWindowThresholdSeconds,
     });
-  }, [assignmentMap, profileMap, state.currentProcessKeys, state.currentProcessRuntimeStats, state.windowStats]);
+  }, [state]);
 
   const compareString = useCallback(
     (a: string, b: string) => collator.compare(a || '', b || ''),
@@ -330,20 +225,6 @@ export default function MonitoringPage() {
   const rowsForSelection = activeTab === 'current' ? currentRows : historyRows;
   const allSelected = rowsForSelection.length > 0 && selectedKeys.size === rowsForSelection.length;
   const partialSelected = selectedKeys.size > 0 && !allSelected;
-
-  const formatDuration = (seconds: number) => {
-    const total = Math.max(0, Math.floor(Number(seconds) || 0));
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = total % 60;
-    if (h > 0) {
-      return `${h}h ${m}m ${s}s`;
-    }
-    if (m > 0) {
-      return `${m}m ${s}s`;
-    }
-    return `${s}s`;
-  };
 
   const toggleRow = (classificationKey: string, checked: boolean) => {
     setSelectedKeys(prev => {
