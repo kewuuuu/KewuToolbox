@@ -54,8 +54,7 @@ jobs:
           }
           $logDir = Join-Path $PWD 'release-ci-logs'
           New-Item -ItemType Directory -Path $logDir -Force | Out-Null
-          $stdoutPath = Join-Path $logDir 'build-deliver.stdout.log'
-          $stderrPath = Join-Path $logDir 'build-deliver.stderr.log'
+          $logPath = Join-Path $logDir 'build-deliver.log'
           $summaryPath = Join-Path $logDir 'environment.txt'
 
           Write-Host "Node version: $(node -v)"
@@ -65,28 +64,16 @@ jobs:
           "Runner OS: $env:RUNNER_OS" | Add-Content -LiteralPath $summaryPath -Encoding UTF8
           "Image OS: $env:ImageOS" | Add-Content -LiteralPath $summaryPath -Encoding UTF8
 
-          $process = Start-Process -FilePath 'npm.cmd' `
-            -ArgumentList @('run', 'build:deliver') `
-            -NoNewWindow `
-            -Wait `
-            -PassThru `
-            -RedirectStandardOutput $stdoutPath `
-            -RedirectStandardError $stderrPath
-
-          if (Test-Path -LiteralPath $stdoutPath) {
-            Get-Content -LiteralPath $stdoutPath
-          }
-          if (Test-Path -LiteralPath $stderrPath) {
-            Get-Content -LiteralPath $stderrPath
-          }
+          & npm.cmd run build:deliver 2>&1 | Tee-Object -FilePath $logPath
+          $buildExitCode = $LASTEXITCODE
 
           if (Test-Path -LiteralPath 'release/deliver') {
             Get-ChildItem -LiteralPath 'release/deliver' -Force | Select-Object Name, Length, LastWriteTime
           }
 
-          if ($process.ExitCode -ne 0) {
-            Write-Host "::error title=Build deliverables failed::npm run build:deliver exited with code $($process.ExitCode). Download artifact release-build-logs for full stdout/stderr."
-            throw "npm run build:deliver failed with code $($process.ExitCode)"
+          if ($buildExitCode -ne 0) {
+            Write-Host "::error title=Build deliverables failed::npm run build:deliver exited with code $buildExitCode. Download artifact release-build-logs for full output."
+            throw "npm run build:deliver failed with code $buildExitCode"
           }
 
       - name: Upload release build logs
