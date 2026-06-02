@@ -16,6 +16,7 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CSC_IDENTITY_AUTO_DISCOVERY: false
+  ELECTRON_BUILDER_COMPRESSION_LEVEL: 1
 
 jobs:
   build-release:
@@ -51,6 +52,7 @@ jobs:
 
       - name: Build deliverables
         shell: pwsh
+        timeout-minutes: 20
         run: |
           $ErrorActionPreference = 'Stop'
           if (Get-Variable PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
