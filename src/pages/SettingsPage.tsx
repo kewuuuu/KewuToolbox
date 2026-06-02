@@ -29,9 +29,9 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
-import { Copy, Download, FolderOpen, MoonStar, Play, Plus, Sun, Trash2 } from 'lucide-react';
+import { Copy, Download, ExternalLink, FolderOpen, Github, MoonStar, Play, Plus, RefreshCw, Sun, Trash2 } from 'lucide-react';
 
-type SettingsTab = 'general' | 'plugins' | 'sounds' | 'console';
+type SettingsTab = 'general' | 'plugins' | 'sounds' | 'updates' | 'console';
 const NONE_SOUND_ID = '__none__';
 type SoundEventConfig = {
   eventType: SoundEventType;
@@ -96,11 +96,27 @@ function makeRuleId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function formatBytes(bytes: number | undefined) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) {
+    return '-';
+  }
+  if (value >= 1024 * 1024) {
+    return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  }
+  if (value >= 1024) {
+    return `${(value / 1024).toFixed(1)} KB`;
+  }
+  return `${Math.round(value)} B`;
+}
+
 export default function SettingsPage() {
   const {
     state,
     updatePreferences,
     updateSettings,
+    updateUiState,
+    mergeRecordsByWhitelist,
     clearAllData,
     clearDiagnosticLogs,
     addSoundFile,
@@ -108,30 +124,52 @@ export default function SettingsPage() {
     deleteSoundFile,
   } = useAppState();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [manualPath, setManualPath] = useState('');
-  const [manualName, setManualName] = useState('');
-  const [whitelistNameInput, setWhitelistNameInput] = useState('');
-  const [whitelistNamePatternInput, setWhitelistNamePatternInput] = useState('');
-  const [whitelistTypePatternInput, setWhitelistTypePatternInput] = useState('');
-  const [whitelistProcessPatternInput, setWhitelistProcessPatternInput] = useState('');
-  const [blacklistNameInput, setBlacklistNameInput] = useState('');
-  const [blacklistTypeInput, setBlacklistTypeInput] = useState('');
-  const [blacklistProcessInput, setBlacklistProcessInput] = useState('');
-  const [dataFilePathInput, setDataFilePathInput] = useState('');
   const [pendingCreatePath, setPendingCreatePath] = useState('');
   const [isChangingDataPath, setIsChangingDataPath] = useState(false);
   const [isClearingAllData, setIsClearingAllData] = useState(false);
   const [isClearingLogs, setIsClearingLogs] = useState(false);
+  const [isMergingWhitelistRecords, setIsMergingWhitelistRecords] = useState(false);
   const [applyingBalanceEventType, setApplyingBalanceEventType] = useState<SoundEventType | null>(null);
   const [appVersion, setAppVersion] = useState('0.0.0');
-  const [thresholdInput, setThresholdInput] = useState(
-    String(state.preferences.recordWindowThresholdSeconds),
-  );
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [isStartingUpdate, setIsStartingUpdate] = useState(false);
+  const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null);
   const browserFilePickerRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    setThresholdInput(String(state.preferences.recordWindowThresholdSeconds));
-  }, [state.preferences.recordWindowThresholdSeconds]);
+  const settingsUi = state.uiState.settings;
+  const updateSettingsUi = (partial: Partial<typeof settingsUi>) => {
+    updateUiState({
+      settings: partial as typeof settingsUi,
+    });
+  };
+  const manualPath = settingsUi.manualPath;
+  const manualName = settingsUi.manualName;
+  const whitelistNameInput = settingsUi.whitelistNameInput;
+  const whitelistNamePatternInput = settingsUi.whitelistNamePatternInput;
+  const whitelistTypePatternInput = settingsUi.whitelistTypePatternInput;
+  const whitelistProcessPatternInput = settingsUi.whitelistProcessPatternInput;
+  const blacklistNameInput = settingsUi.blacklistNameInput;
+  const blacklistTypeInput = settingsUi.blacklistTypeInput;
+  const blacklistProcessInput = settingsUi.blacklistProcessInput;
+  const dataFilePathInput = settingsUi.dataFilePathInput;
+  const thresholdInput = settingsUi.thresholdInput || String(state.preferences.recordWindowThresholdSeconds);
+  const analyticsWindowItemLimitInput =
+    settingsUi.analyticsWindowItemLimitInput || String(state.preferences.analyticsWindowItemLimit ?? 10);
+  const setManualPath = (manualPath: string) => updateSettingsUi({ manualPath });
+  const setManualName = (manualName: string) => updateSettingsUi({ manualName });
+  const setWhitelistNameInput = (whitelistNameInput: string) => updateSettingsUi({ whitelistNameInput });
+  const setWhitelistNamePatternInput = (whitelistNamePatternInput: string) =>
+    updateSettingsUi({ whitelistNamePatternInput });
+  const setWhitelistTypePatternInput = (whitelistTypePatternInput: string) =>
+    updateSettingsUi({ whitelistTypePatternInput });
+  const setWhitelistProcessPatternInput = (whitelistProcessPatternInput: string) =>
+    updateSettingsUi({ whitelistProcessPatternInput });
+  const setBlacklistNameInput = (blacklistNameInput: string) => updateSettingsUi({ blacklistNameInput });
+  const setBlacklistTypeInput = (blacklistTypeInput: string) => updateSettingsUi({ blacklistTypeInput });
+  const setBlacklistProcessInput = (blacklistProcessInput: string) => updateSettingsUi({ blacklistProcessInput });
+  const setDataFilePathInput = (dataFilePathInput: string) => updateSettingsUi({ dataFilePathInput });
+  const setThresholdInput = (thresholdInput: string) => updateSettingsUi({ thresholdInput });
+  const setAnalyticsWindowItemLimitInput = (analyticsWindowItemLimitInput: string) =>
+    updateSettingsUi({ analyticsWindowItemLimitInput });
 
   useEffect(() => {
     if (!window.desktopApi?.isElectron) {
@@ -149,7 +187,11 @@ export default function SettingsPage() {
         if (disposed) {
           return;
         }
-        setDataFilePathInput(currentPath);
+        if (!dataFilePathInput) {
+          updateUiState({
+            settings: { dataFilePathInput: currentPath } as typeof settingsUi,
+          });
+        }
         setAppVersion(version || '0.3.0');
       } catch {
         if (!disposed) {
@@ -162,7 +204,7 @@ export default function SettingsPage() {
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [dataFilePathInput, updateUiState]);
 
   const tabParam = searchParams.get('tab');
   const tab: SettingsTab =
@@ -170,9 +212,11 @@ export default function SettingsPage() {
       ? 'sounds'
       : tabParam === 'plugins'
         ? 'plugins'
-        : tabParam === 'console'
-          ? 'console'
-        : 'general';
+        : tabParam === 'updates'
+          ? 'updates'
+          : tabParam === 'console'
+            ? 'console'
+            : 'general';
 
   const sortedSoundFiles = useMemo(
     () =>
@@ -189,9 +233,11 @@ export default function SettingsPage() {
         ? 'sounds'
         : nextTab === 'plugins'
           ? 'plugins'
-          : nextTab === 'console'
-            ? 'console'
-            : 'general';
+          : nextTab === 'updates'
+            ? 'updates'
+            : nextTab === 'console'
+              ? 'console'
+              : 'general';
     if (normalized === 'general') {
       setSearchParams({});
       return;
@@ -215,6 +261,25 @@ export default function SettingsPage() {
   const handleThresholdKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
       commitThresholdInput(thresholdInput);
+    }
+  };
+
+  const commitAnalyticsWindowItemLimitInput = (rawValue: string) => {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) {
+      setAnalyticsWindowItemLimitInput(String(state.preferences.analyticsWindowItemLimit ?? 10));
+      toast.error('数据统计窗口数量必须是数字');
+      return;
+    }
+
+    const normalized = Math.max(1, Math.floor(parsed));
+    updatePreferences({ analyticsWindowItemLimit: normalized });
+    setAnalyticsWindowItemLimitInput(String(normalized));
+  };
+
+  const handleAnalyticsWindowItemLimitKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      commitAnalyticsWindowItemLimitInput(analyticsWindowItemLimitInput);
     }
   };
 
@@ -450,6 +515,32 @@ export default function SettingsPage() {
     });
   };
 
+  const handleMergeRecordsByWhitelist = async () => {
+    if (state.preferences.processWhitelist.length === 0) {
+      toast.info('当前没有白名单规则');
+      return;
+    }
+    if (!window.desktopApi?.isElectron) {
+      toast.info('当前环境不支持归并历史记录');
+      return;
+    }
+    setIsMergingWhitelistRecords(true);
+    try {
+      const changedCount = await mergeRecordsByWhitelist();
+      if (changedCount > 0) {
+        toast.success('已按白名单归并记录', {
+          description: `处理了 ${changedCount} 条历史记录`,
+        });
+      } else {
+        toast.info('没有需要归并的记录');
+      }
+    } catch {
+      toast.error('归并历史记录失败');
+    } finally {
+      setIsMergingWhitelistRecords(false);
+    }
+  };
+
   const openOfficialPluginDownload = async (assetName: string) => {
     const versionTag = `v${appVersion || '0.3.0'}`;
     const targetUrl = `https://github.com/kewuuuu/KewuToolbox/releases/download/${versionTag}/${assetName}`;
@@ -469,6 +560,87 @@ export default function SettingsPage() {
 
   const openOfficialVsCodePluginDownload = async () => {
     await openOfficialPluginDownload('vscode-extension.zip');
+  };
+
+  const openRepositoryHome = async () => {
+    const targetUrl = 'https://github.com/kewuuuu/KewuToolbox';
+    if (window.desktopApi?.isElectron && window.desktopApi.openExternalUrl) {
+      const result = await window.desktopApi.openExternalUrl({ url: targetUrl });
+      if (!result.ok) {
+        toast.error('打开 GitHub 仓库失败');
+      }
+      return;
+    }
+    window.open(targetUrl, '_blank');
+  };
+
+  const handleCheckForUpdates = async () => {
+    if (!window.desktopApi?.isElectron || !window.desktopApi.checkForUpdates) {
+      toast.info('当前环境不支持检查更新');
+      return;
+    }
+    if (isCheckingUpdate) {
+      return;
+    }
+    setIsCheckingUpdate(true);
+    try {
+      const result = await window.desktopApi.checkForUpdates();
+      setUpdateCheckResult(result);
+      if (!result.ok) {
+        toast.error('检查更新失败', { description: result.detail || result.error });
+        return;
+      }
+      if (result.hasUpdate) {
+        toast.success(`发现新版本 v${result.latestVersion}`);
+      } else {
+        toast.info('当前已经是最新版本');
+      }
+    } catch (error) {
+      toast.error('检查更新失败', { description: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
+
+  const handleStartPortableUpdate = async () => {
+    if (!updateCheckResult?.hasUpdate || !updateCheckResult.assetUrl) {
+      toast.info('请先检查到可用的新版本');
+      return;
+    }
+    if (!updateCheckResult.sha256Url) {
+      toast.error('该版本缺少 .sha256 校验文件，不能自动更新');
+      return;
+    }
+    if (!window.desktopApi?.isElectron || !window.desktopApi.startPortableUpdate) {
+      toast.info('当前环境不支持自动更新');
+      return;
+    }
+    if (isStartingUpdate) {
+      return;
+    }
+    setIsStartingUpdate(true);
+    try {
+      const result = await window.desktopApi.startPortableUpdate({
+        assetUrl: updateCheckResult.assetUrl,
+        sha256Url: updateCheckResult.sha256Url,
+      });
+      if (!result.ok) {
+        const messages: Record<string, string> = {
+          not_packaged: '开发模式不能执行自动覆盖更新，请使用打包后的便携版。',
+          missing_target_path: '无法识别当前程序路径。',
+          invalid_update_url: '更新下载地址不合法。',
+          write_updater_failed: '无法在程序同目录写入更新程序。',
+          launch_updater_failed: '启动更新程序失败。',
+        };
+        toast.error('启动更新失败', { description: messages[result.error || ''] || result.detail || result.error });
+        setIsStartingUpdate(false);
+        return;
+      }
+      toast.success('已启动更新程序，主程序即将关闭');
+    } catch (error) {
+      toast.error('启动更新失败', { description: error instanceof Error ? error.message : String(error) });
+      setIsStartingUpdate(false);
+    }
   };
 
   const addProcessBlacklistRule = () => {
@@ -668,6 +840,7 @@ export default function SettingsPage() {
             <TabsTrigger value="general">通用配置</TabsTrigger>
             <TabsTrigger value="plugins">插件</TabsTrigger>
             <TabsTrigger value="sounds">提示音管理</TabsTrigger>
+            <TabsTrigger value="updates">更新</TabsTrigger>
             <TabsTrigger value="console">控制台</TabsTrigger>
           </TabsList>
 
@@ -676,7 +849,7 @@ export default function SettingsPage() {
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold text-foreground">记录与界面</h3>
                 <p className="text-xs text-muted-foreground">
-                  只记录总可见时长达到阈值的窗口，主题会立即生效。
+                  只记录总可见时长达到阈值的窗口；数据统计窗口模式会按配置限制显示数量；主题会立即生效。
                 </p>
               </div>
 
@@ -693,6 +866,23 @@ export default function SettingsPage() {
                     onKeyDown={handleThresholdKeyDown}
                     className="h-9"
                   />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">数据统计窗口数量 n</label>
+                  <Input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={analyticsWindowItemLimitInput}
+                    onChange={event => setAnalyticsWindowItemLimitInput(event.target.value)}
+                    onBlur={() => commitAnalyticsWindowItemLimitInput(analyticsWindowItemLimitInput)}
+                    onKeyDown={handleAnalyticsWindowItemLimitKeyDown}
+                    className="h-9"
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    窗口模式下，图表只展示最高或最近的 n 个窗口，默认 10。
+                  </p>
                 </div>
 
                 <div className="space-y-1.5">
@@ -841,7 +1031,20 @@ export default function SettingsPage() {
 
               <div className="space-y-3 rounded-lg border border-border/70 p-3">
                 <div className="space-y-1">
-                  <p className="text-sm font-medium text-foreground">白名单规则（支持通配符）</p>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-medium text-foreground">白名单规则（支持通配符）</p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 gap-1.5"
+                      onClick={() => void handleMergeRecordsByWhitelist()}
+                      disabled={isMergingWhitelistRecords || state.preferences.processWhitelist.length === 0}
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${isMergingWhitelistRecords ? 'animate-spin' : ''}`} />
+                      {isMergingWhitelistRecords ? '归并中...' : '按白名单归并记录'}
+                    </Button>
+                  </div>
                   <p className="text-xs text-muted-foreground">
                     匹配字段与黑名单一致：名称 / 类型 / 进程。命中白名单后将按规则名归并统计，并覆盖原本进程显示名。
                   </p>
@@ -902,32 +1105,32 @@ export default function SettingsPage() {
                       className="grid grid-cols-1 md:grid-cols-[220px_1fr_160px_1fr_auto] gap-2 items-center"
                     >
                       <Input
-                        defaultValue={rule.name}
+                        value={rule.name}
                         className="h-8"
                         placeholder="规则名称"
-                        onBlur={event => updateProcessWhitelistRule(rule.id, 'name', event.target.value)}
+                        onChange={event => updateProcessWhitelistRule(rule.id, 'name', event.target.value)}
                       />
                       <Input
-                        defaultValue={rule.namePattern ?? ''}
+                        value={rule.namePattern ?? ''}
                         className="h-8"
                         placeholder="名称模式"
-                        onBlur={event =>
+                        onChange={event =>
                           updateProcessWhitelistRule(rule.id, 'namePattern', event.target.value)
                         }
                       />
                       <Input
-                        defaultValue={rule.typePattern ?? ''}
+                        value={rule.typePattern ?? ''}
                         className="h-8"
                         placeholder="类型模式"
-                        onBlur={event =>
+                        onChange={event =>
                           updateProcessWhitelistRule(rule.id, 'typePattern', event.target.value)
                         }
                       />
                       <Input
-                        defaultValue={rule.processPattern ?? ''}
+                        value={rule.processPattern ?? ''}
                         className="h-8"
                         placeholder="进程模式"
-                        onBlur={event =>
+                        onChange={event =>
                           updateProcessWhitelistRule(rule.id, 'processPattern', event.target.value)
                         }
                       />
@@ -990,26 +1193,26 @@ export default function SettingsPage() {
                       className="grid grid-cols-1 md:grid-cols-[1fr_160px_1fr_auto] gap-2 items-center"
                     >
                       <Input
-                        defaultValue={rule.namePattern ?? ''}
+                        value={rule.namePattern ?? ''}
                         className="h-8"
                         placeholder="名称模式"
-                        onBlur={event =>
+                        onChange={event =>
                           updateProcessBlacklistRule(rule.id, 'namePattern', event.target.value)
                         }
                       />
                       <Input
-                        defaultValue={rule.typePattern ?? ''}
+                        value={rule.typePattern ?? ''}
                         className="h-8"
                         placeholder="类型模式"
-                        onBlur={event =>
+                        onChange={event =>
                           updateProcessBlacklistRule(rule.id, 'typePattern', event.target.value)
                         }
                       />
                       <Input
-                        defaultValue={rule.processPattern ?? ''}
+                        value={rule.processPattern ?? ''}
                         className="h-8"
                         placeholder="进程模式"
-                        onBlur={event =>
+                        onChange={event =>
                           updateProcessBlacklistRule(rule.id, 'processPattern', event.target.value)
                         }
                       />
@@ -1412,6 +1615,118 @@ export default function SettingsPage() {
                     ))}
                   </div>
                 )}
+              </div>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="updates" className="space-y-4">
+            <Card className="p-4 bg-card border-border space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-semibold text-foreground">软件更新</h3>
+                  <p className="text-xs text-muted-foreground">
+                    当前版本：v{appVersion}。更新检查会读取 GitHub Releases 最新正式版本。
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button type="button" variant="outline" className="gap-1.5" onClick={() => void openRepositoryHome()}>
+                    <Github className="w-4 h-4" />
+                    GitHub 仓库首页
+                  </Button>
+                  <Button
+                    type="button"
+                    className="gap-1.5"
+                    disabled={isCheckingUpdate}
+                    onClick={() => void handleCheckForUpdates()}
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isCheckingUpdate ? 'animate-spin' : ''}`} />
+                    {isCheckingUpdate ? '检查中...' : '检查更新'}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/70 p-3 space-y-2">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <p className="text-muted-foreground">当前版本</p>
+                    <p className="text-foreground font-medium">v{updateCheckResult?.currentVersion || appVersion}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">最新版本</p>
+                    <p className="text-foreground font-medium">
+                      {updateCheckResult?.latestVersion ? `v${updateCheckResult.latestVersion}` : '尚未检查'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">便携版更新文件</p>
+                    <p className="text-foreground break-all">
+                      {updateCheckResult?.assetName || '-'}
+                      {updateCheckResult?.assetSize ? `（${formatBytes(updateCheckResult.assetSize)}）` : ''}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">SHA256 校验文件</p>
+                    <p className={updateCheckResult?.sha256Url ? 'text-foreground break-all' : 'text-destructive'}>
+                      {updateCheckResult?.sha256Name || (updateCheckResult?.ok ? '缺少 .sha256，不能自动更新' : '-')}
+                    </p>
+                  </div>
+                </div>
+
+                {updateCheckResult?.ok && (
+                  <div className="rounded-lg bg-secondary/35 p-3 text-xs space-y-2">
+                    <p className={updateCheckResult.hasUpdate ? 'text-primary font-medium' : 'text-muted-foreground'}>
+                      {updateCheckResult.hasUpdate
+                        ? `发现新版本 v${updateCheckResult.latestVersion}`
+                        : '当前已经是最新版本'}
+                    </p>
+                    {updateCheckResult.releaseUrl && (
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 text-primary hover:underline"
+                        onClick={() => {
+                          void window.desktopApi?.openExternalUrl?.({ url: updateCheckResult.releaseUrl || '' });
+                        }}
+                      >
+                        打开发布页面
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    {updateCheckResult.releaseNotes && (
+                      <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded border border-border/60 p-2 text-[11px] text-muted-foreground bg-card/80">
+                        {updateCheckResult.releaseNotes}
+                      </pre>
+                    )}
+                  </div>
+                )}
+
+                {updateCheckResult && !updateCheckResult.ok && (
+                  <p className="text-xs text-destructive">
+                    检查失败：{updateCheckResult.detail || updateCheckResult.error || '未知错误'}
+                  </p>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-border/70 p-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">便携版自动更新</p>
+                  <p className="text-xs text-muted-foreground">
+                    点击后会在程序同目录生成更新程序，随后关闭主程序、下载新版 exe、校验 sha256、覆盖当前 exe 并重启。
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  className="gap-1.5"
+                  disabled={
+                    isStartingUpdate ||
+                    !updateCheckResult?.hasUpdate ||
+                    !updateCheckResult.assetUrl ||
+                    !updateCheckResult.sha256Url
+                  }
+                  onClick={() => void handleStartPortableUpdate()}
+                >
+                  <Download className="w-4 h-4" />
+                  {isStartingUpdate ? '启动中...' : '开始更新'}
+                </Button>
               </div>
             </Card>
           </TabsContent>

@@ -11,11 +11,43 @@ declare global {
     state?: AppState;
   }
 
+  interface UpdateCheckResult {
+    ok: boolean;
+    error?: string;
+    detail?: string;
+    currentVersion?: string;
+    latestVersion?: string;
+    hasUpdate?: boolean;
+    releaseName?: string;
+    releaseUrl?: string;
+    releaseNotes?: string;
+    publishedAt?: string;
+    assetName?: string;
+    assetUrl?: string;
+    assetSize?: number;
+    sha256Name?: string;
+    sha256Url?: string;
+    repositoryUrl?: string;
+  }
+
+  interface StartPortableUpdateResult {
+    ok: boolean;
+    error?: string;
+    detail?: string;
+    targetPath?: string;
+    updaterPath?: string;
+  }
+
   interface Window {
     desktopApi?: {
       isElectron: boolean;
       getState: () => Promise<AppState>;
       getAppVersion: () => Promise<string>;
+      checkForUpdates: () => Promise<UpdateCheckResult>;
+      startPortableUpdate: (payload: {
+        assetUrl: string;
+        sha256Url: string;
+      }) => Promise<StartPortableUpdateResult>;
       openExternalUrl: (payload: { url: string }) => Promise<{ ok: boolean; error?: string }>;
       getDataFilePath: () => Promise<string>;
       setDataFilePath: (payload: {
@@ -24,6 +56,7 @@ declare global {
       }) => Promise<SetDataFilePathResult>;
       selectDataFilePath: () => Promise<string | null>;
       saveUserState: (partial: Partial<AppUserState>) => Promise<{ ok: boolean }>;
+      mergeRecordsByWhitelist: () => Promise<{ ok: boolean; changedCount: number; state: AppState }>;
       clearAllData: () => Promise<AppState>;
       clearDiagnosticLogs: () => Promise<{ ok: boolean }>;
       notify: (payload: { title: string; body?: string }) => Promise<{ ok: boolean; error?: string }>;

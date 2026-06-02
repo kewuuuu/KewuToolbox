@@ -65,7 +65,14 @@ function matchesNamePattern(
   push(candidate.domain);
   if (candidate.domain) {
     push(`https://${candidate.domain}`);
+    push(`https://${candidate.domain}/`);
     push(`http://${candidate.domain}`);
+    push(`http://${candidate.domain}/`);
+    push(`www.${candidate.domain}`);
+    push(`https://www.${candidate.domain}`);
+    push(`https://www.${candidate.domain}/`);
+    push(`http://www.${candidate.domain}`);
+    push(`http://www.${candidate.domain}/`);
   }
 
   for (const value of valueSet) {

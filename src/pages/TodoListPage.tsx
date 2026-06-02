@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { useAppState } from '@/store/AppContext';
 import { Card } from '@/components/ui/card';
@@ -13,26 +12,50 @@ import { toast } from 'sonner';
 import { normalizeTodoTask, validateTodoTask } from '@/lib/todo';
 
 export default function TodoListPage() {
-  const { state, addTodo, completeTodo } = useAppState();
+  const { state, addTodo, completeTodo, updateUiState } = useAppState();
   const navigate = useNavigate();
-  const [searchQuery, setSearchQuery] = useState('');
-  const [showForm, setShowForm] = useState(false);
-  const [filter, setFilter] = useState<'all' | '一次性' | '重复'>('all');
-
-  // Form state
-  const [title, setTitle] = useState('');
-  const [taskType, setTaskType] = useState<TaskType>('一次性');
-  const [repeatMode, setRepeatMode] = useState<RepeatMode>('每日');
-  const [weeklyDays, setWeeklyDays] = useState<number[]>([]);
-  const [monthlyDays, setMonthlyDays] = useState<number[]>([]);
-  const [customPattern, setCustomPattern] = useState('');
-  const [reminderEnabled, setReminderEnabled] = useState(false);
-  const [rYear, setRYear] = useState<string>('');
-  const [rMonth, setRMonth] = useState<string>('');
-  const [rDay, setRDay] = useState<string>('');
-  const [rHour, setRHour] = useState('9');
-  const [rMinute, setRMinute] = useState('0');
-  const [rSecond, setRSecond] = useState('0');
+  const todoUi = state.uiState.todos;
+  const updateTodoUi = (partial: Partial<typeof todoUi>) => {
+    updateUiState({
+      todos: partial as typeof todoUi,
+    });
+  };
+  const {
+    searchQuery,
+    showForm,
+    filter,
+    title,
+    taskType,
+    repeatMode,
+    weeklyDays,
+    monthlyDays,
+    customPattern,
+    reminderEnabled,
+    rYear,
+    rMonth,
+    rDay,
+    rHour,
+    rMinute,
+    rSecond,
+  } = todoUi;
+  const setSearchQuery = (searchQuery: string) => updateTodoUi({ searchQuery });
+  const setShowForm = (showForm: boolean) => updateTodoUi({ showForm });
+  const setFilter = (filter: typeof todoUi.filter) => updateTodoUi({ filter });
+  const setTitle = (title: string) => updateTodoUi({ title });
+  const setTaskType = (taskType: TaskType) => updateTodoUi({ taskType });
+  const setRepeatMode = (repeatMode: RepeatMode) => updateTodoUi({ repeatMode });
+  const setWeeklyDays = (updater: number[] | ((prev: number[]) => number[])) =>
+    updateTodoUi({ weeklyDays: typeof updater === 'function' ? updater(weeklyDays) : updater });
+  const setMonthlyDays = (updater: number[] | ((prev: number[]) => number[])) =>
+    updateTodoUi({ monthlyDays: typeof updater === 'function' ? updater(monthlyDays) : updater });
+  const setCustomPattern = (customPattern: string) => updateTodoUi({ customPattern });
+  const setReminderEnabled = (reminderEnabled: boolean) => updateTodoUi({ reminderEnabled });
+  const setRYear = (rYear: string) => updateTodoUi({ rYear });
+  const setRMonth = (rMonth: string) => updateTodoUi({ rMonth });
+  const setRDay = (rDay: string) => updateTodoUi({ rDay });
+  const setRHour = (rHour: string) => updateTodoUi({ rHour });
+  const setRMinute = (rMinute: string) => updateTodoUi({ rMinute });
+  const setRSecond = (rSecond: string) => updateTodoUi({ rSecond });
 
   const activeTodos = state.todos.filter(t => !t.isArchived);
   const filtered = activeTodos
@@ -76,20 +99,22 @@ export default function TodoListPage() {
 
     addTodo(normalized);
     toast.success('待办已创建');
-    setTitle('');
-    setTaskType('一次性');
-    setRepeatMode('每日');
-    setWeeklyDays([]);
-    setMonthlyDays([]);
-    setCustomPattern('');
-    setReminderEnabled(false);
-    setRYear('');
-    setRMonth('');
-    setRDay('');
-    setRHour('9');
-    setRMinute('0');
-    setRSecond('0');
-    setShowForm(false);
+    updateTodoUi({
+      title: '',
+      taskType: '一次性',
+      repeatMode: '每日',
+      weeklyDays: [],
+      monthlyDays: [],
+      customPattern: '',
+      reminderEnabled: false,
+      rYear: '',
+      rMonth: '',
+      rDay: '',
+      rHour: '9',
+      rMinute: '0',
+      rSecond: '0',
+      showForm: false,
+    });
   };
 
   const handleComplete = (id: string) => {

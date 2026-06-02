@@ -136,7 +136,7 @@ async function collectSnapshot() {
   );
 
   const recordMap = new Map();
-  let focusedClassificationKey = null;
+  const focusedClassificationKeys = [];
   for (const tabItem of tabItems) {
     const match = ruleMatchMap.get(tabItem.normalizedUrl) || {
       whitelist: [],
@@ -153,7 +153,7 @@ async function collectSnapshot() {
         if (!ruleId) {
           continue;
         }
-        const key = `plugin-whitelist|${ruleId}`;
+        const key = `process-whitelist|${ruleId}`;
         if (!recordMap.has(key)) {
           const ruleName =
             typeof whitelistRule.name === 'string' && whitelistRule.name.trim().length > 0
@@ -168,11 +168,8 @@ async function collectSnapshot() {
             domain: tabItem.domain || undefined,
           });
         }
-      }
-      if (activeUrl === tabItem.normalizedUrl && !focusedClassificationKey) {
-        const firstRule = match.whitelist[0];
-        if (firstRule && typeof firstRule.id === 'string' && firstRule.id) {
-          focusedClassificationKey = `plugin-whitelist|${firstRule.id}`;
+        if (activeUrl === tabItem.normalizedUrl) {
+          focusedClassificationKeys.push(key);
         }
       }
       continue;
@@ -192,9 +189,11 @@ async function collectSnapshot() {
       });
     }
     if (activeUrl === tabItem.normalizedUrl) {
-      focusedClassificationKey = domainKey;
+      focusedClassificationKeys.push(domainKey);
     }
   }
+
+  const uniqueFocusedClassificationKeys = [...new Set(focusedClassificationKeys)];
 
   return {
     protocolVersion: PROTOCOL_VERSION,
@@ -202,7 +201,8 @@ async function collectSnapshot() {
     plugin: getPluginMeta(),
     snapshot: {
       records: [...recordMap.values()],
-      focusedClassificationKey,
+      focusedClassificationKey: uniqueFocusedClassificationKeys[0] || null,
+      focusedClassificationKeys: uniqueFocusedClassificationKeys,
       suppressRules: [
         { typePattern: 'AppWindow', processPattern: processName },
       ],

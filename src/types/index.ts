@@ -192,6 +192,7 @@ export interface ProcessBlacklistRule {
 
 export interface AppPreferences {
   recordWindowThresholdSeconds: number;
+  analyticsWindowItemLimit: number;
   uiTheme: UiTheme;
   autoLaunchEnabled: boolean;
   processWhitelist: ProcessWhitelistRule[];
@@ -255,10 +256,73 @@ export interface ClockUiState {
   newCountdownSeconds: string;
 }
 
+export interface SettingsUiState {
+  manualPath: string;
+  manualName: string;
+  whitelistNameInput: string;
+  whitelistNamePatternInput: string;
+  whitelistTypePatternInput: string;
+  whitelistProcessPatternInput: string;
+  blacklistNameInput: string;
+  blacklistTypeInput: string;
+  blacklistProcessInput: string;
+  dataFilePathInput: string;
+  thresholdInput: string;
+  analyticsWindowItemLimitInput: string;
+}
+
+export interface TodoListUiState {
+  searchQuery: string;
+  showForm: boolean;
+  filter: 'all' | '一次性' | '重复';
+  title: string;
+  taskType: TaskType;
+  repeatMode: RepeatMode;
+  weeklyDays: number[];
+  monthlyDays: number[];
+  customPattern: string;
+  reminderEnabled: boolean;
+  rYear: string;
+  rMonth: string;
+  rDay: string;
+  rHour: string;
+  rMinute: string;
+  rSecond: string;
+}
+
+export interface FocusSubjectsUiState {
+  modalOpen: boolean;
+  editingSubjectId: string | null;
+  title: string;
+  defaultMinutes: number;
+  selectedWindows: WindowGroupItem[];
+  manualNamePattern: string;
+  manualTypePattern: string;
+  manualProcessPattern: string;
+}
+
+export interface AnalyticsUiState {
+  selectedDate: string;
+  heatmapCategory: string;
+  hourlyMode: 'total' | 'category';
+}
+
+export interface MonitoringDraftUiState {
+  creatingTag: boolean;
+  newTagName: string;
+  editingTagId: string | null;
+  editingTagName: string;
+}
+
 export interface AppUiState {
   calculatorExpression: string;
   monitoring: MonitoringUiState;
   clock: ClockUiState;
+  settings: SettingsUiState;
+  todos: TodoListUiState;
+  focusSubjects: FocusSubjectsUiState;
+  analytics: AnalyticsUiState;
+  monitoringDraft: MonitoringDraftUiState;
 }
 
 export interface PomodoroRuntimeState {

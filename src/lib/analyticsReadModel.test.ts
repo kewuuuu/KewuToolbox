@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ALL_HEATMAP_CATEGORIES,
   buildHeatmap,
+  buildMultiSeriesDailyTrend,
   buildTimelineItems,
   buildMonitoringRows,
   buildMonitoringTagStats,
@@ -9,7 +10,7 @@ import {
   getDayRange,
 } from './analyticsReadModel';
 import { AppState, FocusSession, ProcessTimelineRecord, WindowClassificationProfile } from '@/types';
-import { createInitialState } from '@/data/mockData';
+import { createInitialState } from '@/data/initialState';
 
 const profile: WindowClassificationProfile = {
   id: 'profile-a',
@@ -153,7 +154,100 @@ describe('analyticsReadModel', () => {
     expect(heatmap[0].minutes).toBe(30);
   });
 
-  it('时间线会合并阈值内相邻的同一焦点对象，并把短空隙计入时长', () => {
+  it('趋势图性质模式会输出总量和全部性质序列', () => {
+    const socialProfile: WindowClassificationProfile = {
+      ...profile,
+      id: 'profile-social',
+      classificationKey: 'app-social',
+      displayName: '聊天',
+      processName: 'chat.exe',
+      normalizedTitle: '聊天',
+      category: '社交',
+    };
+    const trend = buildMultiSeriesDailyTrend(
+      [
+        session({
+          id: 'study',
+          startAt: '2026-01-02T00:00:00',
+          endAt: '2026-01-02T00:10:00',
+          durationSeconds: 600,
+        }),
+        session({
+          id: 'social',
+          classificationKey: 'app-social',
+          displayName: '聊天',
+          processName: 'chat.exe',
+          categoryAtThatTime: '社交',
+          startAt: '2026-01-02T00:10:00',
+          endAt: '2026-01-02T00:30:00',
+          durationSeconds: 1200,
+        }),
+      ],
+      [profile, socialProfile],
+      'category',
+      1,
+      new Date('2026-01-02T12:00:00'),
+      { categories: ['学习', '娱乐', '社交', '休息', '其他'] },
+    );
+
+    expect(trend.data[0].totalMinutes).toBe(30);
+    expect(trend.series.map(item => item.name)).toEqual(['学习', '娱乐', '社交', '休息', '其他']);
+    expect(trend.data[0][trend.series[0].key]).toBe(10);
+    expect(trend.data[0][trend.series[2].key]).toBe(20);
+  });
+
+  it('趋势图窗口模式只输出聚焦时长最高的前 n 个窗口序列', () => {
+    const secondProfile: WindowClassificationProfile = {
+      ...profile,
+      id: 'profile-b',
+      classificationKey: 'app-b',
+      displayName: '项目 B',
+      normalizedTitle: '项目 B',
+    };
+    const thirdProfile: WindowClassificationProfile = {
+      ...profile,
+      id: 'profile-c',
+      classificationKey: 'app-c',
+      displayName: '项目 C',
+      normalizedTitle: '项目 C',
+    };
+    const trend = buildMultiSeriesDailyTrend(
+      [
+        session({
+          id: 'a',
+          displayName: '项目 A',
+          durationSeconds: 1800,
+          endAt: '2026-01-01T00:30:00',
+        }),
+        session({
+          id: 'b',
+          classificationKey: 'app-b',
+          displayName: '项目 B',
+          durationSeconds: 1200,
+          endAt: '2026-01-01T00:20:00',
+        }),
+        session({
+          id: 'c',
+          classificationKey: 'app-c',
+          displayName: '项目 C',
+          durationSeconds: 600,
+          endAt: '2026-01-01T00:10:00',
+        }),
+      ],
+      [profile, secondProfile, thirdProfile],
+      'window',
+      1,
+      new Date('2026-01-01T12:00:00'),
+      { windowLimit: 2 },
+    );
+
+    expect(trend.data[0].totalMinutes).toBe(60);
+    expect(trend.series.map(item => item.name)).toEqual(['项目 A', '项目 B']);
+    expect(trend.data[0][trend.series[0].key]).toBe(30);
+    expect(trend.data[0][trend.series[1].key]).toBe(20);
+  });
+
+  it('时间线会按阈值忽略相邻同一焦点对象之间的短空隙', () => {
     const segments = compileFocusSegments(
       [
         session({
@@ -187,8 +281,8 @@ describe('analyticsReadModel', () => {
 
     expect(items).toHaveLength(1);
     expect(items[0].durationSeconds).toBe(900);
-    expect(items[0].sourceCount).toBe(2);
-    expect(items[0].detail).toContain('合并 2 段');
+    expect(items[0].detail).toBe('AppWindow / 15分0秒');
+    expect(items[0].detail).not.toContain('合并');
   });
 
   it('进程统计会把阈值内同一对象的焦点空隙计入总焦点时长', () => {

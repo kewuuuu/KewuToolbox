@@ -1,0 +1,89 @@
+name: Build and Publish Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build deliverables
+        shell: pwsh
+        run: npm run build:deliver
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $version = node -p "require('./package.json').version"
+          if (-not $version) {
+            throw 'package.json version is empty.'
+          }
+          $tag = "v$version"
+          $deliverDir = Join-Path $PWD 'release/deliver'
+          if (-not (Test-Path -LiteralPath $deliverDir)) {
+            throw 'release/deliver was not generated.'
+          }
+
+          $assets = Get-ChildItem -LiteralPath $deliverDir -File
+          if (-not $assets) {
+            throw 'No release assets found.'
+          }
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -f $tag $env:GITHUB_SHA
+          git push origin "refs/tags/$tag" --force
+
+          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          @"
+          KewuToolbox v$version
+
+          自动构建发布，来源提交：$env:GITHUB_SHA
+
+          自动更新需要的文件：
+          - KewuToolbox-<version>-portable.exe
+          - KewuToolbox-<version>-portable.exe.sha256
+
+          同版本号重新推送时，本工作流会更新同一个 Release 并替换旧资产。
+          "@ | Set-Content -LiteralPath $notesPath -Encoding UTF8
+
+          gh release view $tag *> $null
+          $releaseExists = $LASTEXITCODE -eq 0
+          if ($releaseExists) {
+            gh release edit $tag --title "KewuToolbox v$version" --notes-file $notesPath --latest
+            $releaseInfo = gh release view $tag --json assets | ConvertFrom-Json
+            foreach ($asset in $releaseInfo.assets) {
+              gh release delete-asset $tag $asset.name --yes
+            }
+          } else {
+            gh release create $tag --title "KewuToolbox v$version" --notes-file $notesPath --latest
+          }
+
+          foreach ($asset in $assets) {
+            gh release upload $tag $asset.FullName --clobber
+          }

@@ -188,7 +188,7 @@ async function buildSnapshot(pluginMeta) {
   const whitelistRules = Array.isArray(matchedRules.whitelist) ? matchedRules.whitelist : [];
 
   let records = [];
-  let focusedClassificationKey = null;
+  let focusedClassificationKeys = [];
 
   if (!hasBlacklist && whitelistRules.length > 0) {
     records = whitelistRules
@@ -200,7 +200,7 @@ async function buildSnapshot(pluginMeta) {
           toNonEmptyString(rule.processPattern) ||
           rule.id;
         return {
-          classificationKey: `plugin-whitelist|${rule.id}`,
+          classificationKey: `process-whitelist|${rule.id}`,
           displayName: toNonEmptyString(rule.name, fallbackName),
           normalizedTitle: workspaceDisplayName,
           objectType: 'AppWindow',
@@ -209,7 +209,7 @@ async function buildSnapshot(pluginMeta) {
       });
 
     if (focused && records.length > 0) {
-      focusedClassificationKey = records[0].classificationKey;
+      focusedClassificationKeys = records.map(record => record.classificationKey);
     }
   } else if (!hasBlacklist) {
     records = [
@@ -223,9 +223,11 @@ async function buildSnapshot(pluginMeta) {
     ];
 
     if (focused) {
-      focusedClassificationKey = workspaceKey;
+      focusedClassificationKeys = [workspaceKey];
     }
   }
+
+  const uniqueFocusedClassificationKeys = [...new Set(focusedClassificationKeys)];
 
   return {
     protocolVersion: PROTOCOL_VERSION,
@@ -233,7 +235,8 @@ async function buildSnapshot(pluginMeta) {
     plugin: pluginMeta,
     snapshot: {
       timestamp: new Date().toISOString(),
-      focusedClassificationKey,
+      focusedClassificationKey: uniqueFocusedClassificationKeys[0] || null,
+      focusedClassificationKeys: uniqueFocusedClassificationKeys,
       suppressRules: [
         {
           typePattern: 'AppWindow',

@@ -107,6 +107,15 @@ if (-not $collectedArtifacts) {
   throw 'No deliverable artifacts found under release output.'
 }
 
+Write-Host 'Generating SHA256 files...'
+Get-ChildItem -LiteralPath $deliverDir -File -ErrorAction SilentlyContinue |
+  Where-Object { $_.Extension -ne '.sha256' } |
+  ForEach-Object {
+    $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+    $shaPath = "$($_.FullName).sha256"
+    "$($hash.Hash.ToLowerInvariant())  $($_.Name)" | Set-Content -LiteralPath $shaPath -Encoding ASCII
+  }
+
 Write-Host 'Step 6/6: Remove non-deliver artifacts...'
 Get-ChildItem -LiteralPath $releaseDir | Where-Object { $_.Name -ne 'deliver' } | Remove-Item -Recurse -Force
 

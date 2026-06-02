@@ -34,12 +34,12 @@ export default function TodoDetailPage() {
     setInsight(value);
     setSaveStatus('保存中...');
     clearTimeout(saveTimer.current);
+    if (todo) {
+      const nextTodo = normalizeTodoTask({ ...todo, currentInsight: value, updatedAt: new Date().toISOString() });
+      updateTodo(nextTodo);
+    }
     saveTimer.current = window.setTimeout(() => {
-      if (todo) {
-        const nextTodo = normalizeTodoTask({ ...todo, currentInsight: value, updatedAt: new Date().toISOString() });
-        updateTodo(nextTodo);
-        setSaveStatus('已保存');
-      }
+      setSaveStatus('已保存');
     }, 800);
   };
 

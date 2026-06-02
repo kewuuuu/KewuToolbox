@@ -1,5 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, powerMonitor, Notification, Tray, Menu, shell } = require('electron');
+const childProcess = require('node:child_process');
 const fs = require('node:fs');
+const https = require('node:https');
 const http = require('node:http');
 const path = require('node:path');
 
@@ -8,6 +10,7 @@ const MAX_SESSIONS = 60000;
 const MAX_PROCESS_TIMELINE_RECORDS = 100000;
 const MAX_POWER_EVENTS = 5000;
 const DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS = 60;
+const DEFAULT_ANALYTICS_WINDOW_ITEM_LIMIT = 10;
 
 const DESKTOP_KEY = 'desktop';
 const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain';
@@ -24,6 +27,12 @@ const LOG_DIR_NAME = 'logs';
 const LOG_FILE_NAME = 'app.log';
 const MAX_DIAGNOSTIC_LOGS = 500;
 const MAX_LOG_FILE_SIZE_BYTES = 5 * 1024 * 1024;
+const GITHUB_OWNER = 'kewuuuu';
+const GITHUB_REPO = 'KewuToolbox';
+const GITHUB_REPO_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`;
+const GITHUB_LATEST_RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+const UPDATER_CMD_NAME = 'KewuToolboxUpdater.cmd';
+const UPDATER_PS1_NAME = 'KewuToolboxUpdater.ps1';
 
 const STATE_SECTION_FILES = {
   profiles: 'profiles.json',
@@ -104,7 +113,7 @@ const browserBridgeState = {
 };
 
 const pluginBridgeState = {
-  /** @type {Map<string, {pluginId: string, pluginName: string, pluginVersion: string, protocolVersion?: string, homepageUrl?: string, source?: string, isOfficial?: boolean, records: any[], suppressRules: any[], focusedClassificationKey: string | null, connectedAt: string, updatedAtMs: number, updatedAtIso: string}>} */
+  /** @type {Map<string, {pluginId: string, pluginName: string, pluginVersion: string, protocolVersion?: string, homepageUrl?: string, source?: string, isOfficial?: boolean, records: any[], suppressRules: any[], focusedClassificationKey: string | null, focusedClassificationKeys: string[], connectedAt: string, updatedAtMs: number, updatedAtIso: string}>} */
   byPlugin: new Map(),
 };
 
@@ -161,6 +170,7 @@ function createEmptyState() {
     soundFiles: createDefaultSoundFiles(),
     preferences: {
       recordWindowThresholdSeconds: DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS,
+      analyticsWindowItemLimit: DEFAULT_ANALYTICS_WINDOW_ITEM_LIMIT,
       uiTheme: 'dark',
       autoLaunchEnabled: false,
       processWhitelist: [],
@@ -697,6 +707,14 @@ function normalizeRecordWindowThresholdSeconds(input, fallback = DEFAULT_RECORD_
   return Math.max(0, Math.floor(parsed));
 }
 
+function normalizeAnalyticsWindowItemLimit(input, fallback = DEFAULT_ANALYTICS_WINDOW_ITEM_LIMIT) {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(1, Math.floor(parsed));
+}
+
 function normalizeUiTheme(input, fallback = 'dark') {
   return input === 'light' ? 'light' : fallback;
 }
@@ -954,7 +972,14 @@ function matchesProcessRule(rule, profile) {
   pushNameValue(profile.domain);
   if (profile.domain) {
     pushNameValue(`https://${profile.domain}`);
+    pushNameValue(`https://${profile.domain}/`);
     pushNameValue(`http://${profile.domain}`);
+    pushNameValue(`http://${profile.domain}/`);
+    pushNameValue(`www.${profile.domain}`);
+    pushNameValue(`https://www.${profile.domain}`);
+    pushNameValue(`https://www.${profile.domain}/`);
+    pushNameValue(`http://www.${profile.domain}`);
+    pushNameValue(`http://www.${profile.domain}/`);
   }
 
   return (
@@ -1057,6 +1082,471 @@ function applyWhitelistNamesToState() {
       };
     }
   }
+}
+
+function getProcessWhitelistKey(rule) {
+  return `${PROCESS_WHITELIST_KEY_PREFIX}|${rule.id}`.slice(0, 300);
+}
+
+function getLegacyPluginWhitelistKey(rule) {
+  return `plugin-whitelist|${rule.id}`;
+}
+
+function getWhitelistRuleDisplayName(rule) {
+  const fallbackName = rule?.namePattern || rule?.typePattern || rule?.processPattern || rule?.id || '白名单规则';
+  return normalizeWhitelistName(rule?.name, fallbackName);
+}
+
+function makeWhitelistMergeCandidate(raw, profileMap) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const rawKey = typeof raw.classificationKey === 'string' ? raw.classificationKey : '';
+  const profile = rawKey ? profileMap.get(rawKey) : null;
+  const displayName =
+    profile?.displayName ||
+    (typeof raw.displayName === 'string' && raw.displayName.trim() ? raw.displayName.trim() : rawKey);
+  const normalizedTitle =
+    profile?.normalizedTitle ||
+    (typeof raw.normalizedTitle === 'string' && raw.normalizedTitle.trim()
+      ? raw.normalizedTitle.trim()
+      : typeof raw.windowTitle === 'string' && raw.windowTitle.trim()
+        ? raw.windowTitle.trim()
+        : typeof raw.browserTabTitle === 'string' && raw.browserTabTitle.trim()
+          ? raw.browserTabTitle.trim()
+          : displayName);
+  const objectType = profile?.objectType || raw.objectType || 'AppWindow';
+  const processName =
+    profile?.processName ||
+    (typeof raw.processName === 'string' && raw.processName.trim() ? raw.processName.trim().toLowerCase() : 'unknown');
+  const domain =
+    profile?.domain ||
+    (typeof raw.domain === 'string' && raw.domain.trim() ? normalizeDomain(raw.domain) || raw.domain.trim() : undefined);
+  return {
+    classificationKey: rawKey,
+    displayName,
+    normalizedTitle,
+    objectType,
+    processName,
+    domain,
+    category: profile?.category || raw.category || raw.categoryAtThatTime || DEFAULT_CATEGORY,
+  };
+}
+
+function getMatchingWhitelistRules(candidate, rules) {
+  if (!candidate || !Array.isArray(rules) || rules.length === 0) {
+    return [];
+  }
+
+  return rules.filter(rule => {
+    if (!rule || typeof rule.id !== 'string') {
+      return false;
+    }
+    const targetKey = getProcessWhitelistKey(rule);
+    if (candidate.classificationKey === targetKey || candidate.classificationKey === getLegacyPluginWhitelistKey(rule)) {
+      return true;
+    }
+    return matchesProcessRule(rule, candidate);
+  });
+}
+
+function upsertMergedWhitelistProfile(profileMap, rule, source, nowIso) {
+  const targetKey = getProcessWhitelistKey(rule);
+  const displayName = getWhitelistRuleDisplayName(rule);
+  const existing = profileMap.get(targetKey);
+  const nextProfile = existing
+    ? {
+        ...existing,
+        displayName,
+        normalizedTitle: displayName,
+        objectType: existing.objectType || source?.objectType || 'AppWindow',
+        processName: existing.processName || source?.processName || 'unknown',
+        domain: existing.domain || source?.domain,
+        updatedAt: nowIso,
+      }
+    : {
+        id: makeId('profile'),
+        classificationKey: targetKey,
+        displayName,
+        objectType: source?.objectType || 'AppWindow',
+        processName: source?.processName || 'unknown',
+        browserName: source?.browserName,
+        normalizedTitle: displayName,
+        domain: source?.domain,
+        category: source?.category || DEFAULT_CATEGORY,
+        isBuiltIn: false,
+        updatedAt: nowIso,
+      };
+  profileMap.set(targetKey, nextProfile);
+  return nextProfile;
+}
+
+function mergeNumericStat(map, key, value, merge) {
+  const existing = map.get(key);
+  if (!existing) {
+    map.set(key, value);
+    return;
+  }
+  map.set(key, merge(existing, value));
+}
+
+function buildWhitelistMergeResult() {
+  const rules = appState.preferences?.processWhitelist || [];
+  if (!Array.isArray(rules) || rules.length === 0) {
+    return { changedCount: 0 };
+  }
+
+  const nowIso = new Date().toISOString();
+  const originalProfileMap = new Map(appState.profiles.map(profile => [profile.classificationKey, profile]));
+  const nextProfileMap = new Map();
+  const movedKeyMap = new Map();
+  let changedCount = 0;
+
+  const registerMove = (sourceKey, targetKey) => {
+    if (!sourceKey || !targetKey || sourceKey === targetKey) {
+      return;
+    }
+    if (!movedKeyMap.has(sourceKey)) {
+      movedKeyMap.set(sourceKey, new Set());
+    }
+    movedKeyMap.get(sourceKey).add(targetKey);
+  };
+
+  const resolveRules = raw => {
+    const candidate = makeWhitelistMergeCandidate(raw, originalProfileMap);
+    const matchedRules = getMatchingWhitelistRules(candidate, rules);
+    return { candidate, matchedRules };
+  };
+
+  for (const profile of appState.profiles) {
+    const { candidate, matchedRules } = resolveRules(profile);
+    if (!candidate || matchedRules.length === 0) {
+      nextProfileMap.set(profile.classificationKey, profile);
+      continue;
+    }
+    let profileChanged = false;
+    for (const rule of matchedRules) {
+      const targetProfile = upsertMergedWhitelistProfile(nextProfileMap, rule, candidate, nowIso);
+      registerMove(profile.classificationKey, targetProfile.classificationKey);
+      if (targetProfile.classificationKey !== profile.classificationKey || targetProfile.displayName !== profile.displayName) {
+        profileChanged = true;
+      }
+    }
+    if (profileChanged) {
+      changedCount += 1;
+    }
+  }
+
+  const transformFocusRecord = session => {
+    const { candidate, matchedRules } = resolveRules(session);
+    if (!candidate || matchedRules.length === 0) {
+      return [session];
+    }
+    const transformed = matchedRules.map(rule => {
+      const targetProfile = upsertMergedWhitelistProfile(nextProfileMap, rule, candidate, nowIso);
+      registerMove(session.classificationKey, targetProfile.classificationKey);
+      const alreadyTarget = session.classificationKey === targetProfile.classificationKey && matchedRules.length === 1;
+      return {
+        ...session,
+        id: alreadyTarget ? session.id : `${session.id}::${rule.id}`,
+        classificationKey: targetProfile.classificationKey,
+        displayName: targetProfile.displayName,
+        objectType: targetProfile.objectType,
+        categoryAtThatTime: targetProfile.category,
+        processName: targetProfile.processName,
+        windowTitle: session.windowTitle || candidate.normalizedTitle || targetProfile.displayName,
+        browserTabTitle: session.browserTabTitle,
+        domain: targetProfile.domain || session.domain,
+      };
+    });
+    if (transformed.some(item => item.classificationKey !== session.classificationKey || item.displayName !== session.displayName)) {
+      changedCount += 1;
+    }
+    return transformed;
+  };
+
+  const transformTimelineRecord = record => {
+    const { candidate, matchedRules } = resolveRules(record);
+    if (!candidate || matchedRules.length === 0) {
+      return [record];
+    }
+    const transformed = matchedRules.map(rule => {
+      const targetProfile = upsertMergedWhitelistProfile(nextProfileMap, rule, candidate, nowIso);
+      registerMove(record.classificationKey, targetProfile.classificationKey);
+      const alreadyTarget = record.classificationKey === targetProfile.classificationKey && matchedRules.length === 1;
+      return {
+        ...record,
+        id: alreadyTarget ? record.id : `${record.id}::${rule.id}`,
+        classificationKey: targetProfile.classificationKey,
+        displayName: targetProfile.displayName,
+        objectType: targetProfile.objectType,
+        processName: targetProfile.processName,
+        domain: targetProfile.domain || record.domain,
+        categoryAtThatTime: targetProfile.category,
+      };
+    });
+    if (transformed.some(item => item.classificationKey !== record.classificationKey || item.displayName !== record.displayName)) {
+      changedCount += 1;
+    }
+    return transformed;
+  };
+
+  const nextWindowStatMap = new Map();
+  const upsertWindowStat = stat => {
+    mergeNumericStat(nextWindowStatMap, stat.classificationKey, stat, (existing, incoming) => ({
+      ...existing,
+      displayName: incoming.displayName,
+      objectType: incoming.objectType,
+      processName: incoming.processName,
+      domain: incoming.domain || existing.domain,
+      category: incoming.category || existing.category,
+      totalVisibleSeconds: (Number(existing.totalVisibleSeconds) || 0) + (Number(incoming.totalVisibleSeconds) || 0),
+      focusSeconds: (Number(existing.focusSeconds) || 0) + (Number(incoming.focusSeconds) || 0),
+      lastFocusAt:
+        new Date(incoming.lastFocusAt || 0).getTime() > new Date(existing.lastFocusAt || 0).getTime()
+          ? incoming.lastFocusAt
+          : existing.lastFocusAt,
+      longestContinuousFocusSeconds: Math.max(
+        Number(existing.longestContinuousFocusSeconds) || 0,
+        Number(incoming.longestContinuousFocusSeconds) || 0,
+      ),
+    }));
+  };
+
+  for (const stat of appState.windowStats || []) {
+    const { candidate, matchedRules } = resolveRules(stat);
+    if (!candidate || matchedRules.length === 0) {
+      upsertWindowStat(stat);
+      continue;
+    }
+    for (const rule of matchedRules) {
+      const targetProfile = upsertMergedWhitelistProfile(nextProfileMap, rule, candidate, nowIso);
+      registerMove(stat.classificationKey, targetProfile.classificationKey);
+      upsertWindowStat({
+        ...stat,
+        classificationKey: targetProfile.classificationKey,
+        displayName: targetProfile.displayName,
+        objectType: targetProfile.objectType,
+        processName: targetProfile.processName,
+        domain: targetProfile.domain || stat.domain,
+        category: targetProfile.category,
+      });
+    }
+    changedCount += 1;
+  }
+
+  const nextRuntimeStatMap = new Map();
+  const upsertRuntimeStat = stat => {
+    mergeNumericStat(nextRuntimeStatMap, stat.classificationKey, stat, (existing, incoming) => ({
+      ...existing,
+      firstSeenAt:
+        new Date(incoming.firstSeenAt || 0).getTime() < new Date(existing.firstSeenAt || 0).getTime()
+          ? incoming.firstSeenAt
+          : existing.firstSeenAt,
+      totalVisibleSeconds: (Number(existing.totalVisibleSeconds) || 0) + (Number(incoming.totalVisibleSeconds) || 0),
+      totalFocusSeconds: (Number(existing.totalFocusSeconds) || 0) + (Number(incoming.totalFocusSeconds) || 0),
+      currentContinuousFocusSeconds: Math.max(
+        Number(existing.currentContinuousFocusSeconds) || 0,
+        Number(incoming.currentContinuousFocusSeconds) || 0,
+      ),
+      longestContinuousFocusSeconds: Math.max(
+        Number(existing.longestContinuousFocusSeconds) || 0,
+        Number(incoming.longestContinuousFocusSeconds) || 0,
+      ),
+      lastFocusAt:
+        new Date(incoming.lastFocusAt || 0).getTime() > new Date(existing.lastFocusAt || 0).getTime()
+          ? incoming.lastFocusAt
+          : existing.lastFocusAt,
+      recorded: Boolean(existing.recorded || incoming.recorded),
+      processTimelineId: existing.processTimelineId,
+      focusSegmentStartedAt: existing.focusSegmentStartedAt || incoming.focusSegmentStartedAt,
+      focusSegmentRecordedSeconds: Math.max(
+        Number(existing.focusSegmentRecordedSeconds) || 0,
+        Number(incoming.focusSegmentRecordedSeconds) || 0,
+      ),
+    }));
+  };
+
+  for (const runtime of appState.currentProcessRuntimeStats || []) {
+    const { candidate, matchedRules } = resolveRules(runtime);
+    if (!candidate || matchedRules.length === 0) {
+      upsertRuntimeStat(runtime);
+      continue;
+    }
+    for (const rule of matchedRules) {
+      const targetProfile = upsertMergedWhitelistProfile(nextProfileMap, rule, candidate, nowIso);
+      registerMove(runtime.classificationKey, targetProfile.classificationKey);
+      upsertRuntimeStat({
+        ...runtime,
+        classificationKey: targetProfile.classificationKey,
+        processTimelineId: undefined,
+      });
+    }
+  }
+
+  appState.sessions = (appState.sessions || []).flatMap(transformFocusRecord);
+  appState.processTimeline = (appState.processTimeline || []).flatMap(transformTimelineRecord);
+  appState.windowStats = [...nextWindowStatMap.values()];
+  appState.currentProcessRuntimeStats = [...nextRuntimeStatMap.values()];
+
+  const remapRuntimeMap = sourceMap => {
+    const nextMap = new Map();
+    for (const [key, pending] of sourceMap.entries()) {
+      const movedTargets = movedKeyMap.get(key);
+      if (!movedTargets || movedTargets.size === 0) {
+        if (nextProfileMap.has(key)) {
+          nextMap.set(key, pending);
+        }
+        continue;
+      }
+      for (const targetKey of movedTargets) {
+        const existing = nextMap.get(targetKey);
+        const nextPending = {
+          ...pending,
+          classificationKey: targetKey,
+          processTimelineId: undefined,
+        };
+        if (!existing) {
+          nextMap.set(targetKey, nextPending);
+          continue;
+        }
+        nextMap.set(targetKey, {
+          ...existing,
+          totalVisibleSeconds:
+            (Number(existing.totalVisibleSeconds) || 0) + (Number(nextPending.totalVisibleSeconds) || 0),
+          totalFocusSeconds:
+            (Number(existing.totalFocusSeconds) || 0) + (Number(nextPending.totalFocusSeconds) || 0),
+          currentContinuousFocusSeconds: Math.max(
+            Number(existing.currentContinuousFocusSeconds) || 0,
+            Number(nextPending.currentContinuousFocusSeconds) || 0,
+          ),
+          longestContinuousFocusSeconds: Math.max(
+            Number(existing.longestContinuousFocusSeconds) || 0,
+            Number(nextPending.longestContinuousFocusSeconds) || 0,
+          ),
+          lastFocusAt:
+            new Date(nextPending.lastFocusAt || 0).getTime() > new Date(existing.lastFocusAt || 0).getTime()
+              ? nextPending.lastFocusAt
+              : existing.lastFocusAt,
+          recorded: Boolean(existing.recorded || nextPending.recorded),
+        });
+      }
+    }
+    return nextMap;
+  };
+  const nextPendingWindowRuntime = remapRuntimeMap(pendingWindowRuntime);
+  pendingWindowRuntime.clear();
+  for (const [key, value] of nextPendingWindowRuntime.entries()) {
+    pendingWindowRuntime.set(key, value);
+  }
+  const nextRecentlyClosedWindowRuntime = remapRuntimeMap(recentlyClosedWindowRuntime);
+  recentlyClosedWindowRuntime.clear();
+  for (const [key, value] of nextRecentlyClosedWindowRuntime.entries()) {
+    recentlyClosedWindowRuntime.set(key, value);
+  }
+
+  if (monitorCursor.activeClassificationKey) {
+    const movedTargets = movedKeyMap.get(monitorCursor.activeClassificationKey);
+    if (movedTargets && movedTargets.size > 0) {
+      const targetKey = [...movedTargets][0];
+      monitorCursor.activeClassificationKey = targetKey;
+      const activeSession = [...appState.sessions]
+        .filter(session => session.classificationKey === targetKey)
+        .sort((a, b) => new Date(b.endAt || 0).getTime() - new Date(a.endAt || 0).getTime())[0];
+      monitorCursor.activeSessionId = activeSession?.id ?? null;
+    }
+  }
+
+  const nextCurrentKeys = new Set();
+  for (const key of appState.currentProcessKeys || []) {
+    const movedTargets = movedKeyMap.get(key);
+    if (movedTargets && movedTargets.size > 0) {
+      for (const targetKey of movedTargets) {
+        nextCurrentKeys.add(targetKey);
+      }
+    } else if (nextProfileMap.has(key)) {
+      nextCurrentKeys.add(key);
+    }
+  }
+  appState.currentProcessKeys = [...nextCurrentKeys];
+
+  const moveAssignmentMap = new Map();
+  for (const assignment of appState.processTagAssignments || []) {
+    const movedTargets = movedKeyMap.get(assignment.classificationKey);
+    if (!movedTargets || movedTargets.size === 0) {
+      if (nextProfileMap.has(assignment.classificationKey)) {
+        moveAssignmentMap.set(assignment.classificationKey, assignment);
+      }
+      continue;
+    }
+    for (const targetKey of movedTargets) {
+      if (!moveAssignmentMap.has(targetKey)) {
+        moveAssignmentMap.set(targetKey, {
+          ...assignment,
+          classificationKey: targetKey,
+          updatedAt: nowIso,
+        });
+      }
+    }
+  }
+  const validTagSet = new Set(appState.processTags.map(tag => tag.id));
+  appState.processTagAssignments = [...moveAssignmentMap.values()].filter(item => validTagSet.has(item.tagId));
+
+  const transformWindowGroup = windowGroup =>
+    (Array.isArray(windowGroup) ? windowGroup : []).flatMap(item => {
+      if (!item || item.matchMode === 'pattern') {
+        return [item];
+      }
+      const movedTargets = movedKeyMap.get(item.classificationKey);
+      if (!movedTargets || movedTargets.size === 0) {
+        return [item];
+      }
+      return [...movedTargets].map(targetKey => {
+        const targetProfile = nextProfileMap.get(targetKey);
+        return {
+          ...item,
+          classificationKey: targetKey,
+          displayName: targetProfile?.displayName || item.displayName,
+          objectType: targetProfile?.objectType || item.objectType,
+          processName: targetProfile?.processName || item.processName,
+        };
+      });
+    });
+
+  appState.subjects = (appState.subjects || []).map(subject => ({
+    ...subject,
+    windowGroup: transformWindowGroup(subject.windowGroup),
+    updatedAt: nowIso,
+  }));
+  appState.queue = (appState.queue || []).map(item => ({
+    ...item,
+    windowGroup: transformWindowGroup(item.windowGroup),
+  }));
+
+  if (appState.currentFocusedWindow) {
+    const movedTargets = movedKeyMap.get(appState.currentFocusedWindow.classificationKey);
+    if (movedTargets && movedTargets.size > 0) {
+      const targetProfile = nextProfileMap.get([...movedTargets][0]);
+      appState.currentFocusedWindow = targetProfile || appState.currentFocusedWindow;
+    }
+  }
+
+  appState.profiles = [...nextProfileMap.values()];
+  applyWhitelistNamesToState();
+  return { changedCount };
+}
+
+function mergeRecordsByCurrentWhitelist() {
+  const result = buildWhitelistMergeResult();
+  if (result.changedCount > 0) {
+    scheduleSave();
+    emitState();
+  }
+  return {
+    ok: true,
+    changedCount: result.changedCount,
+    state: appState,
+  };
 }
 
 function persistState() {
@@ -1345,6 +1835,10 @@ function normalizeSavedState(input) {
       recordWindowThresholdSeconds: normalizeRecordWindowThresholdSeconds(
         rawPreferences.recordWindowThresholdSeconds,
         base.preferences.recordWindowThresholdSeconds,
+      ),
+      analyticsWindowItemLimit: normalizeAnalyticsWindowItemLimit(
+        rawPreferences.analyticsWindowItemLimit,
+        base.preferences.analyticsWindowItemLimit,
       ),
       uiTheme: normalizeUiTheme(rawPreferences.uiTheme, base.preferences.uiTheme),
       autoLaunchEnabled: normalizeAutoLaunchEnabled(
@@ -2301,20 +2795,35 @@ function upsertActiveSession(profile, nowIso, options = {}) {
   }
 }
 
-function canResumeActiveFocusSession(classificationKey, focusSegmentStartedAt, mergeGapSeconds) {
+function getActiveFocusResumeInfo(classificationKey, focusSegmentStartedAt, nowIso, mergeGapSeconds) {
   if (!monitorCursor.activeSessionId || monitorCursor.activeClassificationKey !== classificationKey) {
-    return false;
+    return null;
   }
   const activeSession = appState.sessions.find(session => session.id === monitorCursor.activeSessionId);
   if (!activeSession) {
-    return false;
+    return null;
   }
   const focusStartMs = new Date(focusSegmentStartedAt).getTime();
   const lastEndMs = new Date(activeSession.endAt).getTime();
   if (!Number.isFinite(focusStartMs) || !Number.isFinite(lastEndMs)) {
-    return true;
+    return {
+      gapSeconds: 0,
+      continuousSeconds: 0,
+    };
   }
-  return Math.max(0, Math.floor((focusStartMs - lastEndMs) / 1000)) <= mergeGapSeconds;
+  const gapSeconds = Math.max(0, Math.floor((focusStartMs - lastEndMs) / 1000));
+  if (gapSeconds > mergeGapSeconds) {
+    return null;
+  }
+  const nowMs = new Date(nowIso).getTime();
+  const sessionStartMs = new Date(activeSession.startAt).getTime();
+  return {
+    gapSeconds,
+    continuousSeconds:
+      Number.isFinite(nowMs) && Number.isFinite(sessionStartMs)
+        ? Math.max(0, Math.floor((nowMs - sessionStartMs) / 1000))
+        : 0,
+  };
 }
 
 function shouldExpireActiveFocusSession(nowIso, mergeGapSeconds) {
@@ -2413,7 +2922,7 @@ function normalizePluginRecord(record, pluginId) {
   if (!record || typeof record !== 'object') {
     return null;
   }
-  const explicitKey = typeof record.classificationKey === 'string' ? record.classificationKey.trim() : '';
+  const explicitKey = normalizePluginClassificationKey(record.classificationKey);
   const fallbackKey = typeof record.key === 'string' ? record.key.trim() : '';
   const keyPart = explicitKey || fallbackKey;
   if (!keyPart) {
@@ -2471,6 +2980,20 @@ function normalizePluginSuppressRules(rawRules) {
     .filter(Boolean);
 }
 
+function normalizePluginClassificationKey(key) {
+  if (typeof key !== 'string') {
+    return '';
+  }
+  const normalized = key.trim();
+  if (!normalized) {
+    return '';
+  }
+  if (normalized.startsWith('plugin-whitelist|')) {
+    return `${PROCESS_WHITELIST_KEY_PREFIX}|${normalized.slice('plugin-whitelist|'.length)}`;
+  }
+  return normalized;
+}
+
 function parsePluginBridgePayload(rawPayload) {
   if (!rawPayload || typeof rawPayload !== 'object') {
     return null;
@@ -2488,10 +3011,14 @@ function parsePluginBridgePayload(rawPayload) {
   const normalizedRecords = (Array.isArray(snapshot.records) ? snapshot.records : [])
     .map(record => normalizePluginRecord(record, pluginId))
     .filter(Boolean);
-  const focusedClassificationKey =
-    typeof snapshot.focusedClassificationKey === 'string' && snapshot.focusedClassificationKey.trim()
-      ? snapshot.focusedClassificationKey.trim()
-      : null;
+  const focusedClassificationKeys = [
+    ...(Array.isArray(snapshot.focusedClassificationKeys) ? snapshot.focusedClassificationKeys : []),
+    typeof snapshot.focusedClassificationKey === 'string' ? snapshot.focusedClassificationKey : '',
+  ]
+    .map(key => normalizePluginClassificationKey(key))
+    .filter(Boolean);
+  const uniqueFocusedClassificationKeys = [...new Set(focusedClassificationKeys)];
+  const focusedClassificationKey = uniqueFocusedClassificationKeys[0] ?? null;
 
   const nowIso = new Date().toISOString();
   const existing = pluginBridgeState.byPlugin.get(pluginId);
@@ -2517,6 +3044,7 @@ function parsePluginBridgePayload(rawPayload) {
     records: normalizedRecords,
     suppressRules: normalizePluginSuppressRules(snapshot.suppressRules),
     focusedClassificationKey,
+    focusedClassificationKeys: uniqueFocusedClassificationKeys,
     connectedAt: existing?.connectedAt || nowIso,
     updatedAtIso: nowIso,
     updatedAtMs: Date.now(),
@@ -2635,30 +3163,36 @@ function syncPluginConnectionsToState(activeSnapshots = getActivePluginSnapshots
     .sort((a, b) => new Date(b.lastSeenAt).getTime() - new Date(a.lastSeenAt).getTime());
 }
 
-function getFocusedProfileFromPlugins(activeSnapshots) {
+function getFocusedProfilesFromPlugins(activeSnapshots) {
   let selected = null;
   for (const snapshot of activeSnapshots) {
-    if (!snapshot || !snapshot.focusedClassificationKey) {
+    const focusedKeys = Array.isArray(snapshot?.focusedClassificationKeys) && snapshot.focusedClassificationKeys.length > 0
+      ? snapshot.focusedClassificationKeys
+      : snapshot?.focusedClassificationKey
+        ? [snapshot.focusedClassificationKey]
+        : [];
+    if (!snapshot || focusedKeys.length === 0) {
       continue;
     }
-    const record = (snapshot.records || []).find(
-      item => item && item.classificationKey === snapshot.focusedClassificationKey,
+    const keySet = new Set(focusedKeys.map(key => normalizePluginClassificationKey(key)).filter(Boolean));
+    const records = (snapshot.records || []).filter(
+      item => item && keySet.has(item.classificationKey),
     );
-    if (!record) {
+    if (records.length === 0) {
       continue;
     }
     if (!selected || snapshot.updatedAtMs > selected.updatedAtMs) {
       selected = {
         updatedAtMs: snapshot.updatedAtMs,
-        profile: {
+        profiles: records.map(record => ({
           ...record,
           id: makeId('profile'),
           updatedAt: new Date().toISOString(),
-        },
+        })),
       };
     }
   }
-  return selected?.profile ?? null;
+  return selected?.profiles ?? [];
 }
 
 function sendJson(res, statusCode, payload) {
@@ -2854,12 +3388,12 @@ async function monitorTick() {
   ) {
     focusedCandidate = null;
   }
-  if (!focusedCandidate) {
-    focusedCandidate = getFocusedProfileFromPlugins(activePluginSnapshots);
-  }
-  const focusedCandidates = focusedCandidate
-    ? applyProcessWhitelistToProfile(focusedCandidate).filter(profile => !shouldIgnoreByBlacklist(profile))
-    : [];
+  const rawFocusedCandidates = focusedCandidate
+    ? [focusedCandidate]
+    : getFocusedProfilesFromPlugins(activePluginSnapshots);
+  const focusedCandidates = rawFocusedCandidates
+    .flatMap(candidate => applyProcessWhitelistToProfile(candidate))
+    .filter(profile => profile && !shouldIgnoreByBlacklist(profile));
   const primaryFocusedCandidate = focusedCandidates[0] ?? null;
 
   const focusedKeySet = new Set();
@@ -2917,6 +3451,8 @@ async function monitorTick() {
         Math.floor((nowMs - Number(recentlyClosed.closedAtMs)) / 1000),
       );
       pending.totalVisibleSeconds += closedGapSeconds;
+      pending.resumedVisibleGapSeconds =
+        (Number(pending.resumedVisibleGapSeconds) || 0) + closedGapSeconds;
       delete pending.closedAtMs;
       recentlyClosedWindowRuntime.delete(key);
     }
@@ -2927,31 +3463,37 @@ async function monitorTick() {
 
     let confirmedFocusDelta = 0;
     let resumesActiveFocus = false;
+    let resumeFocusGapSeconds = 0;
+    let effectiveContinuousFocusSeconds = 0;
     if (focusDelta > 0) {
       if (pending.currentContinuousFocusSeconds <= 0 || !pending.focusSegmentStartedAt) {
         pending.focusSegmentStartedAt = new Date(nowMs - focusDelta * 1000).toISOString();
         pending.focusSegmentRecordedSeconds = 0;
       }
-      resumesActiveFocus = canResumeActiveFocusSession(
+      const resumeInfo = getActiveFocusResumeInfo(
         key,
         pending.focusSegmentStartedAt,
+        nowIso,
         recordThresholdSeconds,
       );
+      resumesActiveFocus = Boolean(resumeInfo);
+      resumeFocusGapSeconds = resumeInfo?.gapSeconds ?? 0;
       pending.currentContinuousFocusSeconds += focusDelta;
+      effectiveContinuousFocusSeconds = resumesActiveFocus
+        ? Math.max(pending.currentContinuousFocusSeconds, resumeInfo?.continuousSeconds ?? 0)
+        : pending.currentContinuousFocusSeconds;
       const reachedFocusThreshold = pending.currentContinuousFocusSeconds >= recordThresholdSeconds;
       if (resumesActiveFocus || reachedFocusThreshold) {
-        confirmedFocusDelta = resumesActiveFocus && !reachedFocusThreshold
-          ? focusDelta
-          : Math.max(
-              0,
-              pending.currentContinuousFocusSeconds - (Number(pending.focusSegmentRecordedSeconds) || 0),
-            );
+        const recordedFocusSeconds = Number(pending.focusSegmentRecordedSeconds) || 0;
+        const resumeGapToApply = resumesActiveFocus && recordedFocusSeconds <= 0 ? resumeFocusGapSeconds : 0;
+        confirmedFocusDelta =
+          resumeGapToApply + Math.max(0, pending.currentContinuousFocusSeconds - recordedFocusSeconds);
         pending.focusSegmentRecordedSeconds = pending.currentContinuousFocusSeconds;
         pending.totalFocusSeconds += confirmedFocusDelta;
         if (confirmedFocusDelta > 0) {
           pending.longestContinuousFocusSeconds = Math.max(
             pending.longestContinuousFocusSeconds,
-            pending.currentContinuousFocusSeconds,
+            effectiveContinuousFocusSeconds,
           );
           pending.lastFocusAt = nowIso;
         }
@@ -2964,7 +3506,8 @@ async function monitorTick() {
 
     const isRecordEligible = pending.recorded || pending.totalVisibleSeconds >= recordThresholdSeconds;
     if (isRecordEligible) {
-      const visibleDelta = pending.recorded ? deltaSeconds : pending.totalVisibleSeconds;
+      const resumedVisibleGapSeconds = Math.max(0, Math.floor(Number(pending.resumedVisibleGapSeconds) || 0));
+      const visibleDelta = pending.recorded ? deltaSeconds + resumedVisibleGapSeconds : pending.totalVisibleSeconds;
       const focusDeltaToApply = pending.recorded ? confirmedFocusDelta : pending.totalFocusSeconds;
       upsertWindowStat(profile, visibleDelta, focusDeltaToApply, {
         lastFocusAt: pending.lastFocusAt,
@@ -2978,6 +3521,7 @@ async function monitorTick() {
         focusDeltasByKey.set(key, focusDeltaToApply);
       }
       pending.recorded = true;
+      pending.resumedVisibleGapSeconds = 0;
       const isFocusEligible = isFocusedWindow && (confirmedFocusDelta > 0 || resumesActiveFocus);
       if (isFocusEligible && primaryFocusedCandidate && key === primaryFocusedCandidate.classificationKey) {
         focusedProfile = profile;
@@ -3143,6 +3687,10 @@ function mergeUserStateFromRenderer(partial) {
         next.preferences.recordWindowThresholdSeconds,
         appState.preferences.recordWindowThresholdSeconds,
       ),
+      analyticsWindowItemLimit: normalizeAnalyticsWindowItemLimit(
+        next.preferences.analyticsWindowItemLimit,
+        appState.preferences.analyticsWindowItemLimit,
+      ),
       uiTheme: normalizeUiTheme(next.preferences.uiTheme, appState.preferences.uiTheme),
       autoLaunchEnabled: resolvedAutoLaunchEnabled,
       processWhitelist: normalizedProcessWhitelist,
@@ -3286,12 +3834,363 @@ function notifySystem(payload) {
   }
 }
 
+function normalizeVersionText(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^v/i, '')
+    .replace(/[^\dA-Za-z.+-].*$/, '');
+}
+
+function compareVersions(left, right) {
+  const leftParts = normalizeVersionText(left).split(/[.+-]/).map(part => Number(part));
+  const rightParts = normalizeVersionText(right).split(/[.+-]/).map(part => Number(part));
+  const length = Math.max(leftParts.length, rightParts.length, 3);
+  for (let index = 0; index < length; index += 1) {
+    const leftValue = Number.isFinite(leftParts[index]) ? leftParts[index] : 0;
+    const rightValue = Number.isFinite(rightParts[index]) ? rightParts[index] : 0;
+    if (leftValue > rightValue) {
+      return 1;
+    }
+    if (leftValue < rightValue) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+function requestJson(url) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(
+      url,
+      {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'KewuToolbox-Updater',
+        },
+      },
+      response => {
+        const statusCode = response.statusCode || 0;
+        if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
+          response.resume();
+          requestJson(response.headers.location).then(resolve, reject);
+          return;
+        }
+        let raw = '';
+        response.setEncoding('utf8');
+        response.on('data', chunk => {
+          raw += chunk;
+        });
+        response.on('end', () => {
+          if (statusCode < 200 || statusCode >= 300) {
+            reject(new Error(`HTTP ${statusCode}: ${raw.slice(0, 300)}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(raw));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
+    request.setTimeout(15000, () => {
+      request.destroy(new Error('request timeout'));
+    });
+    request.on('error', reject);
+  });
+}
+
+function pickPortableUpdateAssets(release) {
+  const assets = Array.isArray(release?.assets) ? release.assets : [];
+  const portableAsset = assets.find(asset =>
+    asset &&
+    typeof asset.name === 'string' &&
+    /^KewuToolbox-.+-portable\.exe$/i.test(asset.name) &&
+    typeof asset.browser_download_url === 'string',
+  );
+  if (!portableAsset) {
+    return { portableAsset: null, sha256Asset: null };
+  }
+
+  const shaName = `${portableAsset.name}.sha256`;
+  const sha256Asset = assets.find(asset =>
+    asset &&
+    typeof asset.name === 'string' &&
+    asset.name.toLowerCase() === shaName.toLowerCase() &&
+    typeof asset.browser_download_url === 'string',
+  );
+  return { portableAsset, sha256Asset: sha256Asset || null };
+}
+
+async function checkForPortableUpdate() {
+  const currentVersion = app.getVersion();
+  try {
+    const release = await requestJson(GITHUB_LATEST_RELEASE_API_URL);
+    const latestVersion = normalizeVersionText(release?.tag_name || release?.name || '');
+    if (!latestVersion) {
+      return {
+        ok: false,
+        error: 'invalid_release_version',
+        currentVersion,
+        repositoryUrl: GITHUB_REPO_URL,
+      };
+    }
+
+    const { portableAsset, sha256Asset } = pickPortableUpdateAssets(release);
+    const hasUpdate = compareVersions(latestVersion, currentVersion) > 0;
+    return {
+      ok: true,
+      currentVersion,
+      latestVersion,
+      hasUpdate,
+      releaseName: typeof release?.name === 'string' ? release.name : `KewuToolbox v${latestVersion}`,
+      releaseUrl: typeof release?.html_url === 'string' ? release.html_url : `${GITHUB_REPO_URL}/releases/latest`,
+      releaseNotes: typeof release?.body === 'string' ? release.body : '',
+      publishedAt: typeof release?.published_at === 'string' ? release.published_at : '',
+      assetName: portableAsset?.name || '',
+      assetUrl: portableAsset?.browser_download_url || '',
+      assetSize: Number(portableAsset?.size) || 0,
+      sha256Name: sha256Asset?.name || '',
+      sha256Url: sha256Asset?.browser_download_url || '',
+      repositoryUrl: GITHUB_REPO_URL,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: 'request_failed',
+      detail: error instanceof Error ? error.message : String(error),
+      currentVersion,
+      repositoryUrl: GITHUB_REPO_URL,
+    };
+  }
+}
+
+function resolveCurrentExecutablePath() {
+  const candidates = [
+    process.env.PORTABLE_EXECUTABLE_FILE,
+    (() => {
+      try {
+        return app.getPath('exe');
+      } catch {
+        return null;
+      }
+    })(),
+    process.execPath,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') {
+      continue;
+    }
+    const trimmed = candidate.trim();
+    if (trimmed) {
+      return path.resolve(trimmed);
+    }
+  }
+  return null;
+}
+
+function getUpdaterScriptContent() {
+  return `param(
+  [Parameter(Mandatory=$true)][int]$ProcessId,
+  [Parameter(Mandatory=$true)][string]$TargetPath,
+  [Parameter(Mandatory=$true)][string]$DownloadUrl,
+  [Parameter(Mandatory=$true)][string]$Sha256Url
+)
+
+$ErrorActionPreference = 'Stop'
+$targetDir = Split-Path -Parent $TargetPath
+$targetName = Split-Path -Leaf $TargetPath
+$logPath = Join-Path $targetDir 'KewuToolboxUpdater.log'
+$backupPath = $null
+
+function Write-UpdateLog([string]$Message) {
+  $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
+  Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8
+}
+
+try {
+  Write-UpdateLog "Updater started. Target=$TargetPath"
+  try {
+    Wait-Process -Id $ProcessId -Timeout 120 -ErrorAction Stop
+  } catch {
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($process) {
+      Write-UpdateLog "Main process still running. Force stopping PID=$ProcessId"
+      Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+      Wait-Process -Id $ProcessId -Timeout 30 -ErrorAction SilentlyContinue
+    }
+  }
+
+  if (-not (Test-Path -LiteralPath $targetDir)) {
+    throw "Target directory does not exist: $targetDir"
+  }
+
+  $downloadPath = Join-Path $targetDir "$targetName.download"
+  $shaPath = Join-Path $targetDir "$targetName.sha256.download"
+  $backupPath = Join-Path $targetDir "$targetName.bak"
+
+  Remove-Item -LiteralPath $downloadPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $shaPath -Force -ErrorAction SilentlyContinue
+
+  Write-UpdateLog "Downloading update package..."
+  Invoke-WebRequest -Uri $DownloadUrl -OutFile $downloadPath -UseBasicParsing
+
+  Write-UpdateLog "Downloading sha256..."
+  Invoke-WebRequest -Uri $Sha256Url -OutFile $shaPath -UseBasicParsing
+  $shaContent = Get-Content -LiteralPath $shaPath -Raw
+  $match = [regex]::Match($shaContent, '[A-Fa-f0-9]{64}')
+  if (-not $match.Success) {
+    throw 'Invalid sha256 file.'
+  }
+  $expectedHash = $match.Value.ToLowerInvariant()
+  $actualHash = (Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actualHash -ne $expectedHash) {
+    throw "SHA256 mismatch. Expected=$expectedHash Actual=$actualHash"
+  }
+
+  Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+  if (Test-Path -LiteralPath $TargetPath) {
+    Write-UpdateLog "Backing up old executable..."
+    Move-Item -LiteralPath $TargetPath -Destination $backupPath -Force
+  }
+
+  try {
+    Write-UpdateLog "Replacing executable..."
+    Move-Item -LiteralPath $downloadPath -Destination $TargetPath -Force
+  } catch {
+    if (Test-Path -LiteralPath $backupPath) {
+      Move-Item -LiteralPath $backupPath -Destination $TargetPath -Force
+    }
+    throw
+  }
+
+  Remove-Item -LiteralPath $shaPath -Force -ErrorAction SilentlyContinue
+  Write-UpdateLog "Starting updated app..."
+  Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir
+  Start-Sleep -Seconds 5
+  Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+  Write-UpdateLog 'Update completed.'
+  exit 0
+} catch {
+  Write-UpdateLog ("Update failed: " + $_.Exception.Message)
+  if ($backupPath -and (Test-Path -LiteralPath $backupPath) -and -not (Test-Path -LiteralPath $TargetPath)) {
+    Move-Item -LiteralPath $backupPath -Destination $TargetPath -Force
+  }
+  if (Test-Path -LiteralPath $TargetPath) {
+    Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir
+  }
+  exit 1
+}
+`;
+}
+
+function ensurePortableUpdater(executableDir) {
+  const ps1Path = path.join(executableDir, UPDATER_PS1_NAME);
+  const cmdPath = path.join(executableDir, UPDATER_CMD_NAME);
+  const cmdContent = `@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0${UPDATER_PS1_NAME}" %*\r\n`;
+  try {
+    fs.writeFileSync(ps1Path, getUpdaterScriptContent(), 'utf8');
+    fs.writeFileSync(cmdPath, cmdContent, 'utf8');
+    return { ok: true, ps1Path, cmdPath };
+  } catch (error) {
+    return {
+      ok: false,
+      error: 'write_updater_failed',
+      detail: error instanceof Error ? error.message : String(error),
+      ps1Path,
+      cmdPath,
+    };
+  }
+}
+
+function isTrustedReleaseDownloadUrl(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return false;
+  }
+  return value.startsWith(`${GITHUB_REPO_URL}/releases/download/`);
+}
+
+function startPortableUpdate(payload) {
+  if (!app.isPackaged) {
+    return { ok: false, error: 'not_packaged' };
+  }
+  const targetPath = resolveCurrentExecutablePath();
+  if (!targetPath) {
+    return { ok: false, error: 'missing_target_path' };
+  }
+  const downloadUrl = typeof payload?.assetUrl === 'string' ? payload.assetUrl.trim() : '';
+  const sha256Url = typeof payload?.sha256Url === 'string' ? payload.sha256Url.trim() : '';
+  if (!isTrustedReleaseDownloadUrl(downloadUrl) || !isTrustedReleaseDownloadUrl(sha256Url)) {
+    return { ok: false, error: 'invalid_update_url' };
+  }
+
+  const executableDir = path.dirname(targetPath);
+  const updater = ensurePortableUpdater(executableDir);
+  if (!updater.ok) {
+    return updater;
+  }
+
+  try {
+    persistState();
+  } catch {
+    // Continue update even if a final state write fails.
+  }
+
+  try {
+    const child = childProcess.spawn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        updater.ps1Path,
+        '-ProcessId',
+        String(process.pid),
+        '-TargetPath',
+        targetPath,
+        '-DownloadUrl',
+        downloadUrl,
+        '-Sha256Url',
+        sha256Url,
+      ],
+      {
+        cwd: executableDir,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      },
+    );
+    child.unref();
+  } catch (error) {
+    return {
+      ok: false,
+      error: 'launch_updater_failed',
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  setTimeout(() => {
+    forceQuitRequested = true;
+    app.quit();
+  }, 600);
+
+  return {
+    ok: true,
+    targetPath,
+    updaterPath: updater.ps1Path,
+  };
+}
+
 function registerIpc() {
   ipcMain.handle('app:get-state', () => {
     syncStorageMetaToState();
     return appState;
   });
   ipcMain.handle('app:get-app-version', () => app.getVersion());
+  ipcMain.handle('app:check-for-updates', () => checkForPortableUpdate());
+  ipcMain.handle('app:start-portable-update', (_event, payload) => startPortableUpdate(payload));
   ipcMain.handle('app:open-external-url', async (_event, payload) => {
     const targetUrl = typeof payload?.url === 'string' ? payload.url.trim() : '';
     if (!targetUrl) {
@@ -3326,6 +4225,7 @@ function registerIpc() {
     emitState();
     return { ok: true };
   });
+  ipcMain.handle('app:merge-records-by-whitelist', () => mergeRecordsByCurrentWhitelist());
   ipcMain.handle('app:clear-all-data', () => clearAllData());
   ipcMain.handle('app:clear-diagnostic-logs', () => {
     appState.diagnosticLogs = [];

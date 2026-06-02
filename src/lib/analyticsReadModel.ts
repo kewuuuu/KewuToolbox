@@ -2,6 +2,7 @@ import {
   AppState,
   Category,
   FocusSession,
+  ObjectType,
   PowerEventRecord,
   ProcessTag,
   ProcessTagAssignment,
@@ -23,23 +24,20 @@ export interface CompiledFocusSegment {
   id: string;
   classificationKey: string;
   displayName: string;
-  objectType: string;
+  objectType: ObjectType;
   processName: string;
+  domain?: string;
   category: Category;
   startMs: number;
   endMs: number;
   durationSeconds: number;
 }
 
-export interface MergedFocusSegment extends CompiledFocusSegment {
-  sourceSegmentIds: string[];
-}
-
 export interface CompiledPresenceSegment {
   id: string;
   classificationKey: string;
   displayName: string;
-  objectType: string;
+  objectType: ObjectType;
   processName: string;
   category: Category;
   startMs: number;
@@ -73,6 +71,23 @@ export interface DailyTrendDatum {
   minutes: number;
 }
 
+export interface DailyTrendSeries {
+  key: string;
+  name: string;
+  totalSeconds: number;
+}
+
+export interface MultiSeriesDailyTrendDatum {
+  date: string;
+  totalMinutes: number;
+  [seriesKey: string]: string | number;
+}
+
+export interface MultiSeriesDailyTrendResult {
+  data: MultiSeriesDailyTrendDatum[];
+  series: DailyTrendSeries[];
+}
+
 export interface TimelineItem {
   id: string;
   type: 'focus' | 'power';
@@ -83,14 +98,13 @@ export interface TimelineItem {
   endMs: number;
   durationSeconds: number;
   markerColor?: string;
-  sourceCount?: number;
 }
 
 export interface MonitoringDerivedRow {
   classificationKey: string;
   profileId: string;
   displayName: string;
-  objectType: string;
+  objectType: ObjectType;
   processName: string;
   totalVisible: number;
   focusTime: number;
@@ -110,6 +124,11 @@ export interface MonitoringDerivedTagStat {
 
 interface MergeOptions {
   mergeGapSeconds?: number;
+}
+
+interface MultiSeriesTrendOptions extends MergeOptions {
+  categories?: Category[];
+  windowLimit?: number;
 }
 
 const DEFAULT_CATEGORY = '其他';
@@ -255,6 +274,7 @@ export function compileFocusSegments(
       displayName: profile?.displayName ?? session.displayName,
       objectType: profile?.objectType ?? session.objectType,
       processName: profile?.processName ?? session.processName,
+      domain: profile?.domain ?? session.domain,
       category: resolveCategory(session.classificationKey, session.categoryAtThatTime, profileMap),
       startMs: clippedStartMs,
       endMs: clippedEndMs,
@@ -396,9 +416,9 @@ export function buildHourlyActivity(
 export function mergeAdjacentFocusSegments(
   segments: CompiledFocusSegment[],
   maxGapSeconds = 0,
-): MergedFocusSegment[] {
+): CompiledFocusSegment[] {
   const maxGapMs = Math.max(0, Number(maxGapSeconds) || 0) * 1000;
-  const merged: MergedFocusSegment[] = [];
+  const merged: CompiledFocusSegment[] = [];
 
   for (const segment of [...segments].sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs)) {
     const previous = merged[merged.length - 1];
@@ -409,19 +429,14 @@ export function mergeAdjacentFocusSegments(
       gapMs <= maxGapMs;
 
     if (!canMerge) {
-      merged.push({
-        ...segment,
-        id: segment.id,
-        sourceSegmentIds: [segment.id],
-      });
+      merged.push({ ...segment });
       continue;
     }
 
     const gapSeconds = gapMs / 1000;
     previous.endMs = Math.max(previous.endMs, segment.endMs);
     previous.durationSeconds += gapSeconds + segment.durationSeconds;
-    previous.sourceSegmentIds.push(segment.id);
-    previous.id = previous.sourceSegmentIds.join('+');
+    previous.id = `${previous.id}+${segment.id}`;
   }
 
   return merged;
@@ -460,7 +475,7 @@ export function compileMergedFocusSegments(
   profiles: WindowClassificationProfile[],
   range: TimeRange | undefined,
   maxGapSeconds = 0,
-): MergedFocusSegment[] {
+): CompiledFocusSegment[] {
   if (!range) {
     return mergeAdjacentFocusSegments(compileFocusSegments(sessions, profiles), maxGapSeconds);
   }
@@ -555,6 +570,86 @@ export function buildDailyTrend(
   return output;
 }
 
+export function buildMultiSeriesDailyTrend(
+  sessions: FocusSession[],
+  profiles: WindowClassificationProfile[],
+  mode: DisplayMode,
+  days = 14,
+  now = new Date(),
+  options: MultiSeriesTrendOptions = {},
+): MultiSeriesDailyTrendResult {
+  const dayBuckets: Array<{
+    dateKey: string;
+    dateLabel: string;
+    segments: CompiledFocusSegment[];
+  }> = [];
+  const totals = new Map<string, number>();
+  const mergeGapSeconds = options.mergeGapSeconds ?? 0;
+
+  for (let index = days - 1; index >= 0; index -= 1) {
+    const date = new Date(now);
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - index);
+    const dateKey = getLocalDateKey(date);
+    const range = getDayRange(dateKey);
+    const segments = compileMergedFocusSegments(sessions, profiles, range, mergeGapSeconds);
+    dayBuckets.push({
+      dateKey,
+      dateLabel: dateKey.slice(5),
+      segments,
+    });
+
+    for (const segment of segments) {
+      const key = displayKey(segment, mode);
+      totals.set(key, (totals.get(key) || 0) + segment.durationSeconds);
+    }
+  }
+
+  const seriesNames =
+    mode === 'category'
+      ? [
+          ...(options.categories || []),
+          ...[...totals.keys()].filter(name => !(options.categories || []).includes(name)),
+        ]
+      : [...totals.entries()]
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN-u-co-pinyin'))
+          .slice(0, Math.max(1, Math.floor(Number(options.windowLimit) || 10)))
+          .map(([name]) => name);
+
+  const series: DailyTrendSeries[] = seriesNames.map((name, index) => ({
+    key: `series-${index}`,
+    name,
+    totalSeconds: totals.get(name) || 0,
+  }));
+  const seriesKeyMap = new Map(series.map(item => [item.name, item.key]));
+
+  const data = dayBuckets.map(bucket => {
+    const row: MultiSeriesDailyTrendDatum = {
+      date: bucket.dateLabel,
+      totalMinutes: 0,
+    };
+    for (const item of series) {
+      row[item.key] = 0;
+    }
+
+    for (const segment of bucket.segments) {
+      row.totalMinutes = Number(row.totalMinutes) + segment.durationSeconds / 60;
+      const seriesKey = seriesKeyMap.get(displayKey(segment, mode));
+      if (seriesKey) {
+        row[seriesKey] = Number(row[seriesKey] || 0) + segment.durationSeconds / 60;
+      }
+    }
+
+    row.totalMinutes = Math.round(Number(row.totalMinutes));
+    for (const item of series) {
+      row[item.key] = Math.round(Number(row[item.key] || 0));
+    }
+    return row;
+  });
+
+  return { data, series };
+}
+
 export function buildTimelineItems(
   segments: CompiledFocusSegment[],
   powerEvents: PowerEventRecord[],
@@ -566,15 +661,11 @@ export function buildTimelineItems(
     id: segment.id,
     type: 'focus' as const,
     label: segment.displayName,
-    detail:
-      segment.sourceSegmentIds.length > 1
-        ? `${segment.objectType} / ${formatDuration(segment.durationSeconds)} / 合并 ${segment.sourceSegmentIds.length} 段`
-        : `${segment.objectType} / ${formatDuration(segment.durationSeconds)}`,
+    detail: `${segment.objectType} / ${formatDuration(segment.durationSeconds)}`,
     category: segment.category,
     startMs: segment.startMs,
     endMs: segment.endMs,
     durationSeconds: segment.durationSeconds,
-    sourceCount: segment.sourceSegmentIds.length,
   }));
 
   const powerItems = powerEvents

@@ -22,7 +22,7 @@ import {
   TodoTask,
   WindowClassificationProfile,
 } from '@/types';
-import { createInitialState } from '@/data/mockData';
+import { createInitialState } from '@/data/initialState';
 import { createDefaultSoundFiles } from '@/data/defaultSoundFiles';
 import { buildReminderStamp, normalizeTodoTask, shouldTriggerReminder, validateTodoTask } from '@/lib/todo';
 import { matchesAnyWindowGroup } from '@/lib/windowGroupMatcher';
@@ -46,6 +46,7 @@ interface AppContextType {
   updateUiState: (u: Partial<AppUiState>) => void;
   updateRuntimeState: (r: Partial<AppRuntimeState>) => void;
   updatePreferences: (p: Partial<AppPreferences>) => void;
+  mergeRecordsByWhitelist: () => Promise<number>;
   clearAllData: () => Promise<void>;
   clearDiagnosticLogs: () => Promise<void>;
   addSoundFile: (name: string, filePath: string, defaultVolumeMultiplier?: number) => SoundFileItem | null;
@@ -88,6 +89,34 @@ function getFocusSecondsForQueueIndex(queue: FocusQueueItem[], queueIndex: numbe
 }
 
 function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppUiState): AppUiState {
+  const pickString = (value: unknown, fallbackValue: string) =>
+    typeof value === 'string' ? value : fallbackValue;
+  const pickStringOrNull = (value: unknown, fallbackValue: string | null) =>
+    typeof value === 'string' ? value : value === null ? null : fallbackValue;
+  const pickBoolean = (value: unknown, fallbackValue: boolean) =>
+    typeof value === 'boolean' ? value : fallbackValue;
+  const pickFinite = (value: unknown, fallbackValue: number) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallbackValue;
+  };
+  const pickNumberArray = (value: unknown, fallbackValue: number[]) =>
+    Array.isArray(value)
+      ? value
+          .map(item => Number(item))
+          .filter(item => Number.isFinite(item))
+          .map(item => Math.floor(item))
+      : fallbackValue;
+  const pickWindowGroupItems = (
+    value: unknown,
+    fallbackValue: AppUiState['focusSubjects']['selectedWindows'],
+  ) =>
+    Array.isArray(value)
+      ? value
+          .filter(item => item && typeof item === 'object')
+          .map(item => item as AppUiState['focusSubjects']['selectedWindows'][number])
+          .filter(item => typeof item.classificationKey === 'string' && typeof item.displayName === 'string')
+      : fallbackValue;
+
   const normalizeSort = (value: AppUiState['monitoring']['historySort'], fallbackSort: AppUiState['monitoring']['historySort']) => {
     const sortKeySet = new Set([
       'displayName',
@@ -130,6 +159,17 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
     return fallbackValue;
   };
 
+  const normalizeTodoFilter = (value: unknown, fallbackValue: AppUiState['todos']['filter']) =>
+    value === 'all' || value === '一次性' || value === '重复' ? value : fallbackValue;
+  const normalizeTaskType = (value: unknown, fallbackValue: AppUiState['todos']['taskType']) =>
+    value === '一次性' || value === '重复' ? value : fallbackValue;
+  const normalizeRepeatMode = (value: unknown, fallbackValue: AppUiState['todos']['repeatMode']) =>
+    value === '每日' || value === '每周' || value === '每月' || value === '自定义'
+      ? value
+      : fallbackValue;
+  const normalizeHourlyMode = (value: unknown, fallbackValue: AppUiState['analytics']['hourlyMode']) =>
+    value === 'total' || value === 'category' ? value : fallbackValue;
+
   return {
     calculatorExpression:
       typeof input?.calculatorExpression === 'string'
@@ -149,6 +189,92 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
         typeof input?.clock?.newCountdownSeconds === 'string'
           ? input.clock.newCountdownSeconds
           : fallback.clock.newCountdownSeconds,
+    },
+    settings: {
+      manualPath: pickString(input?.settings?.manualPath, fallback.settings.manualPath),
+      manualName: pickString(input?.settings?.manualName, fallback.settings.manualName),
+      whitelistNameInput: pickString(input?.settings?.whitelistNameInput, fallback.settings.whitelistNameInput),
+      whitelistNamePatternInput: pickString(
+        input?.settings?.whitelistNamePatternInput,
+        fallback.settings.whitelistNamePatternInput,
+      ),
+      whitelistTypePatternInput: pickString(
+        input?.settings?.whitelistTypePatternInput,
+        fallback.settings.whitelistTypePatternInput,
+      ),
+      whitelistProcessPatternInput: pickString(
+        input?.settings?.whitelistProcessPatternInput,
+        fallback.settings.whitelistProcessPatternInput,
+      ),
+      blacklistNameInput: pickString(input?.settings?.blacklistNameInput, fallback.settings.blacklistNameInput),
+      blacklistTypeInput: pickString(input?.settings?.blacklistTypeInput, fallback.settings.blacklistTypeInput),
+      blacklistProcessInput: pickString(
+        input?.settings?.blacklistProcessInput,
+        fallback.settings.blacklistProcessInput,
+      ),
+      dataFilePathInput: pickString(input?.settings?.dataFilePathInput, fallback.settings.dataFilePathInput),
+      thresholdInput: pickString(input?.settings?.thresholdInput, fallback.settings.thresholdInput),
+      analyticsWindowItemLimitInput: pickString(
+        input?.settings?.analyticsWindowItemLimitInput,
+        fallback.settings.analyticsWindowItemLimitInput,
+      ),
+    },
+    todos: {
+      searchQuery: pickString(input?.todos?.searchQuery, fallback.todos.searchQuery),
+      showForm: pickBoolean(input?.todos?.showForm, fallback.todos.showForm),
+      filter: normalizeTodoFilter(input?.todos?.filter, fallback.todos.filter),
+      title: pickString(input?.todos?.title, fallback.todos.title),
+      taskType: normalizeTaskType(input?.todos?.taskType, fallback.todos.taskType),
+      repeatMode: normalizeRepeatMode(input?.todos?.repeatMode, fallback.todos.repeatMode),
+      weeklyDays: pickNumberArray(input?.todos?.weeklyDays, fallback.todos.weeklyDays),
+      monthlyDays: pickNumberArray(input?.todos?.monthlyDays, fallback.todos.monthlyDays),
+      customPattern: pickString(input?.todos?.customPattern, fallback.todos.customPattern),
+      reminderEnabled: pickBoolean(input?.todos?.reminderEnabled, fallback.todos.reminderEnabled),
+      rYear: pickString(input?.todos?.rYear, fallback.todos.rYear),
+      rMonth: pickString(input?.todos?.rMonth, fallback.todos.rMonth),
+      rDay: pickString(input?.todos?.rDay, fallback.todos.rDay),
+      rHour: pickString(input?.todos?.rHour, fallback.todos.rHour),
+      rMinute: pickString(input?.todos?.rMinute, fallback.todos.rMinute),
+      rSecond: pickString(input?.todos?.rSecond, fallback.todos.rSecond),
+    },
+    focusSubjects: {
+      modalOpen: pickBoolean(input?.focusSubjects?.modalOpen, fallback.focusSubjects.modalOpen),
+      editingSubjectId: pickStringOrNull(
+        input?.focusSubjects?.editingSubjectId,
+        fallback.focusSubjects.editingSubjectId,
+      ),
+      title: pickString(input?.focusSubjects?.title, fallback.focusSubjects.title),
+      defaultMinutes: Math.max(
+        1,
+        Math.floor(pickFinite(input?.focusSubjects?.defaultMinutes, fallback.focusSubjects.defaultMinutes)),
+      ),
+      selectedWindows: pickWindowGroupItems(
+        input?.focusSubjects?.selectedWindows,
+        fallback.focusSubjects.selectedWindows,
+      ),
+      manualNamePattern: pickString(
+        input?.focusSubjects?.manualNamePattern,
+        fallback.focusSubjects.manualNamePattern,
+      ),
+      manualTypePattern: pickString(
+        input?.focusSubjects?.manualTypePattern,
+        fallback.focusSubjects.manualTypePattern,
+      ),
+      manualProcessPattern: pickString(
+        input?.focusSubjects?.manualProcessPattern,
+        fallback.focusSubjects.manualProcessPattern,
+      ),
+    },
+    analytics: {
+      selectedDate: pickString(input?.analytics?.selectedDate, fallback.analytics.selectedDate),
+      heatmapCategory: pickString(input?.analytics?.heatmapCategory, fallback.analytics.heatmapCategory),
+      hourlyMode: normalizeHourlyMode(input?.analytics?.hourlyMode, fallback.analytics.hourlyMode),
+    },
+    monitoringDraft: {
+      creatingTag: pickBoolean(input?.monitoringDraft?.creatingTag, fallback.monitoringDraft.creatingTag),
+      newTagName: pickString(input?.monitoringDraft?.newTagName, fallback.monitoringDraft.newTagName),
+      editingTagId: pickStringOrNull(input?.monitoringDraft?.editingTagId, fallback.monitoringDraft.editingTagId),
+      editingTagName: pickString(input?.monitoringDraft?.editingTagName, fallback.monitoringDraft.editingTagName),
     },
   };
 }
@@ -444,6 +570,10 @@ function normalizePreferences(
   const recordWindowThresholdSeconds = Number.isFinite(threshold)
     ? Math.max(0, Math.floor(threshold))
     : fallback.recordWindowThresholdSeconds;
+  const analyticsLimit = Number(input?.analyticsWindowItemLimit);
+  const analyticsWindowItemLimit = Number.isFinite(analyticsLimit)
+    ? Math.max(1, Math.floor(analyticsLimit))
+    : fallback.analyticsWindowItemLimit;
   const closeWindowBehavior =
     input?.closeWindowBehavior === 'close' || input?.closeWindowBehavior === 'tray' || input?.closeWindowBehavior === 'ask'
       ? input.closeWindowBehavior
@@ -451,6 +581,7 @@ function normalizePreferences(
 
   return {
     recordWindowThresholdSeconds,
+    analyticsWindowItemLimit,
     uiTheme: input?.uiTheme === 'light' || input?.uiTheme === 'dark' ? input.uiTheme : fallback.uiTheme,
     autoLaunchEnabled:
       typeof input?.autoLaunchEnabled === 'boolean' ? input.autoLaunchEnabled : fallback.autoLaunchEnabled,
@@ -1285,6 +1416,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
+  const mergeRecordsByWhitelist = useCallback(async () => {
+    if (!isElectronRuntime() || !window.desktopApi?.mergeRecordsByWhitelist) {
+      return 0;
+    }
+    const userState = extractUserState(state);
+    const snapshot = JSON.stringify(userState);
+    await window.desktopApi.saveUserState(userState);
+    lastSavedUserStateRef.current = snapshot;
+    const result = await window.desktopApi.mergeRecordsByWhitelist();
+    if (!result?.ok || !result.state) {
+      return 0;
+    }
+    const normalized = normalizeState(result.state);
+    setState(normalized);
+    lastSavedUserStateRef.current = JSON.stringify(extractUserState(normalized));
+    return Number.isFinite(Number(result.changedCount)) ? Math.max(0, Math.floor(Number(result.changedCount))) : 0;
+  }, [state]);
+
   const clearAllData = useCallback(async () => {
     if (isElectronRuntime() && window.desktopApi?.clearAllData) {
       const cleared = normalizeState(await window.desktopApi.clearAllData());
@@ -1579,6 +1728,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       updateUiState,
       updateRuntimeState,
       updatePreferences,
+      mergeRecordsByWhitelist,
       clearAllData,
       clearDiagnosticLogs,
       addSoundFile,
@@ -1612,6 +1762,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       updateUiState,
       updateRuntimeState,
       updatePreferences,
+      mergeRecordsByWhitelist,
       clearAllData,
       clearDiagnosticLogs,
       addSoundFile,

@@ -71,10 +71,20 @@ export default function MonitoringPage() {
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
 
   const [expandedTagIds, setExpandedTagIds] = useState<Set<string>>(new Set());
-  const [creatingTag, setCreatingTag] = useState(false);
-  const [newTagName, setNewTagName] = useState('');
-  const [editingTagId, setEditingTagId] = useState<string | null>(null);
-  const [editingTagName, setEditingTagName] = useState('');
+  const monitoringDraftUi = state.uiState.monitoringDraft;
+  const updateMonitoringDraftUi = (partial: Partial<typeof monitoringDraftUi>) => {
+    updateUiState({
+      monitoringDraft: partial as typeof monitoringDraftUi,
+    });
+  };
+  const creatingTag = monitoringDraftUi.creatingTag;
+  const newTagName = monitoringDraftUi.newTagName;
+  const editingTagId = monitoringDraftUi.editingTagId;
+  const editingTagName = monitoringDraftUi.editingTagName;
+  const setCreatingTag = (creatingTag: boolean) => updateMonitoringDraftUi({ creatingTag });
+  const setNewTagName = (newTagName: string) => updateMonitoringDraftUi({ newTagName });
+  const setEditingTagId = (editingTagId: string | null) => updateMonitoringDraftUi({ editingTagId });
+  const setEditingTagName = (editingTagName: string) => updateMonitoringDraftUi({ editingTagName });
 
   const collator = useMemo(
     () => new Intl.Collator('zh-CN-u-co-pinyin', { sensitivity: 'base' }),

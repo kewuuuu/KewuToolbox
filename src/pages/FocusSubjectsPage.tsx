@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { FocusSubnav } from '@/components/focus/FocusSubnav';
 import { useAppState } from '@/store/AppContext';
@@ -10,6 +10,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Plus, Edit2, Trash2, ListPlus, Clock } from 'lucide-react';
 import { FocusSubject, WindowGroupItem } from '@/types';
 import { matchesWindowGroupItem } from '@/lib/windowGroupMatcher';
+import { buildMonitoringRows, compileMergedFocusSegments } from '@/lib/analyticsReadModel';
 
 type SelectableProfile = {
   id: string;
@@ -45,36 +46,56 @@ function formatDurationSeconds(seconds: number) {
 }
 
 export default function FocusSubjectsPage() {
-  const { state, addSubject, updateSubject, deleteSubject, addToQueue } = useAppState();
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editing, setEditing] = useState<FocusSubject | null>(null);
-  const [title, setTitle] = useState('');
-  const [defaultMinutes, setDefaultMinutes] = useState(25);
-  const [selectedWindows, setSelectedWindows] = useState<WindowGroupItem[]>([]);
-  const [manualNamePattern, setManualNamePattern] = useState('');
-  const [manualTypePattern, setManualTypePattern] = useState('');
-  const [manualProcessPattern, setManualProcessPattern] = useState('');
+  const { state, addSubject, updateSubject, deleteSubject, addToQueue, updateUiState } = useAppState();
+  const focusSubjectsUi = state.uiState.focusSubjects;
+  const updateFocusSubjectsUi = (partial: Partial<typeof focusSubjectsUi>) => {
+    updateUiState({
+      focusSubjects: partial as typeof focusSubjectsUi,
+    });
+  };
+  const modalOpen = focusSubjectsUi.modalOpen;
+  const editing = state.subjects.find(subject => subject.id === focusSubjectsUi.editingSubjectId) ?? null;
+  const title = focusSubjectsUi.title;
+  const defaultMinutes = focusSubjectsUi.defaultMinutes;
+  const selectedWindows = focusSubjectsUi.selectedWindows;
+  const manualNamePattern = focusSubjectsUi.manualNamePattern;
+  const manualTypePattern = focusSubjectsUi.manualTypePattern;
+  const manualProcessPattern = focusSubjectsUi.manualProcessPattern;
+  const setModalOpen = (modalOpen: boolean) => updateFocusSubjectsUi({ modalOpen });
+  const setTitle = (title: string) => updateFocusSubjectsUi({ title });
+  const setDefaultMinutes = (defaultMinutes: number) => updateFocusSubjectsUi({ defaultMinutes });
+  const setSelectedWindows = (updater: WindowGroupItem[] | ((prev: WindowGroupItem[]) => WindowGroupItem[])) =>
+    updateFocusSubjectsUi({
+      selectedWindows: typeof updater === 'function' ? updater(selectedWindows) : updater,
+    });
+  const setManualNamePattern = (manualNamePattern: string) => updateFocusSubjectsUi({ manualNamePattern });
+  const setManualTypePattern = (manualTypePattern: string) => updateFocusSubjectsUi({ manualTypePattern });
+  const setManualProcessPattern = (manualProcessPattern: string) => updateFocusSubjectsUi({ manualProcessPattern });
 
   const openCreate = () => {
-    setEditing(null);
-    setTitle('');
-    setDefaultMinutes(25);
-    setSelectedWindows([]);
-    setManualNamePattern('');
-    setManualTypePattern('');
-    setManualProcessPattern('');
-    setModalOpen(true);
+    updateFocusSubjectsUi({
+      modalOpen: true,
+      editingSubjectId: null,
+      title: '',
+      defaultMinutes: 25,
+      selectedWindows: [],
+      manualNamePattern: '',
+      manualTypePattern: '',
+      manualProcessPattern: '',
+    });
   };
 
   const openEdit = (subject: FocusSubject) => {
-    setEditing(subject);
-    setTitle(subject.title);
-    setDefaultMinutes(subject.defaultMinutes);
-    setSelectedWindows([...subject.windowGroup]);
-    setManualNamePattern('');
-    setManualTypePattern('');
-    setManualProcessPattern('');
-    setModalOpen(true);
+    updateFocusSubjectsUi({
+      modalOpen: true,
+      editingSubjectId: subject.id,
+      title: subject.title,
+      defaultMinutes: subject.defaultMinutes,
+      selectedWindows: [...subject.windowGroup],
+      manualNamePattern: '',
+      manualTypePattern: '',
+      manualProcessPattern: '',
+    });
   };
 
   const handleSave = () => {
@@ -105,7 +126,16 @@ export default function FocusSubjectsPage() {
       });
     }
 
-    setModalOpen(false);
+    updateFocusSubjectsUi({
+      modalOpen: false,
+      editingSubjectId: null,
+      title: '',
+      defaultMinutes: 25,
+      selectedWindows: [],
+      manualNamePattern: '',
+      manualTypePattern: '',
+      manualProcessPattern: '',
+    });
   };
 
   const toggleWindow = (profile: SelectableProfile) => {
@@ -168,34 +198,43 @@ export default function FocusSubjectsPage() {
     });
   };
 
-  const todayStart = useMemo(() => {
-    const now = new Date();
-    now.setHours(0, 0, 0, 0);
-    return now;
-  }, []);
+  const recordGapSeconds = state.preferences.recordWindowThresholdSeconds;
+
+  const todayFocusSegments = useMemo(() => {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    return compileMergedFocusSegments(
+      state.sessions,
+      state.profiles,
+      {
+        startMs: todayStart.getTime(),
+        endMs: Date.now(),
+      },
+      recordGapSeconds,
+    );
+  }, [recordGapSeconds, state.profiles, state.sessions]);
 
   const getSubjectFocusTime = (subject: FocusSubject) => {
-    return state.sessions
-      .filter(
-        session =>
-          new Date(session.startAt) >= todayStart &&
-          subject.windowGroup.some(item =>
-            matchesWindowGroupItem(item, {
-              classificationKey: session.classificationKey,
-              displayName: session.displayName,
-              objectType: session.objectType,
-              processName: session.processName,
-              normalizedTitle: session.windowTitle || session.browserTabTitle || session.displayName,
-              domain: session.domain,
-            }),
-          ),
+    return todayFocusSegments
+      .filter(segment =>
+        subject.windowGroup.some(item =>
+          matchesWindowGroupItem(item, {
+            classificationKey: segment.classificationKey,
+            displayName: segment.displayName,
+            objectType: segment.objectType,
+            processName: segment.processName,
+            normalizedTitle: segment.displayName,
+            domain: segment.domain,
+          }),
+        ),
       )
-      .reduce((acc, session) => acc + session.durationSeconds, 0);
+      .reduce((acc, segment) => acc + segment.durationSeconds, 0);
   };
 
   const sortedProfiles = useMemo(() => {
-    const statLastFocusMap = new Map(
-      state.windowStats.map(stat => [stat.classificationKey, new Date(stat.lastFocusAt).getTime() || 0]),
+    const currentRows = buildMonitoringRows(state, 'current', { mergeGapSeconds: recordGapSeconds });
+    const rowMap = new Map(
+      currentRows.map(row => [row.classificationKey, new Date(row.lastFocus).getTime() || 0]),
     );
     const currentKeySet = new Set(state.currentProcessKeys);
     const collator = new Intl.Collator('zh-CN-u-co-pinyin', { sensitivity: 'base' });
@@ -203,14 +242,14 @@ export default function FocusSubjectsPage() {
     return state.profiles
       .filter(profile => currentKeySet.has(profile.classificationKey))
       .sort((a, b) => {
-      const lastFocusA = statLastFocusMap.get(a.classificationKey) ?? 0;
-      const lastFocusB = statLastFocusMap.get(b.classificationKey) ?? 0;
+      const lastFocusA = rowMap.get(a.classificationKey) ?? 0;
+      const lastFocusB = rowMap.get(b.classificationKey) ?? 0;
       if (lastFocusA !== lastFocusB) {
         return lastFocusB - lastFocusA;
       }
       return collator.compare(a.displayName, b.displayName);
     });
-  }, [state.currentProcessKeys, state.profiles, state.windowStats]);
+  }, [recordGapSeconds, state]);
 
   return (
     <DashboardLayout pageTitle="专注事项">

@@ -23,6 +23,7 @@
 
 - [软件功能介绍](./docs/软件功能介绍.md)
 - [插件接入规范](./docs/插件接入规范.md)
+- [更新记录](./docs/更新记录.md)
 
 ---
 
@@ -66,11 +67,13 @@ npm run dev
 进入“设置 > 通用配置”，建议先做：
 
 1. 设置“记录阈值（秒）”（默认 60 秒）。
-2. 选择亮色/暗色主题。
-3. 决定是否开启“开机自启动”。
-4. 设置“倒计时完成后处理方式”。
-5. 检查“数据文件路径”是否符合你的存放习惯。
-6. 按需配置白名单规则和进程黑名单。
+2. 设置“数据统计窗口数量 n”（默认 10），用于限制数据统计窗口模式下的图表显示数量。
+3. 选择亮色/暗色主题。
+4. 决定是否开启“开机自启动”。
+5. 设置“倒计时完成后处理方式”。
+6. 检查“数据文件路径”是否符合你的存放习惯。
+7. 按需配置白名单规则和进程黑名单；已有历史记录需要按新白名单重算时，点击“按白名单归并记录”。
+8. 页面中的未提交输入会在切换页面后保留，例如白名单草稿、待办创建表单、专注事项弹窗、统计页筛选项。
 
 ### 3. 安装浏览器扩展（建议）
 
@@ -90,7 +93,8 @@ npm run dev
 3. 可在“历史记录 / 当前进程”中点击行尾“屏蔽”按钮，一键将该项加入进程黑名单。
 4. 在“标签管理”创建标签，并给窗口分配标签。
 5. 在“历史记录”查看累计结果，可按列排序与标签展开查看。
-6. 需要清理历史时，使用“删除记录”模式勾选后确认删除。
+6. 短于记录阈值的切走/关闭空隙会在数据层忽略，回到同一对象后按连续时长统计。
+7. 需要清理历史时，使用“删除记录”模式勾选后确认删除。
 
 #### 4.2 专注
 
@@ -120,14 +124,22 @@ npm run dev
 #### 4.5 待办与归档
 
 1. 在“待办列表”新建任务（一次性/重复、可选定时提醒）。
-2. 点击卡片进入详情，填写心得（自动保存）。
+2. 点击卡片进入详情，填写心得（输入后立即写入数据，防止切页丢失）。
 3. 勾选完成后进入归档列表，在归档详情查看历史快照。
 
 #### 4.6 数据统计
 
 1. 进入“数据统计”页面。
 2. 切换显示维度（性质/窗口）和统计日期。
-3. 查看扇形图、柱状图、时间线和热力图。
+3. 查看扇形图、柱状图、小时活动、近 14 天多折线趋势、时间线和热力图。
+
+#### 4.7 软件更新
+
+1. 进入“设置 > 更新”页面。
+2. 点击“GitHub 仓库首页”可打开项目主页。
+3. 点击“检查更新”会读取 GitHub Releases 最新正式版本。
+4. 如果发现新版本且 Release 中包含便携版 exe 和对应 `.sha256`，可以点击“开始更新”。
+5. 开始更新后，程序会在当前 exe 同目录生成 `KewuToolboxUpdater.cmd` 和 `KewuToolboxUpdater.ps1`，随后关闭主程序、下载新版、校验 SHA256、覆盖当前 exe 并重启。
 
 ---
 
@@ -157,7 +169,7 @@ npm run build:portable
 # 打 macOS 便携版 ZIP（需在 macOS 上执行）
 npm run build:mac:portable
 
-# 一键交付构建（按当前系统打包便携版 + 浏览器扩展）
+# 一键交付构建（按当前系统打包便携版 + 插件压缩包 + sha256）
 npm run build:deliver
 ```
 
@@ -212,15 +224,36 @@ npm run build:deliver
 3. 按当前系统构建便携包：
    - Windows 主机：构建 `portable.exe`
    - macOS 主机：构建 `mac-portable.zip`
-4. 复制便携包 + `browser-extension/` 到 `release/deliver/`。
-5. 删除其他非交付文件。
+4. 复制便携包 + 插件目录到 `release/deliver/`，并生成 `browser-extension.zip` 与 `vscode-extension.zip`。
+5. 为所有交付文件生成 `.sha256`。
+6. 删除其他非交付文件。
 
 最终只保留：
 - `release/deliver/KewuToolbox-<version>-portable.exe`（Windows 构建时）
+- `release/deliver/KewuToolbox-<version>-portable.exe.sha256`（Windows 构建时）
 - `release/deliver/KewuToolbox-<version>-mac-portable.zip`（macOS 构建时）
+- `release/deliver/KewuToolbox-<version>-mac-portable.zip.sha256`（macOS 构建时）
 - `release/deliver/browser-extension/`
+- `release/deliver/browser-extension.zip`
+- `release/deliver/browser-extension.zip.sha256`
+- `release/deliver/vscode-extension/`
+- `release/deliver/vscode-extension.zip`
+- `release/deliver/vscode-extension.zip.sha256`
 
-### 5. 数据文件与路径机制
+### 5. GitHub Actions 自动发布
+
+仓库包含 `.github/workflows/release.yml`：
+- 推送到 `main` 或手动触发 workflow 后，会在 Windows runner 上执行 `npm run build:deliver`。
+- 工作流读取 `package.json` 的 `version`，生成 tag：`v<version>`。
+- 如果同版本 Release 已存在，会移动同名 tag、更新 Release 标题和说明、删除旧资产并上传新资产。
+- 如果同版本 Release 不存在，会创建新的 GitHub Release。
+- 自动更新至少需要 Release 中包含：
+  - `KewuToolbox-<version>-portable.exe`
+  - `KewuToolbox-<version>-portable.exe.sha256`
+
+说明：同版本覆盖发布便于测试，但正式发布更建议每次递增版本号，否则用户和下载缓存可能难以区分构建批次。
+
+### 6. 数据文件与路径机制
 
 桌面版数据文件默认名：`app-state.json`。
 
@@ -236,6 +269,6 @@ npm run build:deliver
   - `.\data\electron-runtime\logs\`
   - `.\data\electron-runtime\crash-dumps\`
 
-### 6. 浏览器扩展版本
+### 7. 浏览器扩展版本
 
 扩展版本在 `browser-extension/manifest.json` 和 `vscode-extension/package.json` 的 `version` 字段中维护，当前为 `1.0.0`。
