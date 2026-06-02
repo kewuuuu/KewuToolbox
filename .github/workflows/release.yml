@@ -31,6 +31,17 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Cache Electron builder downloads
+        # actions/cache@v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: |
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+          key: ${{ runner.os }}-electron-builder-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-builder-
+
       - name: Install dependencies
         run: npm ci
 
@@ -38,10 +49,54 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if (Get-Variable PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+            $PSNativeCommandUseErrorActionPreference = $false
+          }
+          $logDir = Join-Path $PWD 'release-ci-logs'
+          New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+          $stdoutPath = Join-Path $logDir 'build-deliver.stdout.log'
+          $stderrPath = Join-Path $logDir 'build-deliver.stderr.log'
+          $summaryPath = Join-Path $logDir 'environment.txt'
+
           Write-Host "Node version: $(node -v)"
           Write-Host "npm version: $(npm -v)"
-          npm run build:deliver
-          Get-ChildItem -LiteralPath 'release/deliver' -Force | Select-Object Name, Length, LastWriteTime
+          "Node version: $(node -v)" | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+          "npm version: $(npm -v)" | Add-Content -LiteralPath $summaryPath -Encoding UTF8
+          "Runner OS: $env:RUNNER_OS" | Add-Content -LiteralPath $summaryPath -Encoding UTF8
+          "Image OS: $env:ImageOS" | Add-Content -LiteralPath $summaryPath -Encoding UTF8
+
+          $process = Start-Process -FilePath 'npm.cmd' `
+            -ArgumentList @('run', 'build:deliver') `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath
+
+          if (Test-Path -LiteralPath $stdoutPath) {
+            Get-Content -LiteralPath $stdoutPath
+          }
+          if (Test-Path -LiteralPath $stderrPath) {
+            Get-Content -LiteralPath $stderrPath
+          }
+
+          if (Test-Path -LiteralPath 'release/deliver') {
+            Get-ChildItem -LiteralPath 'release/deliver' -Force | Select-Object Name, Length, LastWriteTime
+          }
+
+          if ($process.ExitCode -ne 0) {
+            Write-Host "::error title=Build deliverables failed::npm run build:deliver exited with code $($process.ExitCode). Download artifact release-build-logs for full stdout/stderr."
+            throw "npm run build:deliver failed with code $($process.ExitCode)"
+          }
+
+      - name: Upload release build logs
+        if: always()
+        # actions/upload-artifact@v5.0.0
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: release-build-logs
+          path: release-ci-logs/**
+          if-no-files-found: ignore
 
       - name: Publish GitHub Release
         shell: pwsh
