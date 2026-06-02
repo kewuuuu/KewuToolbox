@@ -76,7 +76,18 @@ jobs:
           }
 
           if ($buildExitCode -ne 0) {
-            Write-Host "::error title=Build deliverables failed::npm run build:deliver exited with code $buildExitCode. Download artifact release-build-logs for full output."
+            $tail = "npm run build:deliver exited with code $buildExitCode."
+            if (Test-Path -LiteralPath $logPath) {
+              $tailLines = Get-Content -LiteralPath $logPath -Tail 40
+              if ($tailLines) {
+                $tail = ($tailLines -join "`n")
+              }
+            }
+            if ($tail.Length -gt 4000) {
+              $tail = $tail.Substring($tail.Length - 4000)
+            }
+            $escapedTail = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=Build deliverables failed::$escapedTail"
             throw "npm run build:deliver failed with code $buildExitCode"
           }
 
