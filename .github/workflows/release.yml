@@ -9,9 +9,13 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CSC_IDENTITY_AUTO_DISCOVERY: false
+
 jobs:
   build-release:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Checkout
@@ -22,7 +26,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -30,7 +34,12 @@ jobs:
 
       - name: Build deliverables
         shell: pwsh
-        run: npm run build:deliver
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Node version: $(node -v)"
+          Write-Host "npm version: $(npm -v)"
+          npm run build:deliver
+          Get-ChildItem -LiteralPath 'release/deliver' -Force | Select-Object Name, Length, LastWriteTime
 
       - name: Publish GitHub Release
         shell: pwsh
