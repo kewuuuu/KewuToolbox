@@ -8,6 +8,27 @@ $deliverDir = Join-Path $releaseDir 'deliver'
 $extensionSource = Join-Path $repoRoot 'browser-extension'
 $vscodeExtensionSource = Join-Path $repoRoot 'vscode-extension'
 
+function Get-Sha256Hex {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$LiteralPath
+  )
+
+  $stream = [System.IO.File]::OpenRead($LiteralPath)
+  try {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      $hashBytes = $sha256.ComputeHash($stream)
+    } finally {
+      $sha256.Dispose()
+    }
+  } finally {
+    $stream.Dispose()
+  }
+
+  return -join ($hashBytes | ForEach-Object { $_.ToString('x2') })
+}
+
 $isWindowsHost = $env:OS -eq 'Windows_NT'
 $isMacHost = $false
 if (Get-Command uname -ErrorAction SilentlyContinue) {
@@ -111,9 +132,9 @@ Write-Host 'Generating SHA256 files...'
 Get-ChildItem -LiteralPath $deliverDir -File -ErrorAction SilentlyContinue |
   Where-Object { $_.Extension -ne '.sha256' } |
   ForEach-Object {
-    $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+    $hash = Get-Sha256Hex -LiteralPath $_.FullName
     $shaPath = "$($_.FullName).sha256"
-    "$($hash.Hash.ToLowerInvariant())  $($_.Name)" | Set-Content -LiteralPath $shaPath -Encoding ASCII
+    "$hash  $($_.Name)" | Set-Content -LiteralPath $shaPath -Encoding ASCII
   }
 
 Write-Host 'Step 6/6: Remove non-deliver artifacts...'
