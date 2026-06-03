@@ -21,3 +21,7 @@
   - 命中多条白名单：通过 `focusedClassificationKeys` 同时上报多个焦点记录键
   - 都未命中：按工作区维度上报
 - 同时上报 `suppressRules`，抑制原生 `code.exe` 窗口重复计入
+
+## 版本兼容
+
+插件版本不跟随 KewuToolbox 主程序版本自动同步。兼容范围见本目录的 `COMPATIBILITY.md`。

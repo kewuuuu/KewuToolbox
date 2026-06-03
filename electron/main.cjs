@@ -2995,6 +2995,37 @@ function normalizePluginClassificationKey(key) {
   return normalized;
 }
 
+function normalizePluginCompatibility(rawCompatibility) {
+  if (!Array.isArray(rawCompatibility)) {
+    return [];
+  }
+  return rawCompatibility
+    .filter(item => item && typeof item === 'object')
+    .map(item => {
+      const pluginVersion = typeof item.pluginVersion === 'string' ? item.pluginVersion.trim() : '';
+      const compatibleKewuToolboxVersions =
+        typeof item.compatibleKewuToolboxVersions === 'string'
+          ? item.compatibleKewuToolboxVersions.trim()
+          : '';
+      if (!pluginVersion || !compatibleKewuToolboxVersions) {
+        return null;
+      }
+      return {
+        pluginVersion,
+        compatibleKewuToolboxVersions,
+        protocolVersion:
+          typeof item.protocolVersion === 'string' && item.protocolVersion.trim()
+            ? item.protocolVersion.trim()
+            : undefined,
+        notes:
+          typeof item.notes === 'string' && item.notes.trim()
+            ? item.notes.trim()
+            : undefined,
+      };
+    })
+    .filter(Boolean);
+}
+
 function parsePluginBridgePayload(rawPayload) {
   if (!rawPayload || typeof rawPayload !== 'object') {
     return null;
@@ -3027,6 +3058,7 @@ function parsePluginBridgePayload(rawPayload) {
     pluginId,
     pluginName,
     pluginVersion,
+    compatibility: normalizePluginCompatibility(rawPlugin.compatibility),
     protocolVersion:
       typeof rawPayload.protocolVersion === 'string'
         ? rawPayload.protocolVersion
@@ -3153,6 +3185,7 @@ function syncPluginConnectionsToState(activeSnapshots = getActivePluginSnapshots
       pluginId: snapshot.pluginId,
       pluginName: snapshot.pluginName,
       pluginVersion: snapshot.pluginVersion,
+      compatibility: Array.isArray(snapshot.compatibility) ? snapshot.compatibility : [],
       protocolVersion: snapshot.protocolVersion,
       homepageUrl: snapshot.homepageUrl,
       source: snapshot.source,

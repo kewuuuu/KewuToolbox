@@ -6,6 +6,26 @@ const PROTOCOL_VERSION = '1.0';
 const BRIDGE_ENDPOINT = 'http://127.0.0.1:17321/plugin-bridge';
 const HEARTBEAT_INTERVAL_MS = 1000;
 const REQUEST_TIMEOUT_MS = 1500;
+const PLUGIN_COMPATIBILITY = [
+  {
+    pluginVersion: '1.0.4',
+    compatibleKewuToolboxVersions: '>=1.0.2 <2.0.0',
+    protocolVersion: PROTOCOL_VERSION,
+    notes: 'Same bridge behavior as 1.0.3. Repacked with KewuToolbox v1.0.4 release assets only.',
+  },
+  {
+    pluginVersion: '1.0.3',
+    compatibleKewuToolboxVersions: '>=1.0.2 <2.0.0',
+    protocolVersion: PROTOCOL_VERSION,
+    notes: 'Compatible with the unified plugin bridge and rule matching protocol.',
+  },
+  {
+    pluginVersion: '1.0.2',
+    compatibleKewuToolboxVersions: '>=1.0.2 <2.0.0',
+    protocolVersion: PROTOCOL_VERSION,
+    notes: 'Compatible with workspace-level VS Code process replacement.',
+  },
+];
 
 function normalizeFsPath(input) {
   if (typeof input !== 'string') {
@@ -84,6 +104,7 @@ function getPluginMeta(context, instanceSuffix) {
     version,
     homepageUrl: 'https://github.com/kewuuuu/KewuToolbox',
     isOfficial: true,
+    compatibility: PLUGIN_COMPATIBILITY,
   };
 }
 

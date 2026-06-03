@@ -24,3 +24,7 @@
 扩展只向本机发送数据：
 
 `http://127.0.0.1:17321/plugin-bridge`
+
+## 版本兼容
+
+插件版本不跟随 KewuToolbox 主程序版本自动同步。兼容范围见本目录的 `COMPATIBILITY.md`。

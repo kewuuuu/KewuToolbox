@@ -205,6 +205,7 @@ export interface PluginConnectionInfo {
   pluginId: string;
   pluginName: string;
   pluginVersion: string;
+  compatibility?: PluginCompatibilityEntry[];
   protocolVersion?: string;
   homepageUrl?: string;
   source?: string;
@@ -212,6 +213,13 @@ export interface PluginConnectionInfo {
   lastSeenAt: string;
   isOfficial?: boolean;
   recordCount: number;
+}
+
+export interface PluginCompatibilityEntry {
+  pluginVersion: string;
+  compatibleKewuToolboxVersions: string;
+  protocolVersion?: string;
+  notes?: string;
 }
 
 export interface PomodoroSettings {
