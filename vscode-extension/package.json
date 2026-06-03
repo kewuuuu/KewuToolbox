@@ -2,7 +2,7 @@
   "name": "kewu-toolbox-vscode-bridge",
   "displayName": "KewuToolbox VSCode Bridge",
   "description": "将 VSCode 工作区按统一插件协议同步到 KewuToolbox。",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "kewuuuu",
   "engines": {
     "vscode": "^1.85.0"
