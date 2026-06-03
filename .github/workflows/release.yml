@@ -149,29 +149,26 @@ jobs:
             Copy-Item -LiteralPath $notesSource -Destination $notesPath -Force
             $notesContent = Get-Content -LiteralPath $notesPath -Raw
             if ($notesContent -notmatch '(?im)^Full Changelog:') {
-              @"
-
-Full Changelog: $fullChangelog
-"@ | Add-Content -LiteralPath $notesPath -Encoding UTF8
+              @('', "Full Changelog: $fullChangelog") | Add-Content -LiteralPath $notesPath -Encoding UTF8
             }
           } else {
-            @"
-KewuToolbox v$version
-
-本版本由 GitHub Actions 自动构建发布。
-
-构建信息
-- 来源提交：$env:GITHUB_SHA
-- Windows 便携版：KewuToolbox-$version-portable.exe
-- SHA256 校验：KewuToolbox-$version-portable.exe.sha256
-
-如需显示详细更新信息，请在仓库中创建：
-- docs/release-notes/$tag.md
-- docs/release-notes/$version.md
-- RELEASE_NOTES.md
-
-Full Changelog: $fullChangelog
-"@ | Set-Content -LiteralPath $notesPath -Encoding UTF8
+            @(
+              "KewuToolbox v$version",
+              '',
+              '本版本由 GitHub Actions 自动构建发布。',
+              '',
+              '构建信息',
+              "- 来源提交：$env:GITHUB_SHA",
+              "- Windows 便携版：KewuToolbox-$version-portable.exe",
+              "- SHA256 校验：KewuToolbox-$version-portable.exe.sha256",
+              '',
+              '如需显示详细更新信息，请在仓库中创建：',
+              "- docs/release-notes/$tag.md",
+              "- docs/release-notes/$version.md",
+              '- RELEASE_NOTES.md',
+              '',
+              "Full Changelog: $fullChangelog"
+            ) | Set-Content -LiteralPath $notesPath -Encoding UTF8
           }
 
           gh release view $tag *> $null
