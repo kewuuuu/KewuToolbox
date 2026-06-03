@@ -28,6 +28,8 @@ declare global {
     sha256Name?: string;
     sha256Url?: string;
     repositoryUrl?: string;
+    updateSource?: 'github_api' | 'github_redirect' | string;
+    apiFailureDetail?: string;
   }
 
   interface StartPortableUpdateResult {

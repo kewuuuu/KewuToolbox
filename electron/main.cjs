@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, powerMonitor, Notification, Tray, Menu, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, powerMonitor, Notification, Tray, Menu, shell, net } = require('electron');
 const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const https = require('node:https');
@@ -3858,21 +3858,56 @@ function compareVersions(left, right) {
   return 0;
 }
 
-function requestJson(url) {
+function createUpdateRequestHeaders() {
+  return {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'KewuToolbox-Updater',
+  };
+}
+
+async function requestTextWithElectronNet(url) {
+  if (!net || typeof net.fetch !== 'function') {
+    throw new Error('electron net.fetch is not available');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, 15000);
+
+  try {
+    const response = await net.fetch(url, {
+      headers: createUpdateRequestHeaders(),
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    const raw = await response.text();
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${raw.slice(0, 300)}`);
+    }
+    return raw;
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('request timeout');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function requestTextWithNodeHttps(url) {
   return new Promise((resolve, reject) => {
     const request = https.get(
       url,
       {
-        headers: {
-          Accept: 'application/vnd.github+json',
-          'User-Agent': 'KewuToolbox-Updater',
-        },
+        headers: createUpdateRequestHeaders(),
       },
       response => {
         const statusCode = response.statusCode || 0;
         if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
           response.resume();
-          requestJson(response.headers.location).then(resolve, reject);
+          requestTextWithNodeHttps(response.headers.location).then(resolve, reject);
           return;
         }
         let raw = '';
@@ -3885,11 +3920,7 @@ function requestJson(url) {
             reject(new Error(`HTTP ${statusCode}: ${raw.slice(0, 300)}`));
             return;
           }
-          try {
-            resolve(JSON.parse(raw));
-          } catch (error) {
-            reject(error);
-          }
+          resolve(raw);
         });
       },
     );
@@ -3898,6 +3929,133 @@ function requestJson(url) {
     });
     request.on('error', reject);
   });
+}
+
+async function requestText(url) {
+  const errors = [];
+  try {
+    return await requestTextWithElectronNet(url);
+  } catch (error) {
+    errors.push(`electron-net: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  try {
+    return await requestTextWithNodeHttps(url);
+  } catch (error) {
+    errors.push(`node-https: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  throw new Error(errors.join('; '));
+}
+
+async function requestJson(url) {
+  const raw = await requestText(url);
+  return JSON.parse(raw);
+}
+
+async function resolveFinalUrl(url) {
+  const errors = [];
+  if (net && typeof net.fetch === 'function') {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 15000);
+    try {
+      const response = await net.fetch(url, {
+        headers: createUpdateRequestHeaders(),
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+      if (response.body && typeof response.body.cancel === 'function') {
+        try {
+          await response.body.cancel();
+        } catch {
+          // Ignore stream cancellation failures.
+        }
+      }
+      return response.url || url;
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        errors.push('electron-net: request timeout');
+      } else {
+        errors.push(`electron-net: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = https.get(
+        url,
+        {
+          headers: createUpdateRequestHeaders(),
+        },
+        response => {
+          const statusCode = response.statusCode || 0;
+          const location = response.headers.location;
+          response.resume();
+          if (statusCode >= 300 && statusCode < 400 && typeof location === 'string' && location.trim()) {
+            resolve(new URL(location, url).toString());
+            return;
+          }
+          resolve(url);
+        },
+      );
+      request.setTimeout(15000, () => {
+        request.destroy(new Error('request timeout'));
+      });
+      request.on('error', reject);
+    });
+  } catch (error) {
+    errors.push(`node-https: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  throw new Error(errors.join('; '));
+}
+
+function buildPortableUpdateAssetsFromVersion(version) {
+  const normalizedVersion = normalizeVersionText(version);
+  if (!normalizedVersion) {
+    return { portableAsset: null, sha256Asset: null };
+  }
+  const tag = `v${normalizedVersion}`;
+  const portableName = `KewuToolbox-${normalizedVersion}-portable.exe`;
+  const portableUrl = `${GITHUB_REPO_URL}/releases/download/${tag}/${portableName}`;
+  const sha256Name = `${portableName}.sha256`;
+  return {
+    portableAsset: {
+      name: portableName,
+      browser_download_url: portableUrl,
+      size: 0,
+    },
+    sha256Asset: {
+      name: sha256Name,
+      browser_download_url: `${portableUrl}.sha256`,
+      size: 0,
+    },
+  };
+}
+
+async function getLatestReleaseFromRedirect() {
+  const finalUrl = await resolveFinalUrl(`${GITHUB_REPO_URL}/releases/latest`);
+  const match = /\/releases\/tag\/([^/?#]+)/i.exec(finalUrl);
+  if (!match) {
+    throw new Error(`cannot resolve latest release tag from ${finalUrl}`);
+  }
+  const tagName = decodeURIComponent(match[1]);
+  const latestVersion = normalizeVersionText(tagName);
+  const { portableAsset, sha256Asset } = buildPortableUpdateAssetsFromVersion(latestVersion);
+  return {
+    tag_name: `v${latestVersion}`,
+    name: `KewuToolbox v${latestVersion}`,
+    html_url: `${GITHUB_REPO_URL}/releases/tag/v${latestVersion}`,
+    body: '',
+    published_at: '',
+    assets: [portableAsset, sha256Asset].filter(Boolean),
+    source: 'github_redirect',
+  };
 }
 
 function pickPortableUpdateAssets(release) {
@@ -3924,8 +4082,19 @@ function pickPortableUpdateAssets(release) {
 
 async function checkForPortableUpdate() {
   const currentVersion = app.getVersion();
+  let apiFailureDetail = '';
   try {
-    const release = await requestJson(GITHUB_LATEST_RELEASE_API_URL);
+    let release = null;
+    try {
+      release = await requestJson(GITHUB_LATEST_RELEASE_API_URL);
+    } catch (error) {
+      apiFailureDetail = error instanceof Error ? error.message : String(error);
+      addDiagnosticLog('warn', '检查更新 API 请求失败，尝试使用 GitHub Release 重定向兜底', apiFailureDetail);
+      scheduleSave();
+      emitState();
+      release = await getLatestReleaseFromRedirect();
+    }
+
     const latestVersion = normalizeVersionText(release?.tag_name || release?.name || '');
     if (!latestVersion) {
       return {
@@ -3953,14 +4122,21 @@ async function checkForPortableUpdate() {
       sha256Name: sha256Asset?.name || '',
       sha256Url: sha256Asset?.browser_download_url || '',
       repositoryUrl: GITHUB_REPO_URL,
+      updateSource: release?.source || 'github_api',
+      apiFailureDetail,
     };
   } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    addDiagnosticLog('error', '检查更新失败', detail);
+    scheduleSave();
+    emitState();
     return {
       ok: false,
       error: 'request_failed',
-      detail: error instanceof Error ? error.message : String(error),
+      detail,
       currentVersion,
       repositoryUrl: GITHUB_REPO_URL,
+      apiFailureDetail,
     };
   }
 }
@@ -4009,6 +4185,21 @@ function Write-UpdateLog([string]$Message) {
   Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8
 }
 
+function Get-Sha256Hex([string]$LiteralPath) {
+  $stream = [System.IO.File]::OpenRead($LiteralPath)
+  try {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      $hashBytes = $sha256.ComputeHash($stream)
+    } finally {
+      $sha256.Dispose()
+    }
+  } finally {
+    $stream.Dispose()
+  }
+  return -join ($hashBytes | ForEach-Object { $_.ToString('x2') })
+}
+
 try {
   Write-UpdateLog "Updater started. Target=$TargetPath"
   try {
@@ -4044,7 +4235,7 @@ try {
     throw 'Invalid sha256 file.'
   }
   $expectedHash = $match.Value.ToLowerInvariant()
-  $actualHash = (Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $actualHash = Get-Sha256Hex $downloadPath
   if ($actualHash -ne $expectedHash) {
     throw "SHA256 mismatch. Expected=$expectedHash Actual=$actualHash"
   }
