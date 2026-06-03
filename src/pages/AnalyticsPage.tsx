@@ -52,6 +52,77 @@ interface ChartSeries {
   color: string;
 }
 
+interface RankYAxisTickProps {
+  x?: number;
+  y?: number;
+  payload?: {
+    value?: string | number;
+  };
+}
+
+const RANK_AXIS_WIDTH = 124;
+const RANK_LABEL_MAX_UNITS = 24;
+
+function getTextVisualUnits(value: string) {
+  return Array.from(value).reduce((sum, char) => sum + (char.charCodeAt(0) <= 0x7f ? 1 : 2), 0);
+}
+
+function truncateTextByVisualUnits(value: string, maxUnits: number) {
+  const text = value.trim();
+  if (getTextVisualUnits(text) <= maxUnits) {
+    return text;
+  }
+
+  const suffix = '...';
+  const targetUnits = Math.max(1, maxUnits - suffix.length);
+  let output = '';
+  let units = 0;
+  for (const char of Array.from(text)) {
+    const charUnits = char.charCodeAt(0) <= 0x7f ? 1 : 2;
+    if (units + charUnits > targetUnits) {
+      break;
+    }
+    output += char;
+    units += charUnits;
+  }
+
+  return `${output || text.slice(0, 1)}${suffix}`;
+}
+
+function getRankLabelFontSize(value: string) {
+  const units = getTextVisualUnits(value);
+  if (units <= 14) {
+    return 12;
+  }
+  if (units <= 22) {
+    return 11;
+  }
+  if (units <= 30) {
+    return 10;
+  }
+  return 9;
+}
+
+function renderRankYAxisTick({ x = 0, y = 0, payload }: RankYAxisTickProps) {
+  const rawName = String(payload?.value ?? '');
+  const displayName = truncateTextByVisualUnits(rawName, RANK_LABEL_MAX_UNITS);
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <title>{rawName}</title>
+      <text
+        x={-8}
+        y={0}
+        dy={4}
+        textAnchor="end"
+        fill="hsl(var(--foreground))"
+        fontSize={getRankLabelFontSize(rawName)}
+      >
+        {displayName}
+      </text>
+    </g>
+  );
+}
+
 function getWindowSeriesColor(index: number) {
   return `hsl(${(index * 43 + 198) % 360}, 72%, 56%)`;
 }
@@ -198,7 +269,7 @@ export default function AnalyticsPage() {
     () => distribution.map(item => ({ ...item, minutes: Math.round(item.seconds / 60) })),
     [distribution],
   );
-  const barChartHeight = Math.max(260, barData.length * 30);
+  const barChartHeight = Math.max(260, barData.length * 34);
   const distributionTotalSeconds = useMemo(
     () => distribution.reduce((sum, item) => sum + item.seconds, 0),
     [distribution],
@@ -389,14 +460,17 @@ export default function AnalyticsPage() {
             {barData.length > 0 ? (
               <div className="max-h-[520px] overflow-auto pr-1">
                 <ResponsiveContainer width="100%" height={barChartHeight}>
-                  <BarChart data={barData} layout="vertical" margin={{ left: 86, right: 12 }}>
+                  <BarChart data={barData} layout="vertical" margin={{ left: 6, right: 12, top: 4, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.55} />
                     <XAxis type="number" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
                     <YAxis
                       dataKey="name"
                       type="category"
-                      width={86}
-                      tick={{ fontSize: 10, fill: 'hsl(var(--foreground))' }}
+                      width={RANK_AXIS_WIDTH}
+                      tickLine={false}
+                      axisLine={false}
+                      interval={0}
+                      tick={renderRankYAxisTick}
                     />
                     <Tooltip
                       contentStyle={tooltipStyle}

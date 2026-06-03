@@ -4,11 +4,11 @@ import { Timer, Clock3, Calculator, BarChart3, ListTodo, Archive, Monitor, Setti
 const navItems = [
   { to: '/focus', icon: Timer, label: '专注' },
   { to: '/clock', icon: Clock3, label: '时钟' },
-  { to: '/calculator', icon: Calculator, label: '计算器' },
+  { to: '/monitoring', icon: Monitor, label: '进程管理' },
   { to: '/analytics', icon: BarChart3, label: '数据统计' },
   { to: '/todos', icon: ListTodo, label: '待办列表' },
   { to: '/archives', icon: Archive, label: '归档列表' },
-  { to: '/monitoring', icon: Monitor, label: '进程管理' },
+  { to: '/calculator', icon: Calculator, label: '计算器' },
   { to: '/settings', icon: Settings2, label: '设置' },
 ];
 

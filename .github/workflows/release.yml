@@ -129,18 +129,50 @@ jobs:
           git tag -f $tag $env:GITHUB_SHA
           git push origin "refs/tags/$tag" --force
 
+          $previousTag = git tag --sort=-v:refname |
+            Where-Object { $_ -ne $tag } |
+            Select-Object -First 1
+          $fullChangelog = if ($previousTag) {
+            "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/compare/$previousTag...$tag"
+          } else {
+            "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/commits/$tag"
+          }
+
           $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
-          @"
-          KewuToolbox v$version
+          $notesCandidates = @(
+            (Join-Path $PWD "docs/release-notes/$tag.md"),
+            (Join-Path $PWD "docs/release-notes/$version.md"),
+            (Join-Path $PWD 'RELEASE_NOTES.md')
+          )
+          $notesSource = $notesCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if ($notesSource) {
+            Copy-Item -LiteralPath $notesSource -Destination $notesPath -Force
+            $notesContent = Get-Content -LiteralPath $notesPath -Raw
+            if ($notesContent -notmatch '(?im)^Full Changelog:') {
+              @"
 
-          自动构建发布，来源提交：$env:GITHUB_SHA
+Full Changelog: $fullChangelog
+"@ | Add-Content -LiteralPath $notesPath -Encoding UTF8
+            }
+          } else {
+            @"
+KewuToolbox v$version
 
-          自动更新需要的文件：
-          - KewuToolbox-<version>-portable.exe
-          - KewuToolbox-<version>-portable.exe.sha256
+本版本由 GitHub Actions 自动构建发布。
 
-          同版本号重新推送时，本工作流会更新同一个 Release 并替换旧资产。
-          "@ | Set-Content -LiteralPath $notesPath -Encoding UTF8
+构建信息
+- 来源提交：$env:GITHUB_SHA
+- Windows 便携版：KewuToolbox-$version-portable.exe
+- SHA256 校验：KewuToolbox-$version-portable.exe.sha256
+
+如需显示详细更新信息，请在仓库中创建：
+- docs/release-notes/$tag.md
+- docs/release-notes/$version.md
+- RELEASE_NOTES.md
+
+Full Changelog: $fullChangelog
+"@ | Set-Content -LiteralPath $notesPath -Encoding UTF8
+          }
 
           gh release view $tag *> $null
           $releaseExists = $LASTEXITCODE -eq 0
