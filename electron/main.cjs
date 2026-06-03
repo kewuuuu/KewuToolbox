@@ -9,9 +9,14 @@ const path = require('node:path');
 const POLL_INTERVAL_MS = 1000;
 const MAX_SESSIONS = 60000;
 const MAX_PROCESS_TIMELINE_RECORDS = 100000;
+const MAX_INPUT_ACTIVITY_TIMELINE_RECORDS = 100000;
 const MAX_POWER_EVENTS = 5000;
 const DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS = 60;
 const DEFAULT_ANALYTICS_WINDOW_ITEM_LIMIT = 10;
+const INPUT_ACTIVITY_BUCKET_MS = 10 * 60 * 1000;
+const INPUT_ACTIVITY_FLUSH_DELAY_MS = 1000;
+const MOUSE_MOVE_SAMPLE_MS = 120;
+const MOUSE_MOVE_MAX_DELTA_PIXELS = 3000;
 
 const DESKTOP_KEY = 'desktop';
 const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain';
@@ -40,6 +45,8 @@ const STATE_SECTION_FILES = {
   sessions: 'sessions.json',
   windowStats: 'window-stats.json',
   processTimeline: 'process-timeline.json',
+  inputActivityStats: 'input-activity-stats.json',
+  inputActivityTimeline: 'input-activity-timeline.json',
   currentProcessKeys: 'current-process-keys.json',
   processTags: 'process-tags.json',
   processTagAssignments: 'process-tag-assignments.json',
@@ -87,7 +94,10 @@ const CODE_WINDOW_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let mainWindow = null;
 let monitorTimer = null;
 let saveTimer = null;
+let inputActivityFlushTimer = null;
 let activeWinApi = null;
+let inputHookApi = null;
+let inputHookStarted = false;
 let browserBridgeServer = null;
 let resolvedDataDirPath = null;
 let preferredDataDirPath = null;
@@ -121,6 +131,11 @@ const pluginBridgeState = {
 const pendingWindowRuntime = new Map();
 const recentlyClosedWindowRuntime = new Map();
 const codeWindowIdentityCache = new Map();
+
+const inputHookRuntime = {
+  lastMousePoint: null,
+  lastMouseMoveAtMs: 0,
+};
 
 function formatConsoleArg(value) {
   if (typeof value === 'string') {
@@ -163,6 +178,8 @@ function createEmptyState() {
     sessions: [],
     windowStats: [],
     processTimeline: [],
+    inputActivityStats: [],
+    inputActivityTimeline: [],
     currentProcessKeys: [],
     currentProcessRuntimeStats: [],
     processTags: [],
@@ -1072,6 +1089,28 @@ function applyWhitelistNamesToState() {
     };
   });
 
+  appState.inputActivityStats = (appState.inputActivityStats || []).map(item => {
+    const nextName = nameMap.get(item.classificationKey);
+    if (!nextName || item.displayName === nextName) {
+      return item;
+    }
+    return {
+      ...item,
+      displayName: nextName,
+    };
+  });
+
+  appState.inputActivityTimeline = (appState.inputActivityTimeline || []).map(item => {
+    const nextName = nameMap.get(item.classificationKey);
+    if (!nextName || item.displayName === nextName) {
+      return item;
+    }
+    return {
+      ...item,
+      displayName: nextName,
+    };
+  });
+
   if (appState.currentFocusedWindow) {
     const nextName = nameMap.get(appState.currentFocusedWindow.classificationKey);
     if (nextName && appState.currentFocusedWindow.displayName !== nextName) {
@@ -1292,6 +1331,31 @@ function buildWhitelistMergeResult() {
     return transformed;
   };
 
+  const transformInputActivityTimelineRecord = record => {
+    const { candidate, matchedRules } = resolveRules(record);
+    if (!candidate || matchedRules.length === 0) {
+      return [record];
+    }
+    const transformed = matchedRules.map(rule => {
+      const targetProfile = upsertMergedWhitelistProfile(nextProfileMap, rule, candidate, nowIso);
+      registerMove(record.classificationKey, targetProfile.classificationKey);
+      const alreadyTarget = record.classificationKey === targetProfile.classificationKey && matchedRules.length === 1;
+      return {
+        ...record,
+        id: alreadyTarget ? record.id : `${record.id}::${rule.id}`,
+        classificationKey: targetProfile.classificationKey,
+        displayName: targetProfile.displayName,
+        objectType: targetProfile.objectType,
+        processName: targetProfile.processName,
+        domain: targetProfile.domain || record.domain,
+      };
+    });
+    if (transformed.some(item => item.classificationKey !== record.classificationKey || item.displayName !== record.displayName)) {
+      changedCount += 1;
+    }
+    return transformed;
+  };
+
   const nextWindowStatMap = new Map();
   const upsertWindowStat = stat => {
     mergeNumericStat(nextWindowStatMap, stat.classificationKey, stat, (existing, incoming) => ({
@@ -1331,6 +1395,54 @@ function buildWhitelistMergeResult() {
         processName: targetProfile.processName,
         domain: targetProfile.domain || stat.domain,
         category: targetProfile.category,
+      });
+    }
+    changedCount += 1;
+  }
+
+  const nextInputActivityStatMap = new Map();
+  const upsertInputActivityStat = stat => {
+    mergeNumericStat(nextInputActivityStatMap, stat.classificationKey, stat, (existing, incoming) => ({
+      ...existing,
+      displayName: incoming.displayName,
+      objectType: incoming.objectType,
+      processName: incoming.processName,
+      domain: incoming.domain || existing.domain,
+      keyPresses: (Number(existing.keyPresses) || 0) + (Number(incoming.keyPresses) || 0),
+      leftClicks: (Number(existing.leftClicks) || 0) + (Number(incoming.leftClicks) || 0),
+      rightClicks: (Number(existing.rightClicks) || 0) + (Number(incoming.rightClicks) || 0),
+      middleClicks: (Number(existing.middleClicks) || 0) + (Number(incoming.middleClicks) || 0),
+      sideBackClicks: (Number(existing.sideBackClicks) || 0) + (Number(incoming.sideBackClicks) || 0),
+      sideForwardClicks: (Number(existing.sideForwardClicks) || 0) + (Number(incoming.sideForwardClicks) || 0),
+      scrollTicks: (Number(existing.scrollTicks) || 0) + (Number(incoming.scrollTicks) || 0),
+      mouseMovePixels: (Number(existing.mouseMovePixels) || 0) + (Number(incoming.mouseMovePixels) || 0),
+      firstAt:
+        new Date(incoming.firstAt || 0).getTime() < new Date(existing.firstAt || 0).getTime()
+          ? incoming.firstAt
+          : existing.firstAt,
+      lastAt:
+        new Date(incoming.lastAt || 0).getTime() > new Date(existing.lastAt || 0).getTime()
+          ? incoming.lastAt
+          : existing.lastAt,
+    }));
+  };
+
+  for (const stat of appState.inputActivityStats || []) {
+    const { candidate, matchedRules } = resolveRules(stat);
+    if (!candidate || matchedRules.length === 0) {
+      upsertInputActivityStat(stat);
+      continue;
+    }
+    for (const rule of matchedRules) {
+      const targetProfile = upsertMergedWhitelistProfile(nextProfileMap, rule, candidate, nowIso);
+      registerMove(stat.classificationKey, targetProfile.classificationKey);
+      upsertInputActivityStat({
+        ...stat,
+        classificationKey: targetProfile.classificationKey,
+        displayName: targetProfile.displayName,
+        objectType: targetProfile.objectType,
+        processName: targetProfile.processName,
+        domain: targetProfile.domain || stat.domain,
       });
     }
     changedCount += 1;
@@ -1387,7 +1499,9 @@ function buildWhitelistMergeResult() {
 
   appState.sessions = (appState.sessions || []).flatMap(transformFocusRecord);
   appState.processTimeline = (appState.processTimeline || []).flatMap(transformTimelineRecord);
+  appState.inputActivityTimeline = (appState.inputActivityTimeline || []).flatMap(transformInputActivityTimelineRecord);
   appState.windowStats = [...nextWindowStatMap.values()];
+  appState.inputActivityStats = [...nextInputActivityStatMap.values()];
   appState.currentProcessRuntimeStats = [...nextRuntimeStatMap.values()];
 
   const remapRuntimeMap = sourceMap => {
@@ -1738,6 +1852,66 @@ function normalizeProcessTimelineRecord(item) {
   };
 }
 
+function normalizeInputActivityCounts(item) {
+  const pickInteger = value => (Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : 0);
+  return {
+    keyPresses: pickInteger(item?.keyPresses),
+    leftClicks: pickInteger(item?.leftClicks),
+    rightClicks: pickInteger(item?.rightClicks),
+    middleClicks: pickInteger(item?.middleClicks),
+    sideBackClicks: pickInteger(item?.sideBackClicks),
+    sideForwardClicks: pickInteger(item?.sideForwardClicks),
+    scrollTicks: pickInteger(item?.scrollTicks),
+    mouseMovePixels: pickInteger(item?.mouseMovePixels),
+  };
+}
+
+function normalizeInputActivityWindowStat(item) {
+  if (!item || typeof item !== 'object' || typeof item.classificationKey !== 'string') {
+    return null;
+  }
+  const nowIso = new Date().toISOString();
+  return {
+    classificationKey: item.classificationKey,
+    displayName: typeof item.displayName === 'string' ? item.displayName : item.classificationKey,
+    objectType: item.objectType === 'BrowserTab' || item.objectType === 'Desktop' ? item.objectType : 'AppWindow',
+    processName: typeof item.processName === 'string' ? item.processName : '',
+    domain: typeof item.domain === 'string' ? item.domain : undefined,
+    ...normalizeInputActivityCounts(item),
+    firstAt: typeof item.firstAt === 'string' ? item.firstAt : nowIso,
+    lastAt: typeof item.lastAt === 'string' ? item.lastAt : nowIso,
+  };
+}
+
+function normalizeInputActivityTimelineRecord(item) {
+  if (!item || typeof item !== 'object' || typeof item.classificationKey !== 'string') {
+    return null;
+  }
+  const nowMs = Date.now();
+  const bucketStartAt =
+    typeof item.bucketStartAt === 'string' && item.bucketStartAt
+      ? item.bucketStartAt
+      : new Date(Math.floor(nowMs / INPUT_ACTIVITY_BUCKET_MS) * INPUT_ACTIVITY_BUCKET_MS).toISOString();
+  const bucketStartMs = new Date(bucketStartAt).getTime();
+  const safeBucketStartMs = Number.isFinite(bucketStartMs) ? bucketStartMs : nowMs;
+  const bucketEndAt =
+    typeof item.bucketEndAt === 'string' && item.bucketEndAt
+      ? item.bucketEndAt
+      : new Date(safeBucketStartMs + INPUT_ACTIVITY_BUCKET_MS).toISOString();
+
+  return {
+    id: typeof item.id === 'string' && item.id.trim() ? item.id : makeId('input-activity'),
+    classificationKey: item.classificationKey,
+    displayName: typeof item.displayName === 'string' ? item.displayName : item.classificationKey,
+    objectType: item.objectType === 'BrowserTab' || item.objectType === 'Desktop' ? item.objectType : 'AppWindow',
+    processName: typeof item.processName === 'string' ? item.processName : '',
+    domain: typeof item.domain === 'string' ? item.domain : undefined,
+    bucketStartAt,
+    bucketEndAt,
+    ...normalizeInputActivityCounts(item),
+  };
+}
+
 function normalizeDiagnosticLog(item) {
   if (!item || typeof item !== 'object') {
     return null;
@@ -1817,6 +1991,17 @@ function normalizeSavedState(input) {
           .map(item => normalizeProcessTimelineRecord(item))
           .filter(Boolean)
           .slice(-MAX_PROCESS_TIMELINE_RECORDS)
+      : [],
+    inputActivityStats: Array.isArray(raw.inputActivityStats)
+      ? raw.inputActivityStats
+          .map(item => normalizeInputActivityWindowStat(item))
+          .filter(Boolean)
+      : [],
+    inputActivityTimeline: Array.isArray(raw.inputActivityTimeline)
+      ? raw.inputActivityTimeline
+          .map(item => normalizeInputActivityTimelineRecord(item))
+          .filter(Boolean)
+          .slice(-MAX_INPUT_ACTIVITY_TIMELINE_RECORDS)
       : [],
     currentProcessKeys: Array.isArray(raw.currentProcessKeys) ? raw.currentProcessKeys : [],
     currentProcessRuntimeStats: Array.isArray(raw.currentProcessRuntimeStats)
@@ -2016,6 +2201,8 @@ function resetRuntimeTrackingState() {
   monitorCursor.tagFocusStreakSeconds = 0;
   pendingWindowRuntime.clear();
   recentlyClosedWindowRuntime.clear();
+  inputHookRuntime.lastMousePoint = null;
+  inputHookRuntime.lastMouseMoveAtMs = 0;
   appState.currentProcessRuntimeStats = [];
   browserBridgeState.byBrowser.clear();
   pluginBridgeState.byPlugin.clear();
@@ -2495,6 +2682,320 @@ function finalizeProcessTimeline(pending, nowIso) {
 function finalizeAllOpenProcessTimelines(nowIso = new Date().toISOString()) {
   for (const pending of pendingWindowRuntime.values()) {
     finalizeProcessTimeline(pending, nowIso);
+  }
+}
+
+function createInputActivityCounts() {
+  return {
+    keyPresses: 0,
+    leftClicks: 0,
+    rightClicks: 0,
+    middleClicks: 0,
+    sideBackClicks: 0,
+    sideForwardClicks: 0,
+    scrollTicks: 0,
+    mouseMovePixels: 0,
+  };
+}
+
+function hasInputActivityCounts(counts) {
+  if (!counts || typeof counts !== 'object') {
+    return false;
+  }
+  return Object.values(normalizeInputActivityCounts(counts)).some(value => value > 0);
+}
+
+function mergeInputActivityCounts(target, incoming) {
+  const normalizedTarget = normalizeInputActivityCounts(target);
+  const normalizedIncoming = normalizeInputActivityCounts(incoming);
+  for (const key of Object.keys(normalizedIncoming)) {
+    normalizedTarget[key] = (Number(normalizedTarget[key]) || 0) + (Number(normalizedIncoming[key]) || 0);
+  }
+  return normalizedTarget;
+}
+
+function getInputActivityBucketStartMs(timeMs) {
+  const normalizedTime = Number.isFinite(Number(timeMs)) ? Number(timeMs) : Date.now();
+  return Math.floor(normalizedTime / INPUT_ACTIVITY_BUCKET_MS) * INPUT_ACTIVITY_BUCKET_MS;
+}
+
+function upsertInputActivityRecords(profile, counts, occurredAtIso = new Date().toISOString()) {
+  if (!profile || !profile.classificationKey || !hasInputActivityCounts(counts)) {
+    return;
+  }
+
+  const normalizedCounts = normalizeInputActivityCounts(counts);
+  const occurredAtMs = new Date(occurredAtIso).getTime();
+  const safeOccurredAtIso = Number.isFinite(occurredAtMs) ? occurredAtIso : new Date().toISOString();
+  const bucketStartMs = getInputActivityBucketStartMs(Number.isFinite(occurredAtMs) ? occurredAtMs : Date.now());
+  const bucketStartAt = new Date(bucketStartMs).toISOString();
+  const bucketEndAt = new Date(bucketStartMs + INPUT_ACTIVITY_BUCKET_MS).toISOString();
+
+  const existingStat = (appState.inputActivityStats || []).find(
+    item => item.classificationKey === profile.classificationKey,
+  );
+  if (existingStat) {
+    existingStat.displayName = profile.displayName;
+    existingStat.objectType = profile.objectType;
+    existingStat.processName = profile.processName;
+    existingStat.domain = profile.domain;
+    const merged = mergeInputActivityCounts(existingStat, normalizedCounts);
+    Object.assign(existingStat, merged);
+    existingStat.firstAt =
+      existingStat.firstAt && new Date(existingStat.firstAt).getTime() < new Date(safeOccurredAtIso).getTime()
+        ? existingStat.firstAt
+        : safeOccurredAtIso;
+    existingStat.lastAt = safeOccurredAtIso;
+  } else {
+    appState.inputActivityStats = [
+      ...(appState.inputActivityStats || []),
+      {
+        classificationKey: profile.classificationKey,
+        displayName: profile.displayName,
+        objectType: profile.objectType,
+        processName: profile.processName,
+        domain: profile.domain,
+        ...normalizedCounts,
+        firstAt: safeOccurredAtIso,
+        lastAt: safeOccurredAtIso,
+      },
+    ];
+  }
+
+  const bucketId = `input-activity|${profile.classificationKey}|${bucketStartMs}`;
+  const existingBucket = (appState.inputActivityTimeline || []).find(item => item.id === bucketId);
+  if (existingBucket) {
+    existingBucket.displayName = profile.displayName;
+    existingBucket.objectType = profile.objectType;
+    existingBucket.processName = profile.processName;
+    existingBucket.domain = profile.domain;
+    const merged = mergeInputActivityCounts(existingBucket, normalizedCounts);
+    Object.assign(existingBucket, merged);
+  } else {
+    appState.inputActivityTimeline = [
+      ...(appState.inputActivityTimeline || []),
+      {
+        id: bucketId,
+        classificationKey: profile.classificationKey,
+        displayName: profile.displayName,
+        objectType: profile.objectType,
+        processName: profile.processName,
+        domain: profile.domain,
+        bucketStartAt,
+        bucketEndAt,
+        ...normalizedCounts,
+      },
+    ];
+
+    if (appState.inputActivityTimeline.length > MAX_INPUT_ACTIVITY_TIMELINE_RECORDS) {
+      appState.inputActivityTimeline = appState.inputActivityTimeline.slice(-MAX_INPUT_ACTIVITY_TIMELINE_RECORDS);
+    }
+  }
+
+  scheduleInputActivityFlush();
+}
+
+function scheduleInputActivityFlush() {
+  if (inputActivityFlushTimer) {
+    return;
+  }
+  inputActivityFlushTimer = setTimeout(() => {
+    inputActivityFlushTimer = null;
+    scheduleSave();
+    emitState();
+  }, INPUT_ACTIVITY_FLUSH_DELAY_MS);
+}
+
+function cachePendingInputActivity(profile, counts, occurredAtIso) {
+  const pending = pendingWindowRuntime.get(profile.classificationKey);
+  if (!pending || pending.recorded) {
+    return false;
+  }
+  pending.inputActivityCounts = mergeInputActivityCounts(pending.inputActivityCounts, counts);
+  if (!pending.inputActivityFirstAt) {
+    pending.inputActivityFirstAt = occurredAtIso;
+  }
+  pending.inputActivityLastAt = occurredAtIso;
+  return true;
+}
+
+function flushPendingInputActivity(profile, pending, fallbackIso = new Date().toISOString()) {
+  if (!pending || !hasInputActivityCounts(pending.inputActivityCounts)) {
+    return;
+  }
+  const occurredAtIso =
+    typeof pending.inputActivityLastAt === 'string' && pending.inputActivityLastAt
+      ? pending.inputActivityLastAt
+      : fallbackIso;
+  upsertInputActivityRecords(profile, pending.inputActivityCounts, occurredAtIso);
+  pending.inputActivityCounts = createInputActivityCounts();
+  pending.inputActivityFirstAt = undefined;
+  pending.inputActivityLastAt = undefined;
+}
+
+function recordInputActivityForFocusedWindow(counts, occurredAtMs = Date.now()) {
+  if (!hasInputActivityCounts(counts)) {
+    return;
+  }
+  const profile = appState.currentFocusedWindow;
+  if (!profile || !profile.classificationKey) {
+    return;
+  }
+
+  const occurredAtIso = new Date(occurredAtMs).toISOString();
+  const pending = pendingWindowRuntime.get(profile.classificationKey);
+  if (cachePendingInputActivity(profile, counts, occurredAtIso)) {
+    return;
+  }
+  const hasRecordedWindow = (appState.windowStats || []).some(
+    item => item.classificationKey === profile.classificationKey,
+  );
+  if (!pending && !hasRecordedWindow) {
+    return;
+  }
+  upsertInputActivityRecords(profile, counts, occurredAtIso);
+}
+
+function getMouseButtonCountPatch(buttonValue) {
+  const counts = createInputActivityCounts();
+  const button = Number(buttonValue);
+  if (button === 2) {
+    counts.rightClicks = 1;
+  } else if (button === 3) {
+    counts.middleClicks = 1;
+  } else if (button === 4) {
+    counts.sideBackClicks = 1;
+  } else if (button === 5) {
+    counts.sideForwardClicks = 1;
+  } else {
+    counts.leftClicks = 1;
+  }
+  return counts;
+}
+
+function normalizeWheelTicks(event) {
+  const candidates = [event?.amount, event?.rotation, event?.clicks];
+  for (const candidate of candidates) {
+    const parsed = Number(candidate);
+    if (Number.isFinite(parsed) && parsed !== 0) {
+      return Math.max(1, Math.round(Math.abs(parsed)));
+    }
+  }
+  return 1;
+}
+
+function getInputEventTimeMs(event) {
+  const nowMs = Date.now();
+  const parsed = Number(event?.time);
+  if (
+    Number.isFinite(parsed) &&
+    parsed > nowMs - 7 * 24 * 3600000 &&
+    parsed < nowMs + 24 * 3600000
+  ) {
+    return parsed;
+  }
+  return nowMs;
+}
+
+function handleInputKeyDown(event) {
+  const counts = createInputActivityCounts();
+  counts.keyPresses = 1;
+  recordInputActivityForFocusedWindow(counts, getInputEventTimeMs(event));
+}
+
+function handleInputMouseDown(event) {
+  recordInputActivityForFocusedWindow(getMouseButtonCountPatch(event?.button), getInputEventTimeMs(event));
+}
+
+function handleInputWheel(event) {
+  const counts = createInputActivityCounts();
+  counts.scrollTicks = normalizeWheelTicks(event);
+  recordInputActivityForFocusedWindow(counts, getInputEventTimeMs(event));
+}
+
+function handleInputMouseMove(event) {
+  const x = Number(event?.x);
+  const y = Number(event?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return;
+  }
+  const nowMs = getInputEventTimeMs(event);
+  const lastPoint = inputHookRuntime.lastMousePoint;
+  if (!lastPoint) {
+    inputHookRuntime.lastMousePoint = { x, y };
+    inputHookRuntime.lastMouseMoveAtMs = nowMs;
+    return;
+  }
+  if (nowMs - inputHookRuntime.lastMouseMoveAtMs < MOUSE_MOVE_SAMPLE_MS) {
+    return;
+  }
+  const distance = Math.hypot(x - lastPoint.x, y - lastPoint.y);
+  inputHookRuntime.lastMousePoint = { x, y };
+  inputHookRuntime.lastMouseMoveAtMs = nowMs;
+  if (!Number.isFinite(distance) || distance <= 0 || distance > MOUSE_MOVE_MAX_DELTA_PIXELS) {
+    return;
+  }
+  const counts = createInputActivityCounts();
+  counts.mouseMovePixels = Math.round(distance);
+  recordInputActivityForFocusedWindow(counts, nowMs);
+}
+
+function loadInputHookApi() {
+  if (inputHookApi) {
+    return inputHookApi;
+  }
+  try {
+    const hookModule = require('uiohook-napi');
+    inputHookApi = hookModule?.uIOhook || null;
+  } catch (error) {
+    addDiagnosticLog('warn', '键鼠统计监听加载失败', error?.message || String(error));
+    inputHookApi = null;
+  }
+  return inputHookApi;
+}
+
+function startInputActivityMonitoring() {
+  if (inputHookStarted) {
+    return;
+  }
+  const hook = loadInputHookApi();
+  if (!hook || typeof hook.on !== 'function' || typeof hook.start !== 'function') {
+    addDiagnosticLog('warn', '键鼠统计监听不可用', '未找到 uiohook-napi 运行时');
+    return;
+  }
+
+  try {
+    hook.on('keydown', handleInputKeyDown);
+    hook.on('mousedown', handleInputMouseDown);
+    hook.on('wheel', handleInputWheel);
+    hook.on('mousemove', handleInputMouseMove);
+    hook.start();
+    inputHookStarted = true;
+    addDiagnosticLog('info', '键鼠统计监听已启动', '仅记录按键次数、点击次数、滚动量和鼠标移动距离');
+  } catch (error) {
+    inputHookStarted = false;
+    addDiagnosticLog('error', '键鼠统计监听启动失败', error?.message || String(error));
+  }
+}
+
+function stopInputActivityMonitoring() {
+  if (!inputHookApi || !inputHookStarted) {
+    return;
+  }
+  try {
+    inputHookApi.stop();
+    if (typeof inputHookApi.removeListener === 'function') {
+      inputHookApi.removeListener('keydown', handleInputKeyDown);
+      inputHookApi.removeListener('mousedown', handleInputMouseDown);
+      inputHookApi.removeListener('wheel', handleInputWheel);
+      inputHookApi.removeListener('mousemove', handleInputMouseMove);
+    }
+  } catch (error) {
+    addDiagnosticLog('warn', '键鼠统计监听停止失败', error?.message || String(error));
+  } finally {
+    inputHookStarted = false;
+    inputHookRuntime.lastMousePoint = null;
+    inputHookRuntime.lastMouseMoveAtMs = 0;
   }
 }
 
@@ -3555,6 +4056,7 @@ async function monitorTick() {
         focusDeltasByKey.set(key, focusDeltaToApply);
       }
       pending.recorded = true;
+      flushPendingInputActivity(profile, pending, nowIso);
       pending.resumedVisibleGapSeconds = 0;
       const isFocusEligible = isFocusedWindow && (confirmedFocusDelta > 0 || resumesActiveFocus);
       if (isFocusEligible && primaryFocusedCandidate && key === primaryFocusedCandidate.classificationKey) {
@@ -3814,6 +4316,12 @@ function mergeUserStateFromRenderer(partial) {
 
     appState.sessions = appState.sessions.filter(session => incomingKeySet.has(session.classificationKey));
     appState.processTimeline = (appState.processTimeline || []).filter(item =>
+      incomingKeySet.has(item.classificationKey),
+    );
+    appState.inputActivityStats = (appState.inputActivityStats || []).filter(item =>
+      incomingKeySet.has(item.classificationKey),
+    );
+    appState.inputActivityTimeline = (appState.inputActivityTimeline || []).filter(item =>
       incomingKeySet.has(item.classificationKey),
     );
     appState.currentProcessKeys = appState.currentProcessKeys.filter(key => incomingKeySet.has(key));
@@ -4888,6 +5396,7 @@ app.whenReady().then(() => {
   createTray();
   addPowerEvent('开机', '应用启动并开始监测', '#22c55e');
   startMonitoring();
+  startInputActivityMonitoring();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -4908,6 +5417,7 @@ app.on('before-quit', () => {
   forceQuitRequested = true;
   finalizeAllOpenProcessTimelines();
   stopMonitoring();
+  stopInputActivityMonitoring();
   stopBrowserBridgeServer();
   if (appTray) {
     appTray.destroy();
@@ -4916,6 +5426,10 @@ app.on('before-quit', () => {
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
+  }
+  if (inputActivityFlushTimer) {
+    clearTimeout(inputActivityFlushTimer);
+    inputActivityFlushTimer = null;
   }
   persistState();
 });

@@ -243,7 +243,7 @@ export default function SettingsPage() {
             settings: { dataFilePathInput: currentPath } as typeof settingsUi,
           });
         }
-        setAppVersion(version || '1.0.5');
+        setAppVersion(version || '1.0.6');
       } catch {
         if (!disposed) {
       toast.error('读取数据目录失败');
@@ -602,7 +602,7 @@ export default function SettingsPage() {
   };
 
   const openOfficialPluginDownload = async (assetName: string) => {
-    const versionTag = `v${appVersion || '1.0.5'}`;
+    const versionTag = `v${appVersion || '1.0.6'}`;
     const targetUrl = `https://github.com/kewuuuu/KewuToolbox/releases/download/${versionTag}/${assetName}`;
     if (window.desktopApi?.isElectron && window.desktopApi.openExternalUrl) {
       const result = await window.desktopApi.openExternalUrl({ url: targetUrl });

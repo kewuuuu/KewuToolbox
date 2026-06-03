@@ -92,6 +92,38 @@ export interface PendingWindowRuntimeStat {
   focusSegmentRecordedSeconds?: number;
 }
 
+export interface InputActivityCounters {
+  keyPresses: number;
+  leftClicks: number;
+  rightClicks: number;
+  middleClicks: number;
+  sideBackClicks: number;
+  sideForwardClicks: number;
+  scrollTicks: number;
+  mouseMovePixels: number;
+}
+
+export interface InputActivityWindowStat extends InputActivityCounters {
+  classificationKey: string;
+  displayName: string;
+  objectType: ObjectType;
+  processName: string;
+  domain?: string;
+  firstAt: string;
+  lastAt: string;
+}
+
+export interface InputActivityTimelineRecord extends InputActivityCounters {
+  id: string;
+  classificationKey: string;
+  displayName: string;
+  objectType: ObjectType;
+  processName: string;
+  domain?: string;
+  bucketStartAt: string;
+  bucketEndAt: string;
+}
+
 export interface DiagnosticLogEntry {
   id: string;
   level: 'info' | 'warn' | 'error';
@@ -315,6 +347,13 @@ export interface AnalyticsUiState {
   hourlyMode: 'total' | 'category';
 }
 
+export type InputActivityMetric = 'keyPresses' | 'totalClicks' | 'scrollTicks' | 'mouseMovePixels';
+
+export interface InputActivityUiState {
+  selectedDate: string;
+  selectedMetric: InputActivityMetric;
+}
+
 export interface MonitoringDraftUiState {
   creatingTag: boolean;
   newTagName: string;
@@ -330,6 +369,7 @@ export interface AppUiState {
   todos: TodoListUiState;
   focusSubjects: FocusSubjectsUiState;
   analytics: AnalyticsUiState;
+  inputActivity: InputActivityUiState;
   monitoringDraft: MonitoringDraftUiState;
 }
 
@@ -438,6 +478,8 @@ export interface AppState {
   sessions: FocusSession[];
   windowStats: WindowRuntimeStat[];
   processTimeline: ProcessTimelineRecord[];
+  inputActivityStats: InputActivityWindowStat[];
+  inputActivityTimeline: InputActivityTimelineRecord[];
   currentProcessKeys: string[];
   currentProcessRuntimeStats: PendingWindowRuntimeStat[];
   processTags: ProcessTag[];

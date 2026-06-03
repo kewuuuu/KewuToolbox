@@ -7,6 +7,7 @@ import { AppProvider } from '@/store/AppContext';
 import PomodoroPage from './pages/PomodoroPage';
 import FocusSubjectsPage from './pages/FocusSubjectsPage';
 import AnalyticsPage from './pages/AnalyticsPage';
+import InputActivityPage from './pages/InputActivityPage';
 import TodoListPage from './pages/TodoListPage';
 import TodoDetailPage from './pages/TodoDetailPage';
 import ArchiveListPage from './pages/ArchiveListPage';
@@ -36,6 +37,7 @@ const App = () => (
             <Route path="/clock/records/:recordId" element={<StopwatchRecordDetailPage />} />
             <Route path="/calculator" element={<CalculatorPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
+            <Route path="/input-activity" element={<InputActivityPage />} />
             <Route path="/todos" element={<TodoListPage />} />
             <Route path="/todos/:id" element={<TodoDetailPage />} />
             <Route path="/archives" element={<ArchiveListPage />} />

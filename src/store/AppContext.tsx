@@ -169,6 +169,13 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
       : fallbackValue;
   const normalizeHourlyMode = (value: unknown, fallbackValue: AppUiState['analytics']['hourlyMode']) =>
     value === 'total' || value === 'category' ? value : fallbackValue;
+  const normalizeInputActivityMetric = (
+    value: unknown,
+    fallbackValue: AppUiState['inputActivity']['selectedMetric'],
+  ) =>
+    value === 'keyPresses' || value === 'totalClicks' || value === 'scrollTicks' || value === 'mouseMovePixels'
+      ? value
+      : fallbackValue;
 
   return {
     calculatorExpression:
@@ -269,6 +276,13 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
       selectedDate: pickString(input?.analytics?.selectedDate, fallback.analytics.selectedDate),
       heatmapCategory: pickString(input?.analytics?.heatmapCategory, fallback.analytics.heatmapCategory),
       hourlyMode: normalizeHourlyMode(input?.analytics?.hourlyMode, fallback.analytics.hourlyMode),
+    },
+    inputActivity: {
+      selectedDate: pickString(input?.inputActivity?.selectedDate, fallback.inputActivity.selectedDate),
+      selectedMetric: normalizeInputActivityMetric(
+        input?.inputActivity?.selectedMetric,
+        fallback.inputActivity.selectedMetric,
+      ),
     },
     monitoringDraft: {
       creatingTag: pickBoolean(input?.monitoringDraft?.creatingTag, fallback.monitoringDraft.creatingTag),
@@ -619,6 +633,70 @@ function normalizeSoundFiles(raw: unknown): SoundFileItem[] {
     .filter(item => item.filePath.length > 0);
 }
 
+function normalizeInputActivityCounters(raw: unknown) {
+  const source = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const pickInteger = (value: unknown) => (Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : 0);
+  return {
+    keyPresses: pickInteger(source.keyPresses),
+    leftClicks: pickInteger(source.leftClicks),
+    rightClicks: pickInteger(source.rightClicks),
+    middleClicks: pickInteger(source.middleClicks),
+    sideBackClicks: pickInteger(source.sideBackClicks),
+    sideForwardClicks: pickInteger(source.sideForwardClicks),
+    scrollTicks: pickInteger(source.scrollTicks),
+    mouseMovePixels: pickInteger(source.mouseMovePixels),
+  };
+}
+
+function normalizeInputActivityStats(raw: unknown, fallback: AppState['inputActivityStats']) {
+  if (!Array.isArray(raw)) {
+    return fallback;
+  }
+  return raw
+    .filter(
+      (item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === 'object' && typeof (item as Record<string, unknown>).classificationKey === 'string'),
+    )
+    .map(item => {
+      const classificationKey = String(item.classificationKey);
+      return {
+        classificationKey,
+        displayName: typeof item.displayName === 'string' ? item.displayName : classificationKey,
+        objectType: item.objectType === 'BrowserTab' || item.objectType === 'Desktop' ? item.objectType : 'AppWindow',
+        processName: typeof item.processName === 'string' ? item.processName : '',
+        domain: typeof item.domain === 'string' ? item.domain : undefined,
+        ...normalizeInputActivityCounters(item),
+        firstAt: typeof item.firstAt === 'string' ? item.firstAt : '',
+        lastAt: typeof item.lastAt === 'string' ? item.lastAt : '',
+      };
+    });
+}
+
+function normalizeInputActivityTimeline(raw: unknown, fallback: AppState['inputActivityTimeline']) {
+  if (!Array.isArray(raw)) {
+    return fallback;
+  }
+  return raw
+    .filter(
+      (item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === 'object' && typeof (item as Record<string, unknown>).classificationKey === 'string'),
+    )
+    .map(item => {
+      const classificationKey = String(item.classificationKey);
+      return {
+        id: typeof item.id === 'string' ? item.id : `input-activity-${Date.now()}`,
+        classificationKey,
+        displayName: typeof item.displayName === 'string' ? item.displayName : classificationKey,
+        objectType: item.objectType === 'BrowserTab' || item.objectType === 'Desktop' ? item.objectType : 'AppWindow',
+        processName: typeof item.processName === 'string' ? item.processName : '',
+        domain: typeof item.domain === 'string' ? item.domain : undefined,
+        bucketStartAt: typeof item.bucketStartAt === 'string' ? item.bucketStartAt : '',
+        bucketEndAt: typeof item.bucketEndAt === 'string' ? item.bucketEndAt : '',
+        ...normalizeInputActivityCounters(item),
+      };
+    });
+}
+
 function normalizeState(raw: unknown): AppState {
   const initial = createInitialState();
   if (!raw || typeof raw !== 'object') {
@@ -698,6 +776,8 @@ function normalizeState(raw: unknown): AppState {
           isOpen: Boolean(item.isOpen),
         }))
       : initial.processTimeline,
+    inputActivityStats: normalizeInputActivityStats(input.inputActivityStats, initial.inputActivityStats),
+    inputActivityTimeline: normalizeInputActivityTimeline(input.inputActivityTimeline, initial.inputActivityTimeline),
     currentProcessKeys: Array.isArray(input.currentProcessKeys) ? input.currentProcessKeys : initial.currentProcessKeys,
     currentProcessRuntimeStats: Array.isArray(input.currentProcessRuntimeStats)
       ? input.currentProcessRuntimeStats.map(item => ({
@@ -836,6 +916,10 @@ function mergeLiveState(prev: AppState, incoming: AppState): AppState {
         : 0,
     })),
     processTimeline: Array.isArray(incoming.processTimeline) ? incoming.processTimeline : prev.processTimeline,
+    inputActivityStats: Array.isArray(incoming.inputActivityStats) ? incoming.inputActivityStats : prev.inputActivityStats,
+    inputActivityTimeline: Array.isArray(incoming.inputActivityTimeline)
+      ? incoming.inputActivityTimeline
+      : prev.inputActivityTimeline,
     currentProcessKeys: incoming.currentProcessKeys,
     currentProcessRuntimeStats: incoming.currentProcessRuntimeStats,
     processTagStats: incoming.processTagStats.map(item => ({
@@ -1625,6 +1709,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         sessions: s.sessions.filter(session => !keySet.has(session.classificationKey)),
         windowStats: s.windowStats.filter(stat => !keySet.has(stat.classificationKey)),
         processTimeline: s.processTimeline.filter(item => !keySet.has(item.classificationKey)),
+        inputActivityStats: s.inputActivityStats.filter(item => !keySet.has(item.classificationKey)),
+        inputActivityTimeline: s.inputActivityTimeline.filter(item => !keySet.has(item.classificationKey)),
         currentProcessKeys: s.currentProcessKeys.filter(key => !keySet.has(key)),
         currentProcessRuntimeStats: s.currentProcessRuntimeStats.filter(item => !keySet.has(item.classificationKey)),
         processTagAssignments: s.processTagAssignments.filter(assignment => !keySet.has(assignment.classificationKey)),

@@ -1,7 +1,7 @@
 {
   "name": "kewu-toolbox",
   "private": true,
-  "version": "1.0.5",
+  "version": "1.0.6",
   "license": "MIT",
   "type": "module",
   "main": "electron/main.cjs",
@@ -72,6 +72,7 @@
     "sonner": "^1.7.4",
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
+    "uiohook-napi": "^1.5.5",
     "vaul": "^0.9.9",
     "zod": "^3.25.76"
   },
@@ -112,6 +113,8 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "node_modules/node-gyp-build/**/*",
+      "node_modules/uiohook-napi/**/*",
       "package.json"
     ],
     "npmRebuild": false,

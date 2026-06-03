@@ -55,7 +55,7 @@ $builtTargets = @()
 Write-Host 'Step 3/6: Build portable packages...'
 if ($isWindowsHost) {
   Write-Host 'Building Windows portable EXE...'
-  npm run package:portable:win
+  npm run package:portable:win -- --config.win.signAndEditExecutable=false
   if ($LASTEXITCODE -ne 0) {
     throw "Build failed. npm run package:portable:win exited with code $LASTEXITCODE"
   }

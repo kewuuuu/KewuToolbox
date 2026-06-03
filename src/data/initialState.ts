@@ -26,6 +26,8 @@ export function createInitialState(): AppState {
     sessions: [],
     windowStats: [],
     processTimeline: [],
+    inputActivityStats: [],
+    inputActivityTimeline: [],
     currentProcessKeys: [],
     currentProcessRuntimeStats: [],
     processTags: [],
@@ -140,6 +142,10 @@ export function createInitialState(): AppState {
         selectedDate: '',
         heatmapCategory: '学习',
         hourlyMode: 'category',
+      },
+      inputActivity: {
+        selectedDate: '',
+        selectedMetric: 'keyPresses',
       },
       monitoringDraft: {
         creatingTag: false,
