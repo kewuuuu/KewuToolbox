@@ -245,7 +245,7 @@ npm run build:deliver
 仓库包含 `.github/workflows/release.yml`：
 - 推送到 `main` 或手动触发 workflow 后，会在 Windows runner 上执行 `npm run build:deliver`。
 - 工作流读取 `package.json` 的 `version`，生成 tag：`v<version>`。
-- 工作流会优先读取 `docs/release-notes/v<version>.md` 作为 GitHub Release 说明，例如 `docs/release-notes/v1.0.4.md`。
+- 工作流会优先读取 `docs/release-notes/v<version>.md` 作为 GitHub Release 说明，例如 `docs/release-notes/v1.0.5.md`。
 - 如果对应版本说明文件不存在，会继续尝试读取 `docs/release-notes/<version>.md` 或根目录 `RELEASE_NOTES.md`。
 - 如果说明文件中没有 `Full Changelog:`，工作流会自动追加上一版本到当前版本的对比链接。
 - 如果同版本 Release 已存在，会移动同名 tag、更新 Release 标题和说明、删除旧资产并上传新资产。

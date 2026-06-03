@@ -4218,6 +4218,14 @@ function parseSha256Content(content) {
   return match[0].toLowerCase();
 }
 
+function resolveUpdateDownloadBaseName(rawAssetName, fallbackTargetName) {
+  const assetName = typeof rawAssetName === 'string' ? path.basename(rawAssetName.trim()) : '';
+  if (/^KewuToolbox-.+-portable\.exe$/i.test(assetName)) {
+    return assetName;
+  }
+  return fallbackTargetName;
+}
+
 function getFileSha256Hex(filePath) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
@@ -4370,6 +4378,34 @@ function Get-Sha256Hex([string]$LiteralPath) {
   return -join ($hashBytes | ForEach-Object { $_.ToString('x2') })
 }
 
+function Wait-FileUnlocked([string]$LiteralPath, [int]$TimeoutSeconds) {
+  if (-not (Test-Path -LiteralPath $LiteralPath)) {
+    return
+  }
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    $stream = $null
+    try {
+      $stream = [System.IO.File]::Open(
+        $LiteralPath,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+      )
+      return
+    } catch {
+      Start-Sleep -Milliseconds 500
+    } finally {
+      if ($stream) {
+        $stream.Dispose()
+      }
+    }
+  }
+
+  throw "Target executable is still locked: $LiteralPath"
+}
+
 try {
   Write-UpdateLog "Updater started. Target=$TargetPath"
   try {
@@ -4399,6 +4435,9 @@ try {
   if ($actualHash -ne $expectedHash) {
     throw "SHA256 mismatch. Expected=$expectedHash Actual=$actualHash"
   }
+
+  Write-UpdateLog "Waiting for target executable to unlock..."
+  Wait-FileUnlocked -LiteralPath $TargetPath -TimeoutSeconds 120
 
   Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
   if (Test-Path -LiteralPath $TargetPath) {
@@ -4477,8 +4516,9 @@ async function startPortableUpdate(payload) {
 
   const executableDir = path.dirname(targetPath);
   const targetName = path.basename(targetPath);
-  const downloadPath = path.join(executableDir, `${targetName}.download`);
-  const shaPath = path.join(executableDir, `${targetName}.sha256.download`);
+  const downloadBaseName = resolveUpdateDownloadBaseName(payload?.assetName, targetName);
+  const downloadPath = path.join(executableDir, `${downloadBaseName}.download`);
+  const shaPath = path.join(executableDir, `${downloadBaseName}.sha256.download`);
 
   try {
     fs.rmSync(downloadPath, { force: true });

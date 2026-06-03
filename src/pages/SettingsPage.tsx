@@ -224,7 +224,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (!window.desktopApi?.isElectron) {
-      setAppVersion('1.0.4');
+      setAppVersion('1.0.5');
       return;
     }
 
@@ -233,7 +233,7 @@ export default function SettingsPage() {
       try {
         const [currentPath, version] = await Promise.all([
           window.desktopApi!.getDataFilePath(),
-          window.desktopApi!.getAppVersion?.() ?? Promise.resolve('1.0.4'),
+          window.desktopApi!.getAppVersion?.() ?? Promise.resolve('1.0.5'),
         ]);
         if (disposed) {
           return;
@@ -243,7 +243,7 @@ export default function SettingsPage() {
             settings: { dataFilePathInput: currentPath } as typeof settingsUi,
           });
         }
-        setAppVersion(version || '1.0.4');
+        setAppVersion(version || '1.0.5');
       } catch {
         if (!disposed) {
       toast.error('读取数据目录失败');
@@ -602,7 +602,7 @@ export default function SettingsPage() {
   };
 
   const openOfficialPluginDownload = async (assetName: string) => {
-    const versionTag = `v${appVersion || '1.0.4'}`;
+    const versionTag = `v${appVersion || '1.0.5'}`;
     const targetUrl = `https://github.com/kewuuuu/KewuToolbox/releases/download/${versionTag}/${assetName}`;
     if (window.desktopApi?.isElectron && window.desktopApi.openExternalUrl) {
       const result = await window.desktopApi.openExternalUrl({ url: targetUrl });
@@ -690,6 +690,7 @@ export default function SettingsPage() {
       const result = await window.desktopApi.startPortableUpdate({
         assetUrl: updateCheckResult.assetUrl,
         sha256Url: updateCheckResult.sha256Url,
+        assetName: updateCheckResult.assetName,
       });
       if (!result.ok) {
         const messages: Record<string, string> = {

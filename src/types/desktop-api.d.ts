@@ -61,6 +61,7 @@ declare global {
       startPortableUpdate: (payload: {
         assetUrl: string;
         sha256Url: string;
+        assetName?: string;
       }) => Promise<StartPortableUpdateResult>;
       openExternalUrl: (payload: { url: string }) => Promise<{ ok: boolean; error?: string }>;
       getDataFilePath: () => Promise<string>;
