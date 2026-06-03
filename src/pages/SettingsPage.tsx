@@ -110,6 +110,56 @@ function formatBytes(bytes: number | undefined) {
   return `${Math.round(value)} B`;
 }
 
+function getUpdatePhaseLabel(progress: UpdateProgressEvent | null) {
+  if (!progress) {
+    return '';
+  }
+  if (progress.message) {
+    return progress.message;
+  }
+  switch (progress.phase) {
+    case 'preparing':
+      return '准备更新...';
+    case 'downloading-package':
+      return '正在下载新版程序...';
+    case 'downloading-sha256':
+      return '正在下载校验文件...';
+    case 'verifying':
+      return '正在校验更新文件...';
+    case 'launching-updater':
+      return '正在启动替换程序...';
+    case 'ready-to-replace':
+      return '下载完成，准备关闭并替换...';
+    case 'failed':
+      return '更新失败';
+    default:
+      return '正在更新...';
+  }
+}
+
+function formatUpdateProgressBytes(progress: UpdateProgressEvent | null) {
+  if (!progress) {
+    return '';
+  }
+  const transferred = formatBytes(progress.transferredBytes);
+  const total = formatBytes(progress.totalBytes);
+  if (transferred === '-' && total === '-') {
+    return '';
+  }
+  if (total === '-') {
+    return transferred;
+  }
+  return `${transferred} / ${total}`;
+}
+
+function getUpdateProgressPercent(progress: UpdateProgressEvent | null) {
+  const value = Number(progress?.percent);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, value));
+}
+
 export default function SettingsPage() {
   const {
     state,
@@ -134,6 +184,7 @@ export default function SettingsPage() {
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isStartingUpdate, setIsStartingUpdate] = useState(false);
   const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgressEvent | null>(null);
   const browserFilePickerRef = useRef<HTMLInputElement | null>(null);
   const settingsUi = state.uiState.settings;
   const updateSettingsUi = (partial: Partial<typeof settingsUi>) => {
@@ -173,7 +224,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (!window.desktopApi?.isElectron) {
-      setAppVersion('0.3.0');
+      setAppVersion('1.0.3');
       return;
     }
 
@@ -182,7 +233,7 @@ export default function SettingsPage() {
       try {
         const [currentPath, version] = await Promise.all([
           window.desktopApi!.getDataFilePath(),
-          window.desktopApi!.getAppVersion?.() ?? Promise.resolve('0.3.0'),
+          window.desktopApi!.getAppVersion?.() ?? Promise.resolve('1.0.3'),
         ]);
         if (disposed) {
           return;
@@ -192,7 +243,7 @@ export default function SettingsPage() {
             settings: { dataFilePathInput: currentPath } as typeof settingsUi,
           });
         }
-        setAppVersion(version || '0.3.0');
+        setAppVersion(version || '1.0.3');
       } catch {
         if (!disposed) {
       toast.error('读取数据目录失败');
@@ -205,6 +256,15 @@ export default function SettingsPage() {
       disposed = true;
     };
   }, [dataFilePathInput, updateUiState]);
+
+  useEffect(() => {
+    if (!window.desktopApi?.isElectron || !window.desktopApi.onUpdateProgress) {
+      return undefined;
+    }
+    return window.desktopApi.onUpdateProgress(progress => {
+      setUpdateProgress(progress);
+    });
+  }, []);
 
   const tabParam = searchParams.get('tab');
   const tab: SettingsTab =
@@ -542,7 +602,7 @@ export default function SettingsPage() {
   };
 
   const openOfficialPluginDownload = async (assetName: string) => {
-    const versionTag = `v${appVersion || '0.3.0'}`;
+    const versionTag = `v${appVersion || '1.0.3'}`;
     const targetUrl = `https://github.com/kewuuuu/KewuToolbox/releases/download/${versionTag}/${assetName}`;
     if (window.desktopApi?.isElectron && window.desktopApi.openExternalUrl) {
       const result = await window.desktopApi.openExternalUrl({ url: targetUrl });
@@ -582,6 +642,7 @@ export default function SettingsPage() {
     if (isCheckingUpdate) {
       return;
     }
+    setUpdateProgress(null);
     setIsCheckingUpdate(true);
     try {
       const result = await window.desktopApi.checkForUpdates();
@@ -618,6 +679,12 @@ export default function SettingsPage() {
     if (isStartingUpdate) {
       return;
     }
+    setUpdateProgress({
+      phase: 'preparing',
+      status: 'running',
+      percent: 0,
+      message: '准备下载更新...',
+    });
     setIsStartingUpdate(true);
     try {
       const result = await window.desktopApi.startPortableUpdate({
@@ -629,15 +696,30 @@ export default function SettingsPage() {
           not_packaged: '开发模式不能执行自动覆盖更新，请使用打包后的便携版。',
           missing_target_path: '无法识别当前程序路径。',
           invalid_update_url: '更新下载地址不合法。',
+          download_update_failed: '下载新版程序失败。',
+          download_sha256_failed: '下载 SHA256 校验文件失败。',
+          checksum_failed: '新版程序校验失败，已取消更新。',
           write_updater_failed: '无法在程序同目录写入更新程序。',
           launch_updater_failed: '启动更新程序失败。',
         };
+        setUpdateProgress(previous => ({
+          ...(previous || {}),
+          phase: 'failed',
+          status: 'failed',
+          message: messages[result.error || ''] || result.detail || result.error || '更新失败',
+        }));
         toast.error('启动更新失败', { description: messages[result.error || ''] || result.detail || result.error });
         setIsStartingUpdate(false);
         return;
       }
-      toast.success('已启动更新程序，主程序即将关闭');
+      toast.success('新版已下载并校验完成，正在关闭主程序并替换。');
     } catch (error) {
+      setUpdateProgress(previous => ({
+        ...(previous || {}),
+        phase: 'failed',
+        status: 'failed',
+        message: error instanceof Error ? error.message : String(error),
+      }));
       toast.error('启动更新失败', { description: error instanceof Error ? error.message : String(error) });
       setIsStartingUpdate(false);
     }
@@ -1707,11 +1789,41 @@ export default function SettingsPage() {
               </div>
 
               <div className="rounded-lg border border-border/70 p-3 flex flex-wrap items-center justify-between gap-3">
-                <div className="space-y-1">
+                <div className="space-y-1 min-w-[260px] flex-1">
                   <p className="text-sm font-medium text-foreground">便携版自动更新</p>
                   <p className="text-xs text-muted-foreground">
-                    点击后会在程序同目录生成更新程序，随后关闭主程序、下载新版 exe、校验 sha256、覆盖当前 exe 并重启。
+                    点击后主程序会先下载新版 exe 并显示进度，校验通过后再启动更新程序关闭主程序、覆盖 exe 并重启。
                   </p>
+                  {updateProgress && (
+                    <div className="mt-3 rounded-lg border border-border/70 bg-secondary/20 p-3 space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <span className={updateProgress.status === 'failed' ? 'text-destructive' : 'text-foreground'}>
+                          {getUpdatePhaseLabel(updateProgress)}
+                        </span>
+                        <span className="text-muted-foreground">
+                          {getUpdateProgressPercent(updateProgress) === null
+                            ? formatUpdateProgressBytes(updateProgress)
+                            : `${Math.round(getUpdateProgressPercent(updateProgress) ?? 0)}%`}
+                        </span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-background">
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            updateProgress.status === 'failed' ? 'bg-destructive' : 'bg-primary'
+                          }`}
+                          style={{
+                            width: `${Math.max(
+                              updateProgress.status === 'failed' ? 100 : 4,
+                              getUpdateProgressPercent(updateProgress) ?? 4,
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                      {formatUpdateProgressBytes(updateProgress) && (
+                        <p className="text-[11px] text-muted-foreground">{formatUpdateProgressBytes(updateProgress)}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <Button
                   type="button"
@@ -1725,7 +1837,7 @@ export default function SettingsPage() {
                   onClick={() => void handleStartPortableUpdate()}
                 >
                   <Download className="w-4 h-4" />
-                  {isStartingUpdate ? '启动中...' : '开始更新'}
+                  {isStartingUpdate ? '下载中...' : '开始更新'}
                 </Button>
               </div>
             </Card>

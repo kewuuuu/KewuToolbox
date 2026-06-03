@@ -139,7 +139,7 @@ npm run dev
 2. 点击“GitHub 仓库首页”可打开项目主页。
 3. 点击“检查更新”会读取 GitHub Releases 最新正式版本。
 4. 如果发现新版本且 Release 中包含便携版 exe 和对应 `.sha256`，可以点击“开始更新”。
-5. 开始更新后，程序会在当前 exe 同目录生成 `KewuToolboxUpdater.cmd` 和 `KewuToolboxUpdater.ps1`，随后关闭主程序、下载新版、校验 SHA256、覆盖当前 exe 并重启。
+5. 开始更新后，主程序会先下载新版 exe 和 `.sha256` 并显示进度；校验通过后再生成/调用 `KewuToolboxUpdater.ps1` 与 `KewuToolboxUpdater.cmd`，由更新脚本关闭主程序、替换 exe 并重启。
 
 ---
 
@@ -245,7 +245,7 @@ npm run build:deliver
 仓库包含 `.github/workflows/release.yml`：
 - 推送到 `main` 或手动触发 workflow 后，会在 Windows runner 上执行 `npm run build:deliver`。
 - 工作流读取 `package.json` 的 `version`，生成 tag：`v<version>`。
-- 工作流会优先读取 `docs/release-notes/v<version>.md` 作为 GitHub Release 说明，例如 `docs/release-notes/v1.0.2.md`。
+- 工作流会优先读取 `docs/release-notes/v<version>.md` 作为 GitHub Release 说明，例如 `docs/release-notes/v1.0.3.md`。
 - 如果对应版本说明文件不存在，会继续尝试读取 `docs/release-notes/<version>.md` 或根目录 `RELEASE_NOTES.md`。
 - 如果说明文件中没有 `Full Changelog:`，工作流会自动追加上一版本到当前版本的对比链接。
 - 如果同版本 Release 已存在，会移动同名 tag、更新 Release 标题和说明、删除旧资产并上传新资产。
@@ -274,4 +274,4 @@ npm run build:deliver
 
 ### 7. 浏览器扩展版本
 
-扩展版本在 `browser-extension/manifest.json` 和 `vscode-extension/package.json` 的 `version` 字段中维护，当前为 `1.0.2`。
+扩展版本在 `browser-extension/manifest.json` 和 `vscode-extension/package.json` 的 `version` 字段中维护，当前为 `1.0.3`。

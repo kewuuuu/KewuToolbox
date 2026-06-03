@@ -17,6 +17,20 @@ contextBridge.exposeInMainWorld('desktopApi', {
   notify: (payload) => ipcRenderer.invoke('app:notify', payload),
   hideToTray: () => ipcRenderer.invoke('app:hide-to-tray'),
   selectAudioFile: () => ipcRenderer.invoke('app:select-audio-file'),
+  onUpdateProgress: (callback) => {
+    if (typeof callback !== 'function') {
+      return () => {};
+    }
+
+    const listener = (_event, progress) => {
+      callback(progress);
+    };
+
+    ipcRenderer.on('app:update-progress', listener);
+    return () => {
+      ipcRenderer.removeListener('app:update-progress', listener);
+    };
+  },
   onState: (callback) => {
     if (typeof callback !== 'function') {
       return () => {};

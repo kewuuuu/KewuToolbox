@@ -38,6 +38,18 @@ declare global {
     detail?: string;
     targetPath?: string;
     updaterPath?: string;
+    downloadedPath?: string;
+    expectedSha256?: string;
+  }
+
+  interface UpdateProgressEvent {
+    phase?: string;
+    status?: 'running' | 'success' | 'failed' | string;
+    percent?: number;
+    transferredBytes?: number;
+    totalBytes?: number;
+    message?: string;
+    updatedAt?: string;
   }
 
   interface Window {
@@ -64,6 +76,7 @@ declare global {
       notify: (payload: { title: string; body?: string }) => Promise<{ ok: boolean; error?: string }>;
       hideToTray: () => Promise<{ ok: boolean }>;
       selectAudioFile: () => Promise<string | null>;
+      onUpdateProgress: (callback: (progress: UpdateProgressEvent) => void) => () => void;
       onState: (callback: (nextState: AppState) => void) => () => void;
     };
   }

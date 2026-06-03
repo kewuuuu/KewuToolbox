@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, powerMonitor, Notification, Tray, Menu, shell, net } = require('electron');
 const childProcess = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const https = require('node:https');
 const http = require('node:http');
@@ -4166,12 +4167,148 @@ function resolveCurrentExecutablePath() {
   return null;
 }
 
+function emitUpdateProgress(progress) {
+  const payload = {
+    ...progress,
+    updatedAt: new Date().toISOString(),
+  };
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('app:update-progress', payload);
+  }
+}
+
+function parseSha256Content(content) {
+  const match = /[A-Fa-f0-9]{64}/.exec(String(content || ''));
+  if (!match) {
+    throw new Error('Invalid sha256 file.');
+  }
+  return match[0].toLowerCase();
+}
+
+function getFileSha256Hex(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', chunk => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+async function downloadUpdateFile(url, outputPath, progressBase) {
+  emitUpdateProgress({
+    ...progressBase,
+    status: 'running',
+    percent: 0,
+    transferredBytes: 0,
+    totalBytes: 0,
+  });
+
+  const response = await net.fetch(url, {
+    redirect: 'follow',
+    headers: {
+      'User-Agent': 'KewuToolbox-Updater',
+    },
+  });
+  if (!response.ok) {
+    let detail = '';
+    try {
+      detail = (await response.text()).slice(0, 300);
+    } catch {
+      detail = '';
+    }
+    throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
+  }
+
+  const totalBytes = Number(response.headers.get('content-length')) || 0;
+  ensureDir(path.dirname(outputPath));
+
+  await new Promise((resolve, reject) => {
+    const output = fs.createWriteStream(outputPath);
+    let transferredBytes = 0;
+    let settled = false;
+    let lastEmitAt = 0;
+
+    const report = force => {
+      const now = Date.now();
+      if (!force && now - lastEmitAt < 200) {
+        return;
+      }
+      lastEmitAt = now;
+      emitUpdateProgress({
+        ...progressBase,
+        status: 'running',
+        percent: totalBytes > 0 ? Math.min(100, (transferredBytes / totalBytes) * 100) : undefined,
+        transferredBytes,
+        totalBytes,
+      });
+    };
+
+    const fail = error => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      output.destroy();
+      reject(error);
+    };
+
+    output.on('error', fail);
+    output.on('finish', () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      report(true);
+      resolve();
+    });
+
+    const run = async () => {
+      try {
+        if (!response.body || typeof response.body.getReader !== 'function') {
+          const buffer = Buffer.from(await response.arrayBuffer());
+          transferredBytes = buffer.length;
+          output.end(buffer);
+          return;
+        }
+
+        const reader = response.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          const chunk = Buffer.from(value);
+          transferredBytes += chunk.length;
+          if (!output.write(chunk)) {
+            await new Promise(resolveDrain => output.once('drain', resolveDrain));
+          }
+          report(false);
+        }
+        output.end();
+      } catch (error) {
+        fail(error);
+      }
+    };
+
+    void run();
+  });
+
+  emitUpdateProgress({
+    ...progressBase,
+    status: 'success',
+    percent: 100,
+    transferredBytes: fs.existsSync(outputPath) ? fs.statSync(outputPath).size : undefined,
+    totalBytes: fs.existsSync(outputPath) ? fs.statSync(outputPath).size : undefined,
+  });
+}
+
 function getUpdaterScriptContent() {
   return `param(
   [Parameter(Mandatory=$true)][int]$ProcessId,
   [Parameter(Mandatory=$true)][string]$TargetPath,
-  [Parameter(Mandatory=$true)][string]$DownloadUrl,
-  [Parameter(Mandatory=$true)][string]$Sha256Url
+  [Parameter(Mandatory=$true)][string]$DownloadedPath,
+  [Parameter(Mandatory=$true)][string]$ExpectedSha256
 )
 
 $ErrorActionPreference = 'Stop'
@@ -4217,24 +4354,14 @@ try {
     throw "Target directory does not exist: $targetDir"
   }
 
-  $downloadPath = Join-Path $targetDir "$targetName.download"
-  $shaPath = Join-Path $targetDir "$targetName.sha256.download"
+  $downloadPath = $DownloadedPath
   $backupPath = Join-Path $targetDir "$targetName.bak"
 
-  Remove-Item -LiteralPath $downloadPath -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $shaPath -Force -ErrorAction SilentlyContinue
-
-  Write-UpdateLog "Downloading update package..."
-  Invoke-WebRequest -Uri $DownloadUrl -OutFile $downloadPath -UseBasicParsing
-
-  Write-UpdateLog "Downloading sha256..."
-  Invoke-WebRequest -Uri $Sha256Url -OutFile $shaPath -UseBasicParsing
-  $shaContent = Get-Content -LiteralPath $shaPath -Raw
-  $match = [regex]::Match($shaContent, '[A-Fa-f0-9]{64}')
-  if (-not $match.Success) {
-    throw 'Invalid sha256 file.'
+  if (-not (Test-Path -LiteralPath $downloadPath)) {
+    throw "Downloaded update file does not exist: $downloadPath"
   }
-  $expectedHash = $match.Value.ToLowerInvariant()
+
+  $expectedHash = $ExpectedSha256.ToLowerInvariant()
   $actualHash = Get-Sha256Hex $downloadPath
   if ($actualHash -ne $expectedHash) {
     throw "SHA256 mismatch. Expected=$expectedHash Actual=$actualHash"
@@ -4256,7 +4383,6 @@ try {
     throw
   }
 
-  Remove-Item -LiteralPath $shaPath -Force -ErrorAction SilentlyContinue
   Write-UpdateLog "Starting updated app..."
   Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir
   Start-Sleep -Seconds 5
@@ -4302,7 +4428,7 @@ function isTrustedReleaseDownloadUrl(value) {
   return value.startsWith(`${GITHUB_REPO_URL}/releases/download/`);
 }
 
-function startPortableUpdate(payload) {
+async function startPortableUpdate(payload) {
   if (!app.isPackaged) {
     return { ok: false, error: 'not_packaged' };
   }
@@ -4317,6 +4443,91 @@ function startPortableUpdate(payload) {
   }
 
   const executableDir = path.dirname(targetPath);
+  const targetName = path.basename(targetPath);
+  const downloadPath = path.join(executableDir, `${targetName}.download`);
+  const shaPath = path.join(executableDir, `${targetName}.sha256.download`);
+
+  try {
+    fs.rmSync(downloadPath, { force: true });
+    fs.rmSync(shaPath, { force: true });
+  } catch {
+    // Stale temporary files are best-effort cleanup only.
+  }
+
+  emitUpdateProgress({
+    phase: 'preparing',
+    status: 'running',
+    percent: 0,
+    message: 'Preparing update download...',
+  });
+
+  try {
+    await downloadUpdateFile(downloadUrl, downloadPath, {
+      phase: 'downloading-package',
+      message: 'Downloading update package...',
+    });
+  } catch (error) {
+    addDiagnosticLog('error', 'Update package download failed', error instanceof Error ? error.message : String(error));
+    return {
+      ok: false,
+      error: 'download_update_failed',
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  try {
+    await downloadUpdateFile(sha256Url, shaPath, {
+      phase: 'downloading-sha256',
+      message: 'Downloading sha256 file...',
+    });
+  } catch (error) {
+    addDiagnosticLog('error', 'Update sha256 download failed', error instanceof Error ? error.message : String(error));
+    return {
+      ok: false,
+      error: 'download_sha256_failed',
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  let expectedSha256 = '';
+  try {
+    emitUpdateProgress({
+      phase: 'verifying',
+      status: 'running',
+      percent: 0,
+      message: 'Verifying update package...',
+    });
+    expectedSha256 = parseSha256Content(fs.readFileSync(shaPath, 'utf8'));
+    const actualSha256 = await getFileSha256Hex(downloadPath);
+    if (actualSha256 !== expectedSha256) {
+      throw new Error(`SHA256 mismatch. Expected=${expectedSha256} Actual=${actualSha256}`);
+    }
+    emitUpdateProgress({
+      phase: 'verifying',
+      status: 'success',
+      percent: 100,
+      message: 'Update package verified.',
+    });
+  } catch (error) {
+    addDiagnosticLog('error', 'Update package verification failed', error instanceof Error ? error.message : String(error));
+    try {
+      fs.rmSync(downloadPath, { force: true });
+    } catch {
+      // Ignore cleanup failure.
+    }
+    return {
+      ok: false,
+      error: 'checksum_failed',
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    try {
+      fs.rmSync(shaPath, { force: true });
+    } catch {
+      // Ignore cleanup failure.
+    }
+  }
+
   const updater = ensurePortableUpdater(executableDir);
   if (!updater.ok) {
     return updater;
@@ -4327,6 +4538,13 @@ function startPortableUpdate(payload) {
   } catch {
     // Continue update even if a final state write fails.
   }
+
+  emitUpdateProgress({
+    phase: 'launching-updater',
+    status: 'running',
+    percent: 100,
+    message: 'Launching updater to replace executable...',
+  });
 
   try {
     const child = childProcess.spawn(
@@ -4341,10 +4559,10 @@ function startPortableUpdate(payload) {
         String(process.pid),
         '-TargetPath',
         targetPath,
-        '-DownloadUrl',
-        downloadUrl,
-        '-Sha256Url',
-        sha256Url,
+        '-DownloadedPath',
+        downloadPath,
+        '-ExpectedSha256',
+        expectedSha256,
       ],
       {
         cwd: executableDir,
@@ -4355,12 +4573,20 @@ function startPortableUpdate(payload) {
     );
     child.unref();
   } catch (error) {
+    addDiagnosticLog('error', 'Launch updater failed', error instanceof Error ? error.message : String(error));
     return {
       ok: false,
       error: 'launch_updater_failed',
       detail: error instanceof Error ? error.message : String(error),
     };
   }
+
+  emitUpdateProgress({
+    phase: 'ready-to-replace',
+    status: 'success',
+    percent: 100,
+    message: 'Update is ready. Closing app for replacement...',
+  });
 
   setTimeout(() => {
     forceQuitRequested = true;
@@ -4371,6 +4597,8 @@ function startPortableUpdate(payload) {
     ok: true,
     targetPath,
     updaterPath: updater.ps1Path,
+    downloadedPath: downloadPath,
+    expectedSha256,
   };
 }
 
