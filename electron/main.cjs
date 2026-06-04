@@ -1560,6 +1560,14 @@ function buildWhitelistMergeResult() {
   }
 
   const nextInputActivityStatMap = new Map();
+  const mergeKeyCountMaps = (existing, incoming) => {
+    const existingCounts = normalizeInputActivityCounts(existing).keyCounts;
+    const incomingCounts = normalizeInputActivityCounts(incoming).keyCounts;
+    for (const [keycode, count] of Object.entries(incomingCounts)) {
+      existingCounts[keycode] = (Number(existingCounts[keycode]) || 0) + (Number(count) || 0);
+    }
+    return existingCounts;
+  };
   const upsertInputActivityStat = stat => {
     mergeNumericStat(nextInputActivityStatMap, stat.classificationKey, stat, (existing, incoming) => ({
       ...existing,
@@ -1575,6 +1583,7 @@ function buildWhitelistMergeResult() {
       sideForwardClicks: (Number(existing.sideForwardClicks) || 0) + (Number(incoming.sideForwardClicks) || 0),
       scrollTicks: (Number(existing.scrollTicks) || 0) + (Number(incoming.scrollTicks) || 0),
       mouseMovePixels: (Number(existing.mouseMovePixels) || 0) + (Number(incoming.mouseMovePixels) || 0),
+      keyCounts: mergeKeyCountMaps(existing, incoming),
       firstAt:
         new Date(incoming.firstAt || 0).getTime() < new Date(existing.firstAt || 0).getTime()
           ? incoming.firstAt
@@ -2013,6 +2022,19 @@ function normalizeProcessTimelineRecord(item) {
 
 function normalizeInputActivityCounts(item) {
   const pickInteger = value => (Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : 0);
+  const normalizeKeyCounts = value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return Object.entries(value).reduce((map, [key, count]) => {
+      const keycode = Number(key);
+      const normalizedCount = pickInteger(count);
+      if (Number.isFinite(keycode) && keycode > 0 && normalizedCount > 0) {
+        map[String(Math.floor(keycode))] = normalizedCount;
+      }
+      return map;
+    }, {});
+  };
   return {
     keyPresses: pickInteger(item?.keyPresses),
     leftClicks: pickInteger(item?.leftClicks),
@@ -2022,6 +2044,7 @@ function normalizeInputActivityCounts(item) {
     sideForwardClicks: pickInteger(item?.sideForwardClicks),
     scrollTicks: pickInteger(item?.scrollTicks),
     mouseMovePixels: pickInteger(item?.mouseMovePixels),
+    keyCounts: normalizeKeyCounts(item?.keyCounts),
   };
 }
 
@@ -2873,6 +2896,7 @@ function createInputActivityCounts() {
     sideForwardClicks: 0,
     scrollTicks: 0,
     mouseMovePixels: 0,
+    keyCounts: {},
   };
 }
 
@@ -2880,14 +2904,32 @@ function hasInputActivityCounts(counts) {
   if (!counts || typeof counts !== 'object') {
     return false;
   }
-  return Object.values(normalizeInputActivityCounts(counts)).some(value => value > 0);
+  const normalized = normalizeInputActivityCounts(counts);
+  return (
+    normalized.keyPresses > 0 ||
+    normalized.leftClicks > 0 ||
+    normalized.rightClicks > 0 ||
+    normalized.middleClicks > 0 ||
+    normalized.sideBackClicks > 0 ||
+    normalized.sideForwardClicks > 0 ||
+    normalized.scrollTicks > 0 ||
+    normalized.mouseMovePixels > 0 ||
+    Object.values(normalized.keyCounts).some(value => value > 0)
+  );
 }
 
 function mergeInputActivityCounts(target, incoming) {
   const normalizedTarget = normalizeInputActivityCounts(target);
   const normalizedIncoming = normalizeInputActivityCounts(incoming);
   for (const key of Object.keys(normalizedIncoming)) {
+    if (key === 'keyCounts') {
+      continue;
+    }
     normalizedTarget[key] = (Number(normalizedTarget[key]) || 0) + (Number(normalizedIncoming[key]) || 0);
+  }
+  for (const [keycode, count] of Object.entries(normalizedIncoming.keyCounts)) {
+    normalizedTarget.keyCounts[keycode] =
+      (Number(normalizedTarget.keyCounts[keycode]) || 0) + (Number(count) || 0);
   }
   return normalizedTarget;
 }
@@ -3078,6 +3120,10 @@ function getInputEventTimeMs(event) {
 function handleInputKeyDown(event) {
   const counts = createInputActivityCounts();
   counts.keyPresses = 1;
+  const keycode = Number(event?.keycode);
+  if (Number.isFinite(keycode) && keycode > 0) {
+    counts.keyCounts[String(Math.floor(keycode))] = 1;
+  }
   recordInputActivityForFocusedWindow(counts, getInputEventTimeMs(event));
 }
 

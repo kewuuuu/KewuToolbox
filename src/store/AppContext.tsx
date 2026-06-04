@@ -180,6 +180,14 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
     value: unknown,
     fallbackValue: AppUiState['inputActivity']['historyDays'],
   ) => (Number(value) === 30 ? 30 : Number(value) === 7 ? 7 : fallbackValue);
+  const normalizeInputActivityKeyboardMode = (
+    value: unknown,
+    fallbackValue: AppUiState['inputActivity']['keyboardMode'],
+  ) => (value === 'rank' || value === 'heatmap' ? value : fallbackValue);
+  const normalizeInputActivityHistoryChartType = (
+    value: unknown,
+    fallbackValue: AppUiState['inputActivity']['historyChartType'],
+  ) => (value === 'bar' || value === 'line' ? value : fallbackValue);
 
   return {
     calculatorExpression:
@@ -290,6 +298,15 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
       historyDays: normalizeInputActivityHistoryDays(
         input?.inputActivity?.historyDays,
         fallback.inputActivity.historyDays,
+      ),
+      keyboardMode: normalizeInputActivityKeyboardMode(
+        input?.inputActivity?.keyboardMode,
+        fallback.inputActivity.keyboardMode,
+      ),
+      showAppDetails: pickBoolean(input?.inputActivity?.showAppDetails, fallback.inputActivity.showAppDetails),
+      historyChartType: normalizeInputActivityHistoryChartType(
+        input?.inputActivity?.historyChartType,
+        fallback.inputActivity.historyChartType,
       ),
     },
     monitoringDraft: {
@@ -644,6 +661,19 @@ function normalizeSoundFiles(raw: unknown): SoundFileItem[] {
 function normalizeInputActivityCounters(raw: unknown) {
   const source = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
   const pickInteger = (value: unknown) => (Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : 0);
+  const normalizeKeyCounts = (value: unknown) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return Object.entries(value as Record<string, unknown>).reduce<Record<string, number>>((map, [key, count]) => {
+      const keycode = Number(key);
+      const normalizedCount = pickInteger(count);
+      if (Number.isFinite(keycode) && keycode > 0 && normalizedCount > 0) {
+        map[String(Math.floor(keycode))] = normalizedCount;
+      }
+      return map;
+    }, {});
+  };
   return {
     keyPresses: pickInteger(source.keyPresses),
     leftClicks: pickInteger(source.leftClicks),
@@ -653,6 +683,7 @@ function normalizeInputActivityCounters(raw: unknown) {
     sideForwardClicks: pickInteger(source.sideForwardClicks),
     scrollTicks: pickInteger(source.scrollTicks),
     mouseMovePixels: pickInteger(source.mouseMovePixels),
+    keyCounts: normalizeKeyCounts(source.keyCounts),
   };
 }
 

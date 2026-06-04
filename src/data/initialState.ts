@@ -147,6 +147,9 @@ export function createInitialState(): AppState {
         selectedDate: '',
         selectedMetric: 'keyPresses',
         historyDays: 7,
+        keyboardMode: 'heatmap',
+        showAppDetails: false,
+        historyChartType: 'line',
       },
       monitoringDraft: {
         creatingTag: false,

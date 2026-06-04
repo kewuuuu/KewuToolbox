@@ -101,6 +101,7 @@ export interface InputActivityCounters {
   sideForwardClicks: number;
   scrollTicks: number;
   mouseMovePixels: number;
+  keyCounts: Record<string, number>;
 }
 
 export interface InputActivityWindowStat extends InputActivityCounters {
@@ -348,11 +349,16 @@ export interface AnalyticsUiState {
 }
 
 export type InputActivityMetric = 'keyPresses' | 'totalClicks' | 'scrollTicks' | 'mouseMovePixels';
+export type InputActivityKeyboardMode = 'heatmap' | 'rank';
+export type InputActivityHistoryChartType = 'line' | 'bar';
 
 export interface InputActivityUiState {
   selectedDate: string;
   selectedMetric: InputActivityMetric;
   historyDays: 7 | 30;
+  keyboardMode: InputActivityKeyboardMode;
+  showAppDetails: boolean;
+  historyChartType: InputActivityHistoryChartType;
 }
 
 export interface MonitoringDraftUiState {

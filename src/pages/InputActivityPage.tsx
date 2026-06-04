@@ -1,5 +1,7 @@
 import { useMemo } from 'react';
 import {
+  Bar,
+  BarChart,
   CartesianGrid,
   Cell,
   Line,
@@ -52,6 +54,14 @@ const METRICS: Array<{
   { key: 'scrollTicks', label: '滚轮滚动', shortLabel: '滚动' },
 ];
 
+type KeyCountMap = Record<string, number>;
+
+interface KeyDefinition {
+  label: string;
+  code?: string;
+  span?: number;
+}
+
 interface WindowInputAggregate {
   classificationKey: string;
   displayName: string;
@@ -66,9 +76,140 @@ interface WindowInputAggregate {
   totalClicks: number;
   scrollTicks: number;
   mouseMovePixels: number;
+  keyCounts: KeyCountMap;
   focusSeconds: number;
   lastAt: string;
 }
+
+const KEYBOARD_ROWS: KeyDefinition[][] = [
+  [
+    { label: 'Esc', code: '1' },
+    { label: 'F1', code: '59' },
+    { label: 'F2', code: '60' },
+    { label: 'F3', code: '61' },
+    { label: 'F4', code: '62' },
+    { label: 'F5', code: '63' },
+    { label: 'F6', code: '64' },
+    { label: 'F7', code: '65' },
+    { label: 'F8', code: '66' },
+    { label: 'F9', code: '67' },
+    { label: 'F10', code: '68' },
+    { label: 'F11', code: '87' },
+    { label: 'F12', code: '88' },
+    { label: 'Prt', code: '3639' },
+    { label: 'Ins', code: '3666' },
+    { label: 'Del', code: '3667' },
+  ],
+  [
+    { label: '`', code: '41' },
+    { label: '1', code: '2' },
+    { label: '2', code: '3' },
+    { label: '3', code: '4' },
+    { label: '4', code: '5' },
+    { label: '5', code: '6' },
+    { label: '6', code: '7' },
+    { label: '7', code: '8' },
+    { label: '8', code: '9' },
+    { label: '9', code: '10' },
+    { label: '0', code: '11' },
+    { label: '-', code: '12' },
+    { label: '=', code: '13' },
+    { label: 'Backspace', code: '14', span: 2 },
+  ],
+  [
+    { label: 'Tab', code: '15', span: 1.5 },
+    { label: 'Q', code: '16' },
+    { label: 'W', code: '17' },
+    { label: 'E', code: '18' },
+    { label: 'R', code: '19' },
+    { label: 'T', code: '20' },
+    { label: 'Y', code: '21' },
+    { label: 'U', code: '22' },
+    { label: 'I', code: '23' },
+    { label: 'O', code: '24' },
+    { label: 'P', code: '25' },
+    { label: '[', code: '26' },
+    { label: ']', code: '27' },
+    { label: '\\', code: '43', span: 1.5 },
+  ],
+  [
+    { label: 'Caps', code: '58', span: 1.8 },
+    { label: 'A', code: '30' },
+    { label: 'S', code: '31' },
+    { label: 'D', code: '32' },
+    { label: 'F', code: '33' },
+    { label: 'G', code: '34' },
+    { label: 'H', code: '35' },
+    { label: 'J', code: '36' },
+    { label: 'K', code: '37' },
+    { label: 'L', code: '38' },
+    { label: ';', code: '39' },
+    { label: '\'', code: '40' },
+    { label: 'Enter', code: '28', span: 2.2 },
+  ],
+  [
+    { label: 'Shift', code: '42', span: 2.4 },
+    { label: 'Z', code: '44' },
+    { label: 'X', code: '45' },
+    { label: 'C', code: '46' },
+    { label: 'V', code: '47' },
+    { label: 'B', code: '48' },
+    { label: 'N', code: '49' },
+    { label: 'M', code: '50' },
+    { label: ',', code: '51' },
+    { label: '.', code: '52' },
+    { label: '/', code: '53' },
+    { label: 'Shift', code: '54', span: 2.4 },
+  ],
+  [
+    { label: 'Ctrl', code: '29', span: 1.4 },
+    { label: 'Alt', code: '56', span: 1.4 },
+    { label: 'Space', code: '57', span: 6 },
+    { label: 'Alt', code: '3640', span: 1.4 },
+    { label: 'Ctrl', code: '3613', span: 1.4 },
+    { label: '←', code: '57419' },
+    { label: '↑', code: '57416' },
+    { label: '↓', code: '57424' },
+    { label: '→', code: '57421' },
+  ],
+];
+
+const NUMPAD_ROWS: KeyDefinition[][] = [
+  [
+    { label: 'Num', code: '69' },
+    { label: '/', code: '3637' },
+    { label: '*', code: '55' },
+    { label: '-', code: '74' },
+  ],
+  [
+    { label: '7', code: '71' },
+    { label: '8', code: '72' },
+    { label: '9', code: '73' },
+    { label: '+', code: '78' },
+  ],
+  [
+    { label: '4', code: '75' },
+    { label: '5', code: '76' },
+    { label: '6', code: '77' },
+    { label: 'Enter', code: '3612' },
+  ],
+  [
+    { label: '1', code: '79' },
+    { label: '2', code: '80' },
+    { label: '3', code: '81' },
+    { label: '.', code: '83' },
+  ],
+  [{ label: '0', code: '82', span: 2 }],
+];
+
+const KEY_LABEL_BY_CODE = [...KEYBOARD_ROWS, ...NUMPAD_ROWS]
+  .flat()
+  .reduce<Record<string, string>>((map, key) => {
+    if (key.code && !map[key.code]) {
+      map[key.code] = key.label;
+    }
+    return map;
+  }, {});
 
 function getTotalClicks(item: {
   leftClicks: number;
@@ -84,6 +225,14 @@ function getTotalClicks(item: {
     Number(item.sideBackClicks || 0) +
     Number(item.sideForwardClicks || 0)
   );
+}
+
+function mergeKeyCounts(target: KeyCountMap, incoming: KeyCountMap) {
+  const next = { ...target };
+  for (const [key, value] of Object.entries(incoming || {})) {
+    next[key] = (next[key] || 0) + (Number(value) || 0);
+  }
+  return next;
 }
 
 function getMetricValue(item: Pick<WindowInputAggregate, InputActivityMetric>, metric: InputActivityMetric) {
@@ -121,10 +270,7 @@ function formatLastAt(value: string) {
 
 function isRecordInRange(record: InputActivityTimelineRecord, range: TimeRange) {
   const startMs = new Date(record.bucketStartAt).getTime();
-  if (!Number.isFinite(startMs)) {
-    return false;
-  }
-  return startMs >= range.startMs && startMs < range.endMs;
+  return Number.isFinite(startMs) && startMs >= range.startMs && startMs < range.endMs;
 }
 
 function buildWindowAggregates(
@@ -152,6 +298,7 @@ function buildWindowAggregates(
         totalClicks: getTotalClicks(record),
         scrollTicks: record.scrollTicks,
         mouseMovePixels: record.mouseMovePixels,
+        keyCounts: record.keyCounts || {},
         focusSeconds: focusSecondsByKey.get(record.classificationKey) || 0,
         lastAt,
       });
@@ -170,6 +317,7 @@ function buildWindowAggregates(
     existing.totalClicks += getTotalClicks(record);
     existing.scrollTicks += record.scrollTicks;
     existing.mouseMovePixels += record.mouseMovePixels;
+    existing.keyCounts = mergeKeyCounts(existing.keyCounts, record.keyCounts || {});
     existing.focusSeconds = focusSecondsByKey.get(record.classificationKey) || existing.focusSeconds;
 
     if (new Date(lastAt).getTime() > new Date(existing.lastAt).getTime()) {
@@ -208,42 +356,52 @@ function buildDailyTrend(
     if (!Number.isFinite(startMs) || startMs < firstStartMs || startMs >= safeSelectedStartMs + 24 * 3600000) {
       continue;
     }
-    const dayKey = getLocalDateKey(new Date(startMs));
-    const row = rowMap.get(dayKey);
-    if (!row) {
-      continue;
+    const row = rowMap.get(getLocalDateKey(new Date(startMs)));
+    if (row) {
+      row.value += metric === 'totalClicks' ? getTotalClicks(record) : Number(record[metric] || 0);
     }
-    row.value += metric === 'totalClicks' ? getTotalClicks(record) : Number(record[metric] || 0);
   }
 
   return rows;
 }
 
 function compactTypeLabel(value: ObjectType) {
-  if (value === 'BrowserTab') {
-    return '网页';
-  }
-  if (value === 'Desktop') {
-    return '桌面';
-  }
+  if (value === 'BrowserTab') return '网页';
+  if (value === 'Desktop') return '桌面';
   return '窗口';
 }
 
-function ProgressRow({
+function buildKeyRows(keyCounts: KeyCountMap) {
+  return Object.entries(keyCounts || {})
+    .map(([code, count]) => ({
+      code,
+      label: KEY_LABEL_BY_CODE[code] || `#${code}`,
+      count: Number(count) || 0,
+    }))
+    .filter(item => item.count > 0)
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh-CN-u-co-pinyin'));
+}
+
+function getKeyCount(keyCounts: KeyCountMap, key: KeyDefinition) {
+  return key.code ? Number(keyCounts[key.code] || 0) : 0;
+}
+
+function MetricRow({
   label,
   value,
+  formattedValue,
   max,
   sub,
   color,
 }: {
   label: string;
-  value: string;
+  value: number;
+  formattedValue?: string;
   max: number;
   sub?: string;
   color: string;
 }) {
-  const numeric = Number(value.replace(/[^\d.]/g, '')) || 0;
-  const width = max > 0 ? Math.max(4, Math.min(100, (numeric / max) * 100)) : 0;
+  const width = max > 0 ? Math.max(4, Math.min(100, (value / max) * 100)) : 0;
 
   return (
     <div className="space-y-1.5">
@@ -251,12 +409,38 @@ function ProgressRow({
         <span className="flex-1 truncate text-foreground" title={label}>
           {label}
         </span>
-        {sub && <span className="text-muted-foreground">{sub}</span>}
-        <span className="font-semibold text-foreground tabular-nums">{value}</span>
+        {sub && <span className="text-muted-foreground shrink-0">{sub}</span>}
+        <span className="font-semibold text-foreground tabular-nums shrink-0">{formattedValue || formatInteger(value)}</span>
       </div>
       <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
         <div className="h-full rounded-full" style={{ width: `${width}%`, backgroundColor: color }} />
       </div>
+    </div>
+  );
+}
+
+function KeyboardKey({
+  keyDef,
+  count,
+  max,
+}: {
+  keyDef: KeyDefinition;
+  count: number;
+  max: number;
+}) {
+  const ratio = max > 0 ? count / max : 0;
+  const alpha = count > 0 ? Math.min(0.95, 0.16 + ratio * 0.72) : 0.06;
+  return (
+    <div
+      title={`${keyDef.label}: ${formatInteger(count)}`}
+      className="h-9 min-w-9 rounded-lg border border-border/70 flex flex-col items-center justify-center px-1 text-[10px] leading-none text-foreground shadow-sm"
+      style={{
+        flex: keyDef.span || 1,
+        backgroundColor: `hsl(var(--primary) / ${alpha})`,
+      }}
+    >
+      <span className="max-w-full truncate">{keyDef.label}</span>
+      {count > 0 && <span className="mt-1 text-[9px] text-foreground/80 tabular-nums">{formatInteger(count)}</span>}
     </div>
   );
 }
@@ -267,6 +451,9 @@ export default function InputActivityPage() {
   const selectedDate = inputUi.selectedDate || getLocalDateKey();
   const selectedMetric = inputUi.selectedMetric || 'totalClicks';
   const historyDays = inputUi.historyDays || 7;
+  const keyboardMode = inputUi.keyboardMode || 'heatmap';
+  const showAppDetails = Boolean(inputUi.showAppDetails);
+  const historyChartType = inputUi.historyChartType || 'line';
   const selectedMetricConfig = METRICS.find(item => item.key === selectedMetric) ?? METRICS[0];
   const selectedRange = useMemo(() => getDayRange(selectedDate), [selectedDate]);
   const windowLimit = Math.max(1, Math.floor(Number(state.preferences.analyticsWindowItemLimit) || 10));
@@ -308,6 +495,7 @@ export default function InputActivityPage() {
           totalClicks: sum.totalClicks + item.totalClicks,
           scrollTicks: sum.scrollTicks + item.scrollTicks,
           mouseMovePixels: sum.mouseMovePixels + item.mouseMovePixels,
+          keyCounts: mergeKeyCounts(sum.keyCounts, item.keyCounts),
         }),
         {
           keyPresses: 0,
@@ -319,6 +507,7 @@ export default function InputActivityPage() {
           totalClicks: 0,
           scrollTicks: 0,
           mouseMovePixels: 0,
+          keyCounts: {} as KeyCountMap,
         },
       ),
     [aggregates],
@@ -328,9 +517,7 @@ export default function InputActivityPage() {
     () =>
       [...aggregates].sort((a, b) => {
         const valueDiff = getMetricValue(b, selectedMetric) - getMetricValue(a, selectedMetric);
-        if (valueDiff !== 0) {
-          return valueDiff;
-        }
+        if (valueDiff !== 0) return valueDiff;
         return a.displayName.localeCompare(b.displayName, 'zh-CN-u-co-pinyin');
       }),
     [aggregates, selectedMetric],
@@ -349,30 +536,18 @@ export default function InputActivityPage() {
     [aggregates, windowLimit],
   );
 
-  const keyDistributionRows = useMemo(
-    () =>
-      [...aggregates]
-        .sort((a, b) => b.keyPresses - a.keyPresses)
-        .filter(item => item.keyPresses > 0)
-        .slice(0, 12),
-    [aggregates],
-  );
-
   const trendRows = useMemo(
     () => buildDailyTrend(state.inputActivityTimeline, selectedDate, historyDays, selectedMetric),
     [historyDays, selectedDate, selectedMetric, state.inputActivityTimeline],
   );
 
+  const keyRows = useMemo(() => buildKeyRows(totals.keyCounts), [totals.keyCounts]);
+  const maxKeyCount = Math.max(1, ...keyRows.map(item => item.count));
   const pieRows = sortedBySelectedMetric
     .filter(item => getMetricValue(item, selectedMetric) > 0)
     .slice(0, windowLimit)
-    .map(item => ({
-      name: item.displayName,
-      value: getMetricValue(item, selectedMetric),
-    }));
-
+    .map(item => ({ name: item.displayName, value: getMetricValue(item, selectedMetric) }));
   const topValue = Math.max(1, ...sortedBySelectedMetric.map(item => getMetricValue(item, selectedMetric)));
-  const maxKeyPresses = Math.max(1, ...keyDistributionRows.map(item => item.keyPresses));
   const trendTotal = trendRows.reduce((sum, item) => sum + item.value, 0);
   const currentFocused = state.currentFocusedWindow;
 
@@ -403,9 +578,6 @@ export default function InputActivityPage() {
             onChange={event => updateInputUi({ selectedDate: event.target.value })}
             className="h-9 px-3 text-xs rounded-xl border border-border bg-card text-foreground"
           />
-          <Badge variant="outline" className="h-9 px-3 rounded-xl bg-card">
-            记录口径：只保存聚合数量，不保存具体按键文本和鼠标坐标
-          </Badge>
           {currentFocused && (
             <div className="ml-auto min-w-0 h-9 px-3 rounded-xl border border-border bg-card flex items-center gap-2 text-xs">
               <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
@@ -449,9 +621,7 @@ export default function InputActivityPage() {
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">鼠标移动</p>
-                  <p className="text-2xl font-semibold text-foreground tabular-nums">
-                    {formatInteger(totals.mouseMovePixels)} px
-                  </p>
+                  <p className="text-2xl font-semibold text-foreground tabular-nums">{formatInteger(totals.mouseMovePixels)} px</p>
                 </div>
               </div>
             </Card>
@@ -472,10 +642,7 @@ export default function InputActivityPage() {
         <div className="grid grid-cols-1 xl:grid-cols-[1.05fr_0.95fr] gap-4">
           <Card className="p-4 border-border bg-card">
             <div className="flex items-center justify-between mb-3">
-              <div>
-                <h3 className="text-sm font-semibold text-foreground">鼠标点击明细</h3>
-                <p className="text-xs text-muted-foreground mt-1">按鼠标按钮类型统计今日点击次数。</p>
-              </div>
+              <h3 className="text-sm font-semibold text-foreground">鼠标点击明细</h3>
               <Mouse className="w-4 h-4 text-primary" />
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -489,40 +656,85 @@ export default function InputActivityPage() {
           </Card>
 
           <Card className="p-4 border-border bg-card">
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <h3 className="text-sm font-semibold text-foreground">按键分布</h3>
-                <p className="text-xs text-muted-foreground mt-1">当前版本按窗口统计按键次数，不记录具体按键文本。</p>
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <h3 className="text-sm font-semibold text-foreground">按键分布</h3>
+              <div className="flex rounded-lg border border-border overflow-hidden">
+                {[
+                  { key: 'heatmap', label: '热力图' },
+                  { key: 'rank', label: '排行' },
+                ].map(item => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => updateInputUi({ keyboardMode: item.key as 'heatmap' | 'rank' })}
+                    className={`h-8 px-3 text-xs ${
+                      keyboardMode === item.key
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-card text-muted-foreground hover:bg-secondary'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
               </div>
-              <Button variant="outline" size="sm" className="h-8 text-xs" disabled>
-                键盘热力图
-              </Button>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
-              {keyDistributionRows.length > 0 ? (
-                keyDistributionRows.map((item, index) => (
-                  <ProgressRow
-                    key={item.classificationKey}
-                    label={item.displayName}
-                    value={formatInteger(item.keyPresses)}
-                    max={maxKeyPresses}
-                    color={getSeriesColor(index)}
-                  />
-                ))
-              ) : (
-                <p className="text-xs text-muted-foreground py-8 text-center sm:col-span-2">当天暂无按键记录</p>
-              )}
-            </div>
+
+            {keyboardMode === 'heatmap' ? (
+              <div className="space-y-3 overflow-auto pb-1">
+                <div className="min-w-[760px] space-y-1.5">
+                  {KEYBOARD_ROWS.map((row, rowIndex) => (
+                    <div key={rowIndex} className="flex gap-1.5">
+                      {row.map((keyDef, keyIndex) => (
+                        <KeyboardKey
+                          key={`${rowIndex}-${keyIndex}-${keyDef.label}`}
+                          keyDef={keyDef}
+                          count={getKeyCount(totals.keyCounts, keyDef)}
+                          max={maxKeyCount}
+                        />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-5 gap-1.5 max-w-sm">
+                  {NUMPAD_ROWS.flat().map((keyDef, index) => (
+                    <KeyboardKey
+                      key={`${keyDef.label}-${index}`}
+                      keyDef={keyDef}
+                      count={getKeyCount(totals.keyCounts, keyDef)}
+                      max={maxKeyCount}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 max-h-[300px] overflow-auto pr-1">
+                {keyRows.length > 0 ? (
+                  keyRows.slice(0, 24).map((item, index) => (
+                    <MetricRow
+                      key={item.code}
+                      label={item.label}
+                      value={item.count}
+                      max={maxKeyCount}
+                      color={getSeriesColor(index)}
+                    />
+                  ))
+                ) : (
+                  <p className="text-xs text-muted-foreground py-8 text-center sm:col-span-2">当天暂无按键记录</p>
+                )}
+              </div>
+            )}
           </Card>
 
-          <Card className="p-4 border-border bg-card">
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <h3 className="text-sm font-semibold text-foreground">活跃应用</h3>
-                <p className="text-xs text-muted-foreground mt-1">综合按键、点击、滚动和移动量，显示今日最活跃窗口。</p>
-              </div>
-              <Button variant="outline" size="sm" className="h-8 text-xs" disabled>
-                应用统计详情
+          <Card className="p-4 border-border bg-card xl:col-span-2">
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <h3 className="text-sm font-semibold text-foreground">活跃应用</h3>
+              <Button
+                variant={showAppDetails ? 'default' : 'outline'}
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => updateInputUi({ showAppDetails: !showAppDetails })}
+              >
+                {showAppDetails ? '收起详情' : '应用统计详情'}
               </Button>
             </div>
             <div className="space-y-2 max-h-[360px] overflow-auto pr-1">
@@ -557,14 +769,49 @@ export default function InputActivityPage() {
                 <p className="text-xs text-muted-foreground py-10 text-center">当天暂无活跃应用记录</p>
               )}
             </div>
+
+            {showAppDetails && (
+              <div className="mt-4 overflow-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-muted-foreground">
+                    <tr className="border-b border-border">
+                      <th className="text-left font-medium py-2 pr-3">应用</th>
+                      <th className="text-left font-medium py-2 px-3">类型</th>
+                      <th className="text-right font-medium py-2 px-3">聚焦</th>
+                      <th className="text-right font-medium py-2 px-3">按键</th>
+                      <th className="text-right font-medium py-2 px-3">点击</th>
+                      <th className="text-right font-medium py-2 px-3">滚动</th>
+                      <th className="text-right font-medium py-2 px-3">移动</th>
+                      <th className="text-right font-medium py-2 pl-3">最后输入</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeApps.map(item => (
+                      <tr key={`detail-${item.classificationKey}`} className="border-b border-border/60 hover:bg-secondary/30">
+                        <td className="py-2 pr-3">
+                          <div className="max-w-[360px] truncate text-foreground" title={item.displayName}>
+                            {item.displayName}
+                          </div>
+                          <div className="text-[11px] text-muted-foreground truncate max-w-[360px]">{item.processName}</div>
+                        </td>
+                        <td className="py-2 px-3 text-muted-foreground">{compactTypeLabel(item.objectType)}</td>
+                        <td className="py-2 px-3 text-right text-muted-foreground">{formatDuration(item.focusSeconds)}</td>
+                        <td className="py-2 px-3 text-right text-foreground">{formatInteger(item.keyPresses)}</td>
+                        <td className="py-2 px-3 text-right text-foreground">{formatInteger(item.totalClicks)}</td>
+                        <td className="py-2 px-3 text-right text-foreground">{formatInteger(item.scrollTicks)}</td>
+                        <td className="py-2 px-3 text-right text-foreground">{formatInteger(item.mouseMovePixels)}</td>
+                        <td className="py-2 pl-3 text-right text-muted-foreground">{formatLastAt(item.lastAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Card>
 
           <Card className="p-4 border-border bg-card">
             <div className="flex flex-wrap items-center gap-2 mb-3">
-              <div className="mr-auto">
-                <h3 className="text-sm font-semibold text-foreground">历史记录</h3>
-                <p className="text-xs text-muted-foreground mt-1">按日期汇总所选指标，默认展示最近 7 天。</p>
-              </div>
+              <h3 className="text-sm font-semibold text-foreground mr-auto">历史记录</h3>
               <div className="flex rounded-lg border border-border overflow-hidden">
                 {[7, 30].map(days => (
                   <button
@@ -576,6 +823,25 @@ export default function InputActivityPage() {
                     }`}
                   >
                     {days}天
+                  </button>
+                ))}
+              </div>
+              <div className="flex rounded-lg border border-border overflow-hidden">
+                {[
+                  { key: 'line', label: '折线' },
+                  { key: 'bar', label: '柱状' },
+                ].map(item => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => updateInputUi({ historyChartType: item.key as 'line' | 'bar' })}
+                    className={`h-8 px-3 text-xs ${
+                      historyChartType === item.key
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-card text-muted-foreground hover:bg-secondary'
+                    }`}
+                  >
+                    {item.label}
                   </button>
                 ))}
               </div>
@@ -597,66 +863,74 @@ export default function InputActivityPage() {
               </div>
             </div>
             <ResponsiveContainer width="100%" height={245}>
-              <LineChart data={trendRows} margin={{ left: 6, right: 14, top: 10, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.65} />
-                <XAxis dataKey="label" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
-                <YAxis tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
-                <Tooltip
-                  contentStyle={tooltipStyle}
-                  formatter={(value: number) => [formatMetricValue(selectedMetric, value), selectedMetricConfig.label]}
-                  labelFormatter={label => `日期 ${label}`}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="value"
-                  stroke="hsl(var(--primary))"
-                  strokeWidth={2.5}
-                  dot={{ r: 3 }}
-                  activeDot={{ r: 5 }}
-                />
-              </LineChart>
+              {historyChartType === 'line' ? (
+                <LineChart data={trendRows} margin={{ left: 6, right: 14, top: 10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.65} />
+                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
+                  <YAxis tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
+                  <Tooltip
+                    contentStyle={tooltipStyle}
+                    formatter={(value: number) => [formatMetricValue(selectedMetric, value), selectedMetricConfig.label]}
+                    labelFormatter={label => `日期 ${label}`}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="value"
+                    stroke="hsl(var(--primary))"
+                    strokeWidth={2.5}
+                    dot={{ r: 3 }}
+                    activeDot={{ r: 5 }}
+                  />
+                </LineChart>
+              ) : (
+                <BarChart data={trendRows} margin={{ left: 6, right: 14, top: 10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.65} />
+                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
+                  <YAxis tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
+                  <Tooltip
+                    contentStyle={tooltipStyle}
+                    formatter={(value: number) => [formatMetricValue(selectedMetric, value), selectedMetricConfig.label]}
+                    labelFormatter={label => `日期 ${label}`}
+                  />
+                  <Bar dataKey="value" fill="hsl(var(--primary))" radius={[5, 5, 0, 0]} />
+                </BarChart>
+              )}
             </ResponsiveContainer>
-            <p className="mt-2 text-xs text-muted-foreground">
-              总计：{formatMetricValue(selectedMetric, trendTotal)}
-            </p>
+            <p className="mt-2 text-xs text-muted-foreground">总计：{formatMetricValue(selectedMetric, trendTotal)}</p>
           </Card>
 
-          <Card className="p-4 border-border bg-card xl:col-span-2">
+          <Card className="p-4 border-border bg-card">
             <div className="flex flex-wrap items-center gap-2 mb-3">
-              <div className="mr-auto">
-                <h3 className="text-sm font-semibold text-foreground">窗口明细</h3>
-                <p className="text-xs text-muted-foreground mt-1">按当前选择的“{selectedMetricConfig.shortLabel}”从高到低排序。</p>
-              </div>
+              <h3 className="text-sm font-semibold text-foreground mr-auto">窗口明细</h3>
               <ChartNoAxesColumn className="w-4 h-4 text-primary" />
             </div>
-            <div className="grid grid-cols-1 xl:grid-cols-[1fr_300px] gap-4">
-              <div className="space-y-3 max-h-[460px] overflow-auto pr-1">
-                {sortedBySelectedMetric.length > 0 ? (
+            <div className="grid grid-cols-1 xl:grid-cols-[1fr_260px] gap-4">
+              <div className="space-y-3 max-h-[390px] overflow-auto pr-1">
+                {sortedBySelectedMetric.filter(item => getMetricValue(item, selectedMetric) > 0).length > 0 ? (
                   sortedBySelectedMetric
                     .filter(item => getMetricValue(item, selectedMetric) > 0)
                     .map((item, index) => (
-                      <ProgressRow
+                      <MetricRow
                         key={item.classificationKey}
                         label={item.displayName}
                         sub={`${compactTypeLabel(item.objectType)} · 聚焦 ${formatDuration(item.focusSeconds)}`}
-                        value={formatMetricValue(selectedMetric, getMetricValue(item, selectedMetric))}
+                        value={getMetricValue(item, selectedMetric)}
+                        formattedValue={formatMetricValue(selectedMetric, getMetricValue(item, selectedMetric))}
                         max={topValue}
                         color={getSeriesColor(index)}
                       />
                     ))
                 ) : (
-                  <p className="text-xs text-muted-foreground py-10 text-center">
-                    当天暂无键鼠记录。记录只会归入已经达到窗口记录阈值的窗口。
-                  </p>
+                  <p className="text-xs text-muted-foreground py-10 text-center">当天暂无键鼠记录</p>
                 )}
               </div>
-              <div className="rounded-xl border border-border/70 bg-secondary/20 p-3 min-h-[260px]">
+              <div className="rounded-xl border border-border/70 bg-secondary/20 p-3 min-h-[240px]">
                 <h4 className="text-xs font-semibold text-foreground mb-2">窗口占比</h4>
                 {pieRows.length > 0 ? (
                   <>
-                    <ResponsiveContainer width="100%" height={190}>
+                    <ResponsiveContainer width="100%" height={165}>
                       <PieChart>
-                        <Pie data={pieRows} dataKey="value" cx="50%" cy="50%" innerRadius={42} outerRadius={78} paddingAngle={2}>
+                        <Pie data={pieRows} dataKey="value" cx="50%" cy="50%" innerRadius={38} outerRadius={68} paddingAngle={2}>
                           {pieRows.map((item, index) => (
                             <Cell key={item.name} fill={getSeriesColor(index)} />
                           ))}
@@ -680,17 +954,13 @@ export default function InputActivityPage() {
                     </div>
                   </>
                 ) : (
-                  <div className="h-full min-h-[220px] flex items-center justify-center text-xs text-muted-foreground">
+                  <div className="h-full min-h-[180px] flex items-center justify-center text-xs text-muted-foreground">
                     暂无占比数据
                   </div>
                 )}
               </div>
             </div>
           </Card>
-        </div>
-
-        <div className="text-xs text-muted-foreground leading-relaxed">
-          说明：鼠标移动距离以像素累计，不换算为实际物理距离；如果焦点落在管理员权限程序上，普通权限运行的 KewuToolbox 可能无法捕获对应键鼠事件。
         </div>
       </div>
     </DashboardLayout>
