@@ -4982,10 +4982,23 @@ try {
 `;
 }
 
-function ensurePortableUpdater(executableDir) {
+function escapeBatchArgument(value) {
+  return `"${String(value ?? '').replace(/%/g, '%%').replace(/"/g, '""')}"`;
+}
+
+function getUpdaterCommandContent(options) {
+  const processId = String(options?.processId || '');
+  const targetPath = escapeBatchArgument(options?.targetPath);
+  const downloadedPath = escapeBatchArgument(options?.downloadedPath);
+  const expectedSha256 = escapeBatchArgument(options?.expectedSha256);
+
+  return `@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\necho [%date% %time%] cmd started >> "%~dp0KewuToolboxUpdater.launch.log"\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0${UPDATER_PS1_NAME}" -ProcessId ${processId} -TargetPath ${targetPath} -DownloadedPath ${downloadedPath} -ExpectedSha256 ${expectedSha256} >> "%~dp0KewuToolboxUpdater.launch.log" 2>&1\r\necho [%date% %time%] powershell exit %errorlevel% >> "%~dp0KewuToolboxUpdater.launch.log"\r\nexit /b %errorlevel%\r\n`;
+}
+
+function ensurePortableUpdater(executableDir, options) {
   const ps1Path = path.join(executableDir, UPDATER_PS1_NAME);
   const cmdPath = path.join(executableDir, UPDATER_CMD_NAME);
-  const cmdContent = `@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0${UPDATER_PS1_NAME}" %*\r\n`;
+  const cmdContent = getUpdaterCommandContent(options);
   try {
     fs.writeFileSync(ps1Path, getUpdaterScriptContent(), 'utf8');
     fs.writeFileSync(cmdPath, cmdContent, 'utf8');
@@ -5109,7 +5122,12 @@ async function startPortableUpdate(payload) {
     }
   }
 
-  const updater = ensurePortableUpdater(executableDir);
+  const updater = ensurePortableUpdater(executableDir, {
+    processId: process.pid,
+    targetPath,
+    downloadedPath: downloadPath,
+    expectedSha256,
+  });
   if (!updater.ok) {
     return updater;
   }
@@ -5129,21 +5147,12 @@ async function startPortableUpdate(payload) {
 
   try {
     const child = childProcess.spawn(
-      'powershell.exe',
+      'cmd.exe',
       [
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        updater.ps1Path,
-        '-ProcessId',
-        String(process.pid),
-        '-TargetPath',
-        targetPath,
-        '-DownloadedPath',
-        downloadPath,
-        '-ExpectedSha256',
-        expectedSha256,
+        '/d',
+        '/s',
+        '/c',
+        updater.cmdPath,
       ],
       {
         cwd: executableDir,
@@ -5152,6 +5161,10 @@ async function startPortableUpdate(payload) {
         windowsHide: true,
       },
     );
+    child.once('error', error => {
+      addDiagnosticLog('error', 'Launch updater failed', error instanceof Error ? error.message : String(error));
+      scheduleSave();
+    });
     child.unref();
   } catch (error) {
     addDiagnosticLog('error', 'Launch updater failed', error instanceof Error ? error.message : String(error));
