@@ -39,6 +39,9 @@ const GITHUB_REPO_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`;
 const GITHUB_LATEST_RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 const UPDATER_CMD_NAME = 'KewuToolboxUpdater.cmd';
 const UPDATER_PS1_NAME = 'KewuToolboxUpdater.ps1';
+const WINDOWS_RUN_REGISTRY_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+const AUTO_LAUNCH_REGISTRY_VALUE_NAME = 'KewuToolbox';
+const LEGACY_AUTO_LAUNCH_REGISTRY_VALUE_NAMES = ['electron.app.Electron', 'electron.app.KewuToolbox'];
 
 const STATE_SECTION_FILES = {
   profiles: 'profiles.json',
@@ -752,7 +755,97 @@ function normalizeCloseWindowBehavior(input, fallback = 'ask') {
   return input === 'close' || input === 'tray' || input === 'ask' ? input : fallback;
 }
 
+function quoteWindowsCommandLineArg(value) {
+  return `"${String(value ?? '').replace(/"/g, '\\"')}"`;
+}
+
+function parseExecutablePathFromCommand(command) {
+  const text = typeof command === 'string' ? command.trim() : '';
+  if (!text) {
+    return null;
+  }
+  const quoted = /^"([^"]+\.exe)"(?:\s|$)/i.exec(text);
+  if (quoted) {
+    return quoted[1];
+  }
+  const unquoted = /^(.+?\.exe)(?:\s|$)/i.exec(text);
+  return unquoted ? unquoted[1].trim() : null;
+}
+
+function isKewuAutoLaunchCommand(command) {
+  const text = typeof command === 'string' ? command.toLowerCase() : '';
+  return text.includes('kewutoolbox');
+}
+
+function runWindowsRegistryCommand(args) {
+  return childProcess.execFileSync('reg.exe', args, {
+    encoding: 'utf8',
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function readWindowsRunValue(valueName) {
+  try {
+    const output = runWindowsRegistryCommand(['query', WINDOWS_RUN_REGISTRY_KEY, '/v', valueName]);
+    const escapedName = valueName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`^\\s*${escapedName}\\s+REG_\\w+\\s+(.+)$`, 'im');
+    const match = pattern.exec(output);
+    return match ? match[1].trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeWindowsRunValue(valueName, command) {
+  runWindowsRegistryCommand([
+    'add',
+    WINDOWS_RUN_REGISTRY_KEY,
+    '/v',
+    valueName,
+    '/t',
+    'REG_SZ',
+    '/d',
+    command,
+    '/f',
+  ]);
+}
+
+function deleteWindowsRunValue(valueName) {
+  try {
+    runWindowsRegistryCommand(['delete', WINDOWS_RUN_REGISTRY_KEY, '/v', valueName, '/f']);
+  } catch {
+    // Missing registry values do not need cleanup.
+  }
+}
+
+function cleanupLegacyAutoLaunchEntries() {
+  for (const valueName of LEGACY_AUTO_LAUNCH_REGISTRY_VALUE_NAMES) {
+    const existing = readWindowsRunValue(valueName);
+    if (isKewuAutoLaunchCommand(existing)) {
+      deleteWindowsRunValue(valueName);
+    }
+  }
+}
+
+function resolveAutoLaunchExecutablePath() {
+  const resolved = resolveCurrentExecutablePath();
+  if (resolved) {
+    return resolved;
+  }
+  return process.execPath ? path.resolve(process.execPath) : null;
+}
+
 function readSystemAutoLaunchEnabled() {
+  if (process.platform === 'win32') {
+    const command = readWindowsRunValue(AUTO_LAUNCH_REGISTRY_VALUE_NAME);
+    if (!command) {
+      return false;
+    }
+    const executablePath = parseExecutablePathFromCommand(command);
+    return Boolean(executablePath && fs.existsSync(executablePath));
+  }
+
   try {
     return Boolean(app.getLoginItemSettings().openAtLogin);
   } catch {
@@ -762,10 +855,40 @@ function readSystemAutoLaunchEnabled() {
 
 function applySystemAutoLaunchEnabled(enabled) {
   const normalized = Boolean(enabled);
+  if (process.platform === 'win32') {
+    cleanupLegacyAutoLaunchEntries();
+    if (!normalized) {
+      deleteWindowsRunValue(AUTO_LAUNCH_REGISTRY_VALUE_NAME);
+      return readSystemAutoLaunchEnabled();
+    }
+
+    const executablePath = resolveAutoLaunchExecutablePath();
+    if (!executablePath || !fs.existsSync(executablePath)) {
+      addDiagnosticLog('error', '开机自启动写入失败', `无法定位真实可执行文件：${executablePath || '空路径'}`);
+      return false;
+    }
+
+    try {
+      writeWindowsRunValue(
+        AUTO_LAUNCH_REGISTRY_VALUE_NAME,
+        quoteWindowsCommandLineArg(executablePath),
+      );
+    } catch (error) {
+      addDiagnosticLog(
+        'error',
+        '开机自启动写入失败',
+        error instanceof Error ? error.message : String(error),
+      );
+      return false;
+    }
+
+    return readSystemAutoLaunchEnabled();
+  }
+
   try {
     app.setLoginItemSettings({
       openAtLogin: normalized,
-      path: process.execPath,
+      path: resolveAutoLaunchExecutablePath() || process.execPath,
       args: [],
     });
   } catch {
