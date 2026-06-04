@@ -176,6 +176,10 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
     value === 'keyPresses' || value === 'totalClicks' || value === 'scrollTicks' || value === 'mouseMovePixels'
       ? value
       : fallbackValue;
+  const normalizeInputActivityHistoryDays = (
+    value: unknown,
+    fallbackValue: AppUiState['inputActivity']['historyDays'],
+  ) => (Number(value) === 30 ? 30 : Number(value) === 7 ? 7 : fallbackValue);
 
   return {
     calculatorExpression:
@@ -282,6 +286,10 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
       selectedMetric: normalizeInputActivityMetric(
         input?.inputActivity?.selectedMetric,
         fallback.inputActivity.selectedMetric,
+      ),
+      historyDays: normalizeInputActivityHistoryDays(
+        input?.inputActivity?.historyDays,
+        fallback.inputActivity.historyDays,
       ),
     },
     monitoringDraft: {

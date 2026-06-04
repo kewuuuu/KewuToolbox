@@ -352,6 +352,7 @@ export type InputActivityMetric = 'keyPresses' | 'totalClicks' | 'scrollTicks' |
 export interface InputActivityUiState {
   selectedDate: string;
   selectedMetric: InputActivityMetric;
+  historyDays: 7 | 30;
 }
 
 export interface MonitoringDraftUiState {

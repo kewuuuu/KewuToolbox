@@ -42,6 +42,7 @@ const UPDATER_PS1_NAME = 'KewuToolboxUpdater.ps1';
 const WINDOWS_RUN_REGISTRY_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const AUTO_LAUNCH_REGISTRY_VALUE_NAME = 'KewuToolbox';
 const LEGACY_AUTO_LAUNCH_REGISTRY_VALUE_NAMES = ['electron.app.Electron', 'electron.app.KewuToolbox'];
+const LOADED_SECTION_KEYS_PROPERTY = '__loadedSectionKeys';
 
 const STATE_SECTION_FILES = {
   profiles: 'profiles.json',
@@ -525,6 +526,7 @@ function syncStorageMetaToState() {
 function readStateSections(dataDirPath) {
   const rawState = {};
   let hasSection = false;
+  const loadedSectionKeys = new Set();
   for (const sectionKey of Object.keys(STATE_SECTION_FILES)) {
     const sectionPath = getSectionFilePath(dataDirPath, sectionKey);
     if (!sectionPath || !fs.existsSync(sectionPath)) {
@@ -535,9 +537,43 @@ function readStateSections(dataDirPath) {
       continue;
     }
     hasSection = true;
+    loadedSectionKeys.add(sectionKey);
     rawState[sectionKey] = section;
   }
+  if (hasSection) {
+    Object.defineProperty(rawState, LOADED_SECTION_KEYS_PROPERTY, {
+      value: loadedSectionKeys,
+      enumerable: false,
+      configurable: true,
+    });
+  }
   return hasSection ? rawState : null;
+}
+
+function backfillMissingLegacyStateSections(rawState, legacyRaw) {
+  if (!rawState || !legacyRaw || typeof rawState !== 'object' || typeof legacyRaw !== 'object') {
+    return { rawState, changed: false };
+  }
+
+  const loadedSectionKeys =
+    rawState[LOADED_SECTION_KEYS_PROPERTY] instanceof Set
+      ? rawState[LOADED_SECTION_KEYS_PROPERTY]
+      : new Set(Object.keys(rawState));
+  let changed = false;
+  const nextRaw = { ...rawState };
+
+  for (const sectionKey of Object.keys(STATE_SECTION_FILES)) {
+    if (loadedSectionKeys.has(sectionKey)) {
+      continue;
+    }
+    const legacyValue = legacyRaw[sectionKey];
+    if (Array.isArray(legacyValue) && legacyValue.length > 0) {
+      nextRaw[sectionKey] = legacyValue;
+      changed = true;
+    }
+  }
+
+  return { rawState: changed ? nextRaw : rawState, changed };
 }
 
 function writeStateSections(dataDirPath, statePayload) {
@@ -2222,10 +2258,17 @@ function loadPersistedState() {
   ensureDir(primaryDataDir);
 
   let savedRaw = readStateSections(primaryDataDir);
+  const legacyPrimaryPath = getLegacyStateFilePath(primaryDataDir);
+  const legacyPrimaryRaw = readJsonSafe(legacyPrimaryPath);
   if (!savedRaw) {
-    const legacyPrimaryPath = getLegacyStateFilePath(primaryDataDir);
-    savedRaw = readJsonSafe(legacyPrimaryPath);
+    savedRaw = legacyPrimaryRaw;
     if (savedRaw) {
+      writeStateSections(primaryDataDir, normalizeSavedState(savedRaw));
+    }
+  } else if (legacyPrimaryRaw) {
+    const backfilled = backfillMissingLegacyStateSections(savedRaw, legacyPrimaryRaw);
+    savedRaw = backfilled.rawState;
+    if (backfilled.changed) {
       writeStateSections(primaryDataDir, normalizeSavedState(savedRaw));
     }
   }
@@ -2246,6 +2289,15 @@ function loadPersistedState() {
     if (previousDefaultRaw) {
       savedRaw = previousDefaultRaw;
       writeStateSections(primaryDataDir, normalizeSavedState(previousDefaultRaw));
+    }
+  } else if (savedRaw && !preferredDataDirPath) {
+    const previousDefaultRaw = readJsonSafe(getPreviousDefaultStateFilePath());
+    if (previousDefaultRaw) {
+      const backfilled = backfillMissingLegacyStateSections(savedRaw, previousDefaultRaw);
+      savedRaw = backfilled.rawState;
+      if (backfilled.changed) {
+        writeStateSections(primaryDataDir, normalizeSavedState(savedRaw));
+      }
     }
   }
 
@@ -2279,7 +2331,10 @@ function setDataFilePath(targetPath, createIfMissing = false) {
 
   const sectionState = readStateSections(normalizedDataDir);
   const legacyState = readJsonSafe(getLegacyStateFilePath(normalizedDataDir));
-  const loadedRaw = sectionState || legacyState;
+  const backfilled = sectionState && legacyState
+    ? backfillMissingLegacyStateSections(sectionState, legacyState)
+    : { rawState: sectionState || legacyState, changed: false };
+  const loadedRaw = backfilled.rawState;
 
   let nextState = createEmptyState();
   let created = false;

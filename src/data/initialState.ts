@@ -146,6 +146,7 @@ export function createInitialState(): AppState {
       inputActivity: {
         selectedDate: '',
         selectedMetric: 'keyPresses',
+        historyDays: 7,
       },
       monitoringDraft: {
         creatingTag: false,
