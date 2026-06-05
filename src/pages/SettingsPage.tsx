@@ -29,9 +29,9 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
-import { Copy, Download, ExternalLink, FolderOpen, Github, MoonStar, Play, Plus, RefreshCw, Sun, Trash2 } from 'lucide-react';
+import { Copy, Database, Download, ExternalLink, FolderOpen, Github, MoonStar, Play, Plus, RefreshCw, Sun, Trash2 } from 'lucide-react';
 
-type SettingsTab = 'general' | 'plugins' | 'sounds' | 'updates' | 'console';
+type SettingsTab = 'general' | 'database' | 'plugins' | 'sounds' | 'updates' | 'console';
 const NONE_SOUND_ID = '__none__';
 type SoundEventConfig = {
   eventType: SoundEventType;
@@ -185,6 +185,9 @@ export default function SettingsPage() {
   const [isStartingUpdate, setIsStartingUpdate] = useState(false);
   const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null);
   const [updateProgress, setUpdateProgress] = useState<UpdateProgressEvent | null>(null);
+  const [storageStatus, setStorageStatus] = useState<StorageStatusResult | null>(null);
+  const [isRefreshingStorageStatus, setIsRefreshingStorageStatus] = useState(false);
+  const [isMigratingStorage, setIsMigratingStorage] = useState(false);
   const browserFilePickerRef = useRef<HTMLInputElement | null>(null);
   const settingsUi = state.uiState.settings;
   const updateSettingsUi = (partial: Partial<typeof settingsUi>) => {
@@ -231,9 +234,10 @@ export default function SettingsPage() {
     let disposed = false;
     const loadDesktopMeta = async () => {
       try {
-        const [currentPath, version] = await Promise.all([
+        const [currentPath, version, nextStorageStatus] = await Promise.all([
           window.desktopApi!.getDataFilePath(),
           window.desktopApi!.getAppVersion?.() ?? Promise.resolve('1.0.5'),
+          window.desktopApi!.getStorageStatus?.() ?? Promise.resolve(null),
         ]);
         if (disposed) {
           return;
@@ -244,6 +248,7 @@ export default function SettingsPage() {
           });
         }
         setAppVersion(version || '1.0.6');
+        setStorageStatus(nextStorageStatus);
       } catch {
         if (!disposed) {
       toast.error('读取数据目录失败');
@@ -272,11 +277,13 @@ export default function SettingsPage() {
       ? 'sounds'
       : tabParam === 'plugins'
         ? 'plugins'
-        : tabParam === 'updates'
-          ? 'updates'
-          : tabParam === 'console'
-            ? 'console'
-            : 'general';
+        : tabParam === 'database'
+          ? 'database'
+          : tabParam === 'updates'
+            ? 'updates'
+            : tabParam === 'console'
+              ? 'console'
+              : 'general';
 
   const sortedSoundFiles = useMemo(
     () =>
@@ -293,11 +300,13 @@ export default function SettingsPage() {
         ? 'sounds'
         : nextTab === 'plugins'
           ? 'plugins'
-          : nextTab === 'updates'
-            ? 'updates'
-            : nextTab === 'console'
-              ? 'console'
-              : 'general';
+          : nextTab === 'database'
+            ? 'database'
+            : nextTab === 'updates'
+              ? 'updates'
+              : nextTab === 'console'
+                ? 'console'
+                : 'general';
     if (normalized === 'general') {
       setSearchParams({});
       return;
@@ -368,6 +377,70 @@ export default function SettingsPage() {
     updateSettings({
       [config.volumeModeKey]: value,
     });
+  };
+
+  const refreshStorageStatus = async () => {
+    if (!window.desktopApi?.isElectron || !window.desktopApi.getStorageStatus) {
+      return null;
+    }
+    const nextStatus = await window.desktopApi.getStorageStatus();
+    setStorageStatus(nextStatus);
+    return nextStatus;
+  };
+
+  const handleRefreshStorageStatus = async () => {
+    if (isRefreshingStorageStatus) {
+      return;
+    }
+    setIsRefreshingStorageStatus(true);
+    try {
+      await refreshStorageStatus();
+      toast.success('已刷新数据库状态');
+    } catch {
+      toast.error('刷新数据库状态失败');
+    } finally {
+      setIsRefreshingStorageStatus(false);
+    }
+  };
+
+  const handleMigrateLegacyJsonStorage = async () => {
+    if (isMigratingStorage) {
+      return;
+    }
+    if (!window.desktopApi?.isElectron || !window.desktopApi.migrateLegacyJsonStorage) {
+      toast.info('当前环境不支持数据库迁移');
+      return;
+    }
+    const confirmed = window.confirm('确认将当前数据目录中的旧 JSON 数据迁移到 SQLite 吗？迁移会保留旧 JSON 文件，但会用旧 JSON 内容刷新当前 SQLite 数据库。');
+    if (!confirmed) {
+      return;
+    }
+
+    setIsMigratingStorage(true);
+    try {
+      const result = await window.desktopApi.migrateLegacyJsonStorage();
+      if (result.ok) {
+        if (result.status) {
+          setStorageStatus(result.status);
+        } else {
+          await refreshStorageStatus();
+        }
+        toast.success('旧 JSON 数据已迁移到 SQLite');
+        return;
+      }
+      if (result.error === 'no_legacy_json') {
+        toast.info('当前数据目录没有可迁移的旧 JSON 数据');
+      } else {
+        toast.error('迁移失败，请查看控制台日志');
+      }
+      if (result.status) {
+        setStorageStatus(result.status);
+      }
+    } catch {
+      toast.error('迁移失败，请查看控制台日志');
+    } finally {
+      setIsMigratingStorage(false);
+    }
   };
 
   const handleApplyBalance = async (config: SoundEventConfig) => {
@@ -485,6 +558,7 @@ export default function SettingsPage() {
       if (result.ok && result.path) {
         setDataFilePathInput(result.path);
         setPendingCreatePath('');
+        void refreshStorageStatus();
         toast.success(result.created ? '已创建并加载新数据目录' : '已加载数据目录');
         return;
       }
@@ -921,6 +995,7 @@ export default function SettingsPage() {
         <Tabs value={tab} onValueChange={handleTabChange} className="space-y-4">
           <TabsList className="bg-secondary">
             <TabsTrigger value="general">通用配置</TabsTrigger>
+            <TabsTrigger value="database">数据库</TabsTrigger>
             <TabsTrigger value="plugins">插件</TabsTrigger>
             <TabsTrigger value="sounds">提示音管理</TabsTrigger>
             <TabsTrigger value="updates">更新</TabsTrigger>
@@ -1380,6 +1455,103 @@ export default function SettingsPage() {
                     </AlertDialogFooter>
                   </AlertDialogContent>
                 </AlertDialog>
+              </div>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="database" className="space-y-4">
+            <Card className="p-4 bg-card border-border space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-semibold text-foreground">SQLite 数据库</h3>
+                  <p className="text-xs text-muted-foreground">
+                    当前版本使用 SQLite 文件保存数据；旧 JSON 文件会保留，可在此手动迁移。该迁移入口计划只保留一个大版本。
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="gap-1.5"
+                    disabled={isRefreshingStorageStatus}
+                    onClick={() => void handleRefreshStorageStatus()}
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isRefreshingStorageStatus ? 'animate-spin' : ''}`} />
+                    刷新状态
+                  </Button>
+                  <Button
+                    type="button"
+                    className="gap-1.5"
+                    disabled={isMigratingStorage}
+                    onClick={() => void handleMigrateLegacyJsonStorage()}
+                  >
+                    <Database className="w-4 h-4" />
+                    {isMigratingStorage ? '迁移中...' : '从旧 JSON 迁移'}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/70 p-3 space-y-3">
+                <div>
+                  <p className="text-xs text-muted-foreground">数据目录</p>
+                  <p className="text-[11px] font-mono break-all text-foreground">
+                    {storageStatus?.dataDirectoryPath || state.dataDirectoryPath || '-'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">SQLite 文件</p>
+                  <p className="text-[11px] font-mono break-all text-foreground">
+                    {storageStatus?.dbPath || '-'}
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+                  <div className="rounded-lg bg-secondary/30 p-2">
+                    <p className="text-muted-foreground">文件大小</p>
+                    <p className="text-foreground font-medium">{formatBytes(storageStatus?.sizeBytes)}</p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/30 p-2">
+                    <p className="text-muted-foreground">焦点记录</p>
+                    <p className="text-foreground font-medium">{storageStatus?.counts?.sessions ?? '-'}</p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/30 p-2">
+                    <p className="text-muted-foreground">进程时间线</p>
+                    <p className="text-foreground font-medium">{storageStatus?.counts?.processTimeline ?? '-'}</p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/30 p-2">
+                    <p className="text-muted-foreground">键鼠时间线</p>
+                    <p className="text-foreground font-medium">{storageStatus?.counts?.inputActivityTimeline ?? '-'}</p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/30 p-2">
+                    <p className="text-muted-foreground">配置片段</p>
+                    <p className="text-foreground font-medium">{storageStatus?.counts?.sections ?? '-'}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/70 p-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">旧 JSON 数据</p>
+                  <p className="text-xs text-muted-foreground">
+                    {storageStatus?.legacy?.hasLegacyJson
+                      ? `检测到旧 JSON 数据：分片文件 ${storageStatus.legacy.sectionFileCount} 个。`
+                      : '当前数据目录没有检测到旧 JSON 数据。'}
+                  </p>
+                  {storageStatus?.legacy?.legacyStateFile ? (
+                    <p className="text-[11px] font-mono break-all text-muted-foreground">
+                      {storageStatus.legacy.legacyStateFile}
+                    </p>
+                  ) : null}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="gap-1.5"
+                  disabled={isMigratingStorage || !storageStatus?.legacy?.hasLegacyJson}
+                  onClick={() => void handleMigrateLegacyJsonStorage()}
+                >
+                  <Database className="w-4 h-4" />
+                  执行迁移
+                </Button>
               </div>
             </Card>
           </TabsContent>

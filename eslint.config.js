@@ -23,4 +23,10 @@ export default tseslint.config(
       "@typescript-eslint/no-unused-vars": "off",
     },
   },
+  {
+    files: ["src/components/ui/**/*.{ts,tsx}", "src/store/AppContext.tsx"],
+    rules: {
+      "react-refresh/only-export-components": "off",
+    },
+  },
 );

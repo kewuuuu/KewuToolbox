@@ -219,12 +219,12 @@ function normalizePatternText(value: string | undefined): string {
     .join(',');
 }
 
-function clampRequiredInt(value: number | undefined, min: number, max: number, fallback: number): number {
+function clampRequiredInt(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = Number.isFinite(value) ? Number(value) : fallback;
   return Math.max(min, Math.min(max, Math.floor(parsed)));
 }
 
-function clampOptionalInt(value: number | undefined, min: number, max: number): number | undefined {
+function clampOptionalInt(value: unknown, min: number, max: number): number | undefined {
   if (value === undefined || value === null || value === '') {
     return undefined;
   }

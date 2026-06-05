@@ -72,7 +72,7 @@ npm run dev
 3. 选择亮色/暗色主题。
 4. 决定是否开启“开机自启动”。
 5. 设置“倒计时完成后处理方式”。
-6. 检查“数据文件路径”是否符合你的存放习惯。
+6. 检查“数据目录路径”和“数据库”状态是否符合你的存放习惯。
 7. 按需配置白名单规则和进程黑名单；已有历史记录需要按新白名单重算时，点击“按白名单归并记录”。
 8. 页面中的未提交输入会在切换页面后保留，例如白名单草稿、待办创建表单、专注事项弹窗、统计页筛选项。
 
@@ -271,14 +271,15 @@ npm run build:deliver
 
 ### 6. 数据文件与路径机制
 
-桌面版数据文件默认名：`app-state.json`。
+桌面版主数据文件默认名：`kewu-toolbox.sqlite`。
 
 运行策略：
-- 开发环境默认在用户目录（`%APPDATA%\kewu-toolbox\app-state.json`）。
-- 打包后固定使用 EXE 同级目录：`.\data\app-state.json`（不再回退到 `%APPDATA%`）。
+- 开发环境默认在用户目录下的 `state-data\kewu-toolbox.sqlite`。
+- 打包后固定使用 EXE 同级目录：`.\data\state-data\kewu-toolbox.sqlite`（不再回退到 `%APPDATA%`）。
+- 旧版 `app-state.json` 或分片 JSON 会作为迁移来源保留，首次启动新版时会自动写入 SQLite；也可在“设置 > 数据库”手动执行迁移。
 
 附加文件：
-- `.\data\storage-config.json`：保存你在“设置”里改过的数据文件路径。
+- `.\data\storage-config.json`：保存你在“设置”里改过的数据目录路径。
 - 打包版 Electron 运行期文件（缓存/会话/日志/崩溃转储）也会写入：
   - `.\data\electron-runtime\user-data\`
   - `.\data\electron-runtime\session-data\`

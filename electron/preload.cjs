@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('desktopApi', {
   startPortableUpdate: (payload) => ipcRenderer.invoke('app:start-portable-update', payload),
   openExternalUrl: (payload) => ipcRenderer.invoke('app:open-external-url', payload),
   getDataFilePath: () => ipcRenderer.invoke('app:get-data-file-path'),
+  getStorageStatus: () => ipcRenderer.invoke('app:get-storage-status'),
+  migrateLegacyJsonStorage: () => ipcRenderer.invoke('app:migrate-legacy-json-storage'),
   setDataFilePath: (payload) => ipcRenderer.invoke('app:set-data-file-path', payload),
   selectDataFilePath: () => ipcRenderer.invoke('app:select-data-file-path'),
   saveUserState: (partial) => ipcRenderer.invoke('app:save-user-state', partial),

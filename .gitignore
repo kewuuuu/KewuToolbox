@@ -13,6 +13,7 @@ dist-ssr
 release
 .waylog
 *.local
+*.tsbuildinfo
 /data/
 
 # Editor directories and files

@@ -9,6 +9,11 @@ import {
   CountdownTask,
   FocusQueueItem,
   FocusSubject,
+  InputActivityCounters,
+  InputActivityTimelineRecord,
+  InputActivityWindowStat,
+  MonitoringSortKey,
+  ObjectType,
   ProcessTag,
   ProcessBlacklistRule,
   ProcessWhitelistRule,
@@ -117,8 +122,11 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
           .filter(item => typeof item.classificationKey === 'string' && typeof item.displayName === 'string')
       : fallbackValue;
 
-  const normalizeSort = (value: AppUiState['monitoring']['historySort'], fallbackSort: AppUiState['monitoring']['historySort']) => {
-    const sortKeySet = new Set([
+  const normalizeSort = (
+    value: AppUiState['monitoring']['historySort'] | undefined,
+    fallbackSort: AppUiState['monitoring']['historySort'],
+  ): AppUiState['monitoring']['historySort'] => {
+    const sortKeySet = new Set<MonitoringSortKey>([
       'displayName',
       'objectType',
       'processName',
@@ -129,15 +137,16 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
       'lastFocus',
       'longestContinuousFocus',
     ]);
+    const legacyKey = value ? (value as { key?: unknown }).key : undefined;
     const rawKey =
-      value && typeof value.key === 'string'
-        ? value.key === 'lastSeen'
+      typeof legacyKey === 'string'
+        ? legacyKey === 'lastSeen'
           ? 'lastFocus'
-          : value.key
+          : legacyKey
         : undefined;
-    const key =
-      rawKey && sortKeySet.has(rawKey)
-        ? rawKey
+    const key: MonitoringSortKey =
+      rawKey && sortKeySet.has(rawKey as MonitoringSortKey)
+        ? rawKey as MonitoringSortKey
         : fallbackSort.key;
     const direction =
       value?.direction === 'asc' || value?.direction === 'desc'
@@ -549,7 +558,7 @@ function normalizePreferences(
     }
     return raw
       .filter(item => item && typeof item === 'object')
-      .map(item => {
+      .map((item): ProcessWhitelistRule | null => {
         const value = item as Partial<ProcessWhitelistRule> & { pattern?: string };
         const legacyPattern = normalizePattern(value.pattern);
         const namePattern = normalizePattern(value.namePattern) || legacyPattern;
@@ -581,7 +590,7 @@ function normalizePreferences(
     }
     return raw
       .filter(item => item && typeof item === 'object')
-      .map(item => {
+      .map((item): ProcessBlacklistRule | null => {
         const value = item as Partial<ProcessBlacklistRule>;
         const namePattern = normalizePattern(value.namePattern);
         const typePattern = normalizePattern(value.typePattern);
@@ -658,7 +667,11 @@ function normalizeSoundFiles(raw: unknown): SoundFileItem[] {
     .filter(item => item.filePath.length > 0);
 }
 
-function normalizeInputActivityCounters(raw: unknown) {
+function normalizeObjectType(value: unknown): ObjectType {
+  return value === 'BrowserTab' || value === 'Desktop' ? value : 'AppWindow';
+}
+
+function normalizeInputActivityCounters(raw: unknown): InputActivityCounters {
   const source = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
   const pickInteger = (value: unknown) => (Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : 0);
   const normalizeKeyCounts = (value: unknown) => {
@@ -687,7 +700,7 @@ function normalizeInputActivityCounters(raw: unknown) {
   };
 }
 
-function normalizeInputActivityStats(raw: unknown, fallback: AppState['inputActivityStats']) {
+function normalizeInputActivityStats(raw: unknown, fallback: AppState['inputActivityStats']): InputActivityWindowStat[] {
   if (!Array.isArray(raw)) {
     return fallback;
   }
@@ -701,7 +714,7 @@ function normalizeInputActivityStats(raw: unknown, fallback: AppState['inputActi
       return {
         classificationKey,
         displayName: typeof item.displayName === 'string' ? item.displayName : classificationKey,
-        objectType: item.objectType === 'BrowserTab' || item.objectType === 'Desktop' ? item.objectType : 'AppWindow',
+        objectType: normalizeObjectType(item.objectType),
         processName: typeof item.processName === 'string' ? item.processName : '',
         domain: typeof item.domain === 'string' ? item.domain : undefined,
         ...normalizeInputActivityCounters(item),
@@ -711,7 +724,7 @@ function normalizeInputActivityStats(raw: unknown, fallback: AppState['inputActi
     });
 }
 
-function normalizeInputActivityTimeline(raw: unknown, fallback: AppState['inputActivityTimeline']) {
+function normalizeInputActivityTimeline(raw: unknown, fallback: AppState['inputActivityTimeline']): InputActivityTimelineRecord[] {
   if (!Array.isArray(raw)) {
     return fallback;
   }
@@ -726,7 +739,7 @@ function normalizeInputActivityTimeline(raw: unknown, fallback: AppState['inputA
         id: typeof item.id === 'string' ? item.id : `input-activity-${Date.now()}`,
         classificationKey,
         displayName: typeof item.displayName === 'string' ? item.displayName : classificationKey,
-        objectType: item.objectType === 'BrowserTab' || item.objectType === 'Desktop' ? item.objectType : 'AppWindow',
+        objectType: normalizeObjectType(item.objectType),
         processName: typeof item.processName === 'string' ? item.processName : '',
         domain: typeof item.domain === 'string' ? item.domain : undefined,
         bucketStartAt: typeof item.bucketStartAt === 'string' ? item.bucketStartAt : '',

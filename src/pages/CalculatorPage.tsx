@@ -66,7 +66,7 @@ function tokenize(input: string): Token[] {
     }
 
     if (/[+\-*/%^]/.test(char)) {
-      tokens.push({ type: 'op', value: char as Token & { type: 'op' }['value'] });
+      tokens.push({ type: 'op', value: char as Extract<Token, { type: 'op' }>['value'] });
       index += 1;
       continue;
     }

@@ -5,6 +5,11 @@ const fs = require('node:fs');
 const https = require('node:https');
 const http = require('node:http');
 const path = require('node:path');
+const {
+  SQLITE_FILE_NAME,
+  createSqliteStateStore,
+  initializeSqliteEngine,
+} = require('./sqlite-state-store.cjs');
 
 const POLL_INTERVAL_MS = 1000;
 const MAX_SESSIONS = 60000;
@@ -42,6 +47,7 @@ const UPDATER_PS1_NAME = 'KewuToolboxUpdater.ps1';
 const WINDOWS_RUN_REGISTRY_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const AUTO_LAUNCH_REGISTRY_VALUE_NAME = 'KewuToolbox';
 const LEGACY_AUTO_LAUNCH_REGISTRY_VALUE_NAMES = ['electron.app.Electron', 'electron.app.KewuToolbox'];
+const AUTO_LAUNCH_HIDDEN_ARG = '--kewu-start-hidden-to-tray';
 const LOADED_SECTION_KEYS_PROPERTY = '__loadedSectionKeys';
 
 const STATE_SECTION_FILES = {
@@ -103,6 +109,7 @@ let activeWinApi = null;
 let inputHookApi = null;
 let inputHookStarted = false;
 let browserBridgeServer = null;
+let sqliteStateStore = null;
 let resolvedDataDirPath = null;
 let preferredDataDirPath = null;
 let appTray = null;
@@ -422,6 +429,23 @@ function getSectionFilePath(dataDirPath, sectionKey) {
   return path.join(dataDirPath, fileName);
 }
 
+function getSqliteStateFilePath(dataDirPath = getStatePath()) {
+  return path.join(dataDirPath, SQLITE_FILE_NAME);
+}
+
+function getSqliteStateStore(dataDirPath = getStatePath()) {
+  const normalizedPath = path.resolve(dataDirPath);
+  if (sqliteStateStore && path.resolve(sqliteStateStore.dataDirPath) === normalizedPath) {
+    return sqliteStateStore;
+  }
+
+  if (sqliteStateStore) {
+    sqliteStateStore.close();
+  }
+  sqliteStateStore = createSqliteStateStore(normalizedPath, Object.keys(STATE_SECTION_FILES));
+  return sqliteStateStore;
+}
+
 function ensureWritableDataDir(dataDirPath) {
   try {
     ensureDir(dataDirPath);
@@ -523,7 +547,7 @@ function syncStorageMetaToState() {
   appState.logFilePath = getLogFilePath();
 }
 
-function readStateSections(dataDirPath) {
+function readJsonStateSections(dataDirPath) {
   const rawState = {};
   let hasSection = false;
   const loadedSectionKeys = new Set();
@@ -548,6 +572,31 @@ function readStateSections(dataDirPath) {
     });
   }
   return hasSection ? rawState : null;
+}
+
+function readLegacyJsonState(dataDirPath) {
+  const sectionState = readJsonStateSections(dataDirPath);
+  const singleFileState = readJsonSafe(getLegacyStateFilePath(dataDirPath));
+  if (sectionState && singleFileState && typeof sectionState === 'object' && typeof singleFileState === 'object') {
+    return {
+      ...singleFileState,
+      ...sectionState,
+    };
+  }
+  return sectionState || singleFileState;
+}
+
+function readStateSections(dataDirPath) {
+  try {
+    return getSqliteStateStore(dataDirPath).readState();
+  } catch (error) {
+    addDiagnosticLog(
+      'error',
+      'SQLite state read failed',
+      error instanceof Error ? error.message : String(error),
+    );
+    return null;
+  }
 }
 
 function backfillMissingLegacyStateSections(rawState, legacyRaw) {
@@ -581,22 +630,16 @@ function writeStateSections(dataDirPath, statePayload) {
     return false;
   }
 
-  for (const sectionKey of Object.keys(STATE_SECTION_FILES)) {
-    const sectionPath = getSectionFilePath(dataDirPath, sectionKey);
-    if (!sectionPath) {
-      continue;
-    }
-    const sectionPayload = statePayload[sectionKey];
-    if (!writeJsonSafe(sectionPath, sectionPayload)) {
-      return false;
-    }
+  try {
+    return getSqliteStateStore(dataDirPath).writeState(statePayload);
+  } catch (error) {
+    addDiagnosticLog(
+      'error',
+      'SQLite state write failed',
+      error instanceof Error ? error.message : String(error),
+    );
+    return false;
   }
-
-  writeJsonSafe(getStateMetaPath(dataDirPath), {
-    version: 1,
-    updatedAt: new Date().toISOString(),
-  });
-  return true;
 }
 
 function getDefaultStatePath() {
@@ -813,6 +856,10 @@ function isKewuAutoLaunchCommand(command) {
   return text.includes('kewutoolbox');
 }
 
+function shouldStartHiddenToTray() {
+  return process.argv.some(arg => arg === AUTO_LAUNCH_HIDDEN_ARG);
+}
+
 function runWindowsRegistryCommand(args) {
   return childProcess.execFileSync('reg.exe', args, {
     encoding: 'utf8',
@@ -907,7 +954,7 @@ function applySystemAutoLaunchEnabled(enabled) {
     try {
       writeWindowsRunValue(
         AUTO_LAUNCH_REGISTRY_VALUE_NAME,
-        quoteWindowsCommandLineArg(executablePath),
+        `${quoteWindowsCommandLineArg(executablePath)} ${AUTO_LAUNCH_HIDDEN_ARG}`,
       );
     } catch (error) {
       addDiagnosticLog(
@@ -925,7 +972,7 @@ function applySystemAutoLaunchEnabled(enabled) {
     app.setLoginItemSettings({
       openAtLogin: normalized,
       path: resolveAutoLaunchExecutablePath() || process.execPath,
-      args: [],
+      args: [AUTO_LAUNCH_HIDDEN_ARG],
     });
   } catch {
     // Ignore and read back current status.
@@ -2281,17 +2328,10 @@ function loadPersistedState() {
   ensureDir(primaryDataDir);
 
   let savedRaw = readStateSections(primaryDataDir);
-  const legacyPrimaryPath = getLegacyStateFilePath(primaryDataDir);
-  const legacyPrimaryRaw = readJsonSafe(legacyPrimaryPath);
+  const legacyPrimaryRaw = readLegacyJsonState(primaryDataDir);
   if (!savedRaw) {
     savedRaw = legacyPrimaryRaw;
     if (savedRaw) {
-      writeStateSections(primaryDataDir, normalizeSavedState(savedRaw));
-    }
-  } else if (legacyPrimaryRaw) {
-    const backfilled = backfillMissingLegacyStateSections(savedRaw, legacyPrimaryRaw);
-    savedRaw = backfilled.rawState;
-    if (backfilled.changed) {
       writeStateSections(primaryDataDir, normalizeSavedState(savedRaw));
     }
   }
@@ -2299,7 +2339,7 @@ function loadPersistedState() {
   if (!savedRaw && !preferredDataDirPath && !app.isPackaged) {
     const fallbackDataDir = path.join(app.getPath('userData'), DEFAULT_STORAGE_DIR_NAME);
     if (fallbackDataDir !== primaryDataDir) {
-      const fallbackRaw = readStateSections(fallbackDataDir) || readJsonSafe(getLegacyStateFilePath(fallbackDataDir));
+      const fallbackRaw = readStateSections(fallbackDataDir) || readLegacyJsonState(fallbackDataDir);
       if (fallbackRaw) {
         savedRaw = fallbackRaw;
         writeStateSections(primaryDataDir, normalizeSavedState(fallbackRaw));
@@ -2312,15 +2352,6 @@ function loadPersistedState() {
     if (previousDefaultRaw) {
       savedRaw = previousDefaultRaw;
       writeStateSections(primaryDataDir, normalizeSavedState(previousDefaultRaw));
-    }
-  } else if (savedRaw && !preferredDataDirPath) {
-    const previousDefaultRaw = readJsonSafe(getPreviousDefaultStateFilePath());
-    if (previousDefaultRaw) {
-      const backfilled = backfillMissingLegacyStateSections(savedRaw, previousDefaultRaw);
-      savedRaw = backfilled.rawState;
-      if (backfilled.changed) {
-        writeStateSections(primaryDataDir, normalizeSavedState(savedRaw));
-      }
     }
   }
 
@@ -2352,12 +2383,7 @@ function setDataFilePath(targetPath, createIfMissing = false) {
     return { ok: false, error: 'path_not_writable', path: normalizedDataDir };
   }
 
-  const sectionState = readStateSections(normalizedDataDir);
-  const legacyState = readJsonSafe(getLegacyStateFilePath(normalizedDataDir));
-  const backfilled = sectionState && legacyState
-    ? backfillMissingLegacyStateSections(sectionState, legacyState)
-    : { rawState: sectionState || legacyState, changed: false };
-  const loadedRaw = backfilled.rawState;
+  const loadedRaw = readStateSections(normalizedDataDir) || readLegacyJsonState(normalizedDataDir);
 
   let nextState = createEmptyState();
   let created = false;
@@ -2390,6 +2416,67 @@ function setDataFilePath(targetPath, createIfMissing = false) {
     existed: !created,
     created,
     state: appState,
+  };
+}
+
+function getLegacyJsonStorageStatus(dataDirPath = getStatePath()) {
+  const sectionFiles = Object.values(STATE_SECTION_FILES)
+    .map(fileName => path.join(dataDirPath, fileName))
+    .filter(filePath => fs.existsSync(filePath));
+  const legacyStateFile = getLegacyStateFilePath(dataDirPath);
+  const hasLegacyStateFile = fs.existsSync(legacyStateFile);
+  return {
+    hasLegacyJson: hasLegacyStateFile || sectionFiles.length > 0,
+    legacyStateFile: hasLegacyStateFile ? legacyStateFile : '',
+    sectionFileCount: sectionFiles.length,
+  };
+}
+
+function getStorageStatus() {
+  const dataDirPath = getStatePath();
+  const sqliteStatus = getSqliteStateStore(dataDirPath).getStatus();
+  return {
+    ...sqliteStatus,
+    dataDirectoryPath: dataDirPath,
+    dbPath: getSqliteStateFilePath(dataDirPath),
+    legacy: getLegacyJsonStorageStatus(dataDirPath),
+  };
+}
+
+function migrateLegacyJsonStorageToSqlite() {
+  const dataDirPath = getStatePath();
+  const legacyRaw = readLegacyJsonState(dataDirPath);
+  if (!legacyRaw) {
+    return {
+      ok: false,
+      error: 'no_legacy_json',
+      status: getStorageStatus(),
+    };
+  }
+
+  const nextState = normalizeSavedState(legacyRaw);
+  if (!writeStateSections(dataDirPath, nextState)) {
+    return {
+      ok: false,
+      error: 'write_failed',
+      status: getStorageStatus(),
+    };
+  }
+
+  appState = nextState;
+  closeStaleOpenProcessTimelineRecords();
+  syncStorageMetaToState();
+  applyWhitelistNamesToState();
+  addDiagnosticLog('info', 'Legacy JSON storage migrated to SQLite', getSqliteStateFilePath(dataDirPath));
+  appState.preferences.autoLaunchEnabled = applySystemAutoLaunchEnabled(appState.preferences.autoLaunchEnabled);
+  resetRuntimeTrackingState();
+  scheduleSave();
+  emitState();
+
+  return {
+    ok: true,
+    state: appState,
+    status: getStorageStatus(),
   };
 }
 
@@ -5441,6 +5528,8 @@ function registerIpc() {
     }
   });
   ipcMain.handle('app:get-data-file-path', () => getStatePath());
+  ipcMain.handle('app:get-storage-status', () => getStorageStatus());
+  ipcMain.handle('app:migrate-legacy-json-storage', () => migrateLegacyJsonStorageToSqlite());
   ipcMain.handle('app:set-data-file-path', (_event, payload) =>
     setDataFilePath(payload?.targetPath, Boolean(payload?.createIfMissing)),
   );
@@ -5579,9 +5668,10 @@ async function handleWindowClose(event) {
   }
 }
 
-function createWindow() {
+function createWindow(options = {}) {
   forceQuitRequested = false;
   isHandlingCloseDecision = false;
+  const startHiddenToTray = Boolean(options.startHiddenToTray);
   const iconPath = resolveAppIconPath();
   mainWindow = new BrowserWindow({
     width: 1320,
@@ -5590,6 +5680,7 @@ function createWindow() {
     minHeight: 700,
     backgroundColor: '#111827',
     icon: iconPath,
+    show: !startHiddenToTray,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -5606,7 +5697,17 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
 
-  setWindowHiddenToTray(false);
+  if (startHiddenToTray) {
+    createTray();
+    try {
+      mainWindow.setSkipTaskbar(true);
+    } catch {
+      // Ignore skip-taskbar errors.
+    }
+    setWindowHiddenToTray(true);
+  } else {
+    setWindowHiddenToTray(false);
+  }
   mainWindow.on('close', event => {
     void handleWindowClose(event);
   });
@@ -5617,8 +5718,9 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   loadStorageConfig();
+  await initializeSqliteEngine();
   loadPersistedState();
   syncStorageMetaToState();
   setupConsoleCapture();
@@ -5629,7 +5731,7 @@ app.whenReady().then(() => {
   registerIpc();
   registerPowerEvents();
   startBrowserBridgeServer();
-  createWindow();
+  createWindow({ startHiddenToTray: shouldStartHiddenToTray() });
   createTray();
   addPowerEvent('开机', '应用启动并开始监测', '#22c55e');
   startMonitoring();

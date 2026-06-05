@@ -52,6 +52,32 @@ declare global {
     updatedAt?: string;
   }
 
+  interface StorageStatusResult {
+    ok: boolean;
+    dataDirectoryPath?: string;
+    dbPath?: string;
+    schemaVersion?: number;
+    sizeBytes?: number;
+    counts?: {
+      sections: number;
+      sessions: number;
+      processTimeline: number;
+      inputActivityTimeline: number;
+    };
+    legacy?: {
+      hasLegacyJson: boolean;
+      legacyStateFile: string;
+      sectionFileCount: number;
+    };
+  }
+
+  interface StorageMigrationResult {
+    ok: boolean;
+    error?: 'no_legacy_json' | 'write_failed' | string;
+    state?: AppState;
+    status?: StorageStatusResult;
+  }
+
   interface Window {
     desktopApi?: {
       isElectron: boolean;
@@ -65,6 +91,8 @@ declare global {
       }) => Promise<StartPortableUpdateResult>;
       openExternalUrl: (payload: { url: string }) => Promise<{ ok: boolean; error?: string }>;
       getDataFilePath: () => Promise<string>;
+      getStorageStatus: () => Promise<StorageStatusResult>;
+      migrateLegacyJsonStorage: () => Promise<StorageMigrationResult>;
       setDataFilePath: (payload: {
         targetPath: string;
         createIfMissing?: boolean;

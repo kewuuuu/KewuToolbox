@@ -1,7 +1,7 @@
 {
   "name": "kewu-toolbox",
   "private": true,
-  "version": "1.0.9",
+  "version": "2.0.0",
   "license": "MIT",
   "type": "module",
   "main": "electron/main.cjs",
@@ -19,6 +19,7 @@
     "build:mac:portable": "npm run build && npm run package:portable:mac",
     "build:deliver": "powershell -ExecutionPolicy Bypass -File ./build-deliver.ps1",
     "lint": "eslint .",
+    "typecheck": "tsc -b",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -70,6 +71,7 @@
     "react-router-dom": "^6.30.1",
     "recharts": "^2.15.4",
     "sonner": "^1.7.4",
+    "sql.js": "^1.14.1",
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
     "uiohook-napi": "^1.5.5",
@@ -114,6 +116,7 @@
       "dist/**/*",
       "electron/**/*",
       "node_modules/node-gyp-build/**/*",
+      "node_modules/sql.js/**/*",
       "node_modules/uiohook-napi/**/*",
       "package.json"
     ],
