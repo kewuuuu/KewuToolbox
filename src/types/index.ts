@@ -342,15 +342,25 @@ export interface FocusSubjectsUiState {
   manualProcessPattern: string;
 }
 
-export interface AnalyticsUiState {
-  selectedDate: string;
-  heatmapCategory: string;
-  hourlyMode: 'total' | 'category';
-}
-
 export type InputActivityMetric = 'keyPresses' | 'totalClicks' | 'scrollTicks' | 'mouseMovePixels';
 export type InputActivityKeyboardMode = 'heatmap' | 'rank';
 export type InputActivityHistoryChartType = 'line' | 'bar';
+export type AnalyticsTab = 'focus' | 'input';
+export type AnalyticsDisplayMode = 'category' | 'window';
+
+export interface AnalyticsUiState {
+  selectedDate: string;
+  rangeStartDate: string;
+  rangeEndDate: string;
+  activeTab: AnalyticsTab;
+  heatmapCategory: string;
+  hourlyMode: 'total' | 'category';
+  distributionDisplayMode: AnalyticsDisplayMode;
+  rankDisplayMode: AnalyticsDisplayMode;
+  hourlyDisplayMode: AnalyticsDisplayMode;
+  trendDisplayMode: AnalyticsDisplayMode;
+  timelineDisplayMode: AnalyticsDisplayMode;
+}
 
 export interface InputActivityUiState {
   selectedDate: string;

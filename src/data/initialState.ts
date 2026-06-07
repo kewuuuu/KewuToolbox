@@ -140,8 +140,16 @@ export function createInitialState(): AppState {
       },
       analytics: {
         selectedDate: '',
+        rangeStartDate: '',
+        rangeEndDate: '',
+        activeTab: 'focus',
         heatmapCategory: '学习',
         hourlyMode: 'category',
+        distributionDisplayMode: 'category',
+        rankDisplayMode: 'category',
+        hourlyDisplayMode: 'category',
+        trendDisplayMode: 'category',
+        timelineDisplayMode: 'window',
       },
       inputActivity: {
         selectedDate: '',

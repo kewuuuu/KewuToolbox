@@ -178,6 +178,12 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
       : fallbackValue;
   const normalizeHourlyMode = (value: unknown, fallbackValue: AppUiState['analytics']['hourlyMode']) =>
     value === 'total' || value === 'category' ? value : fallbackValue;
+  const normalizeAnalyticsTab = (value: unknown, fallbackValue: AppUiState['analytics']['activeTab']) =>
+    value === 'input' || value === 'focus' ? value : fallbackValue;
+  const normalizeAnalyticsDisplayMode = (
+    value: unknown,
+    fallbackValue: AppUiState['analytics']['distributionDisplayMode'],
+  ) => (value === 'window' || value === 'category' ? value : fallbackValue);
   const normalizeInputActivityMetric = (
     value: unknown,
     fallbackValue: AppUiState['inputActivity']['selectedMetric'],
@@ -295,8 +301,31 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
     },
     analytics: {
       selectedDate: pickString(input?.analytics?.selectedDate, fallback.analytics.selectedDate),
+      rangeStartDate: pickString(input?.analytics?.rangeStartDate, fallback.analytics.rangeStartDate),
+      rangeEndDate: pickString(input?.analytics?.rangeEndDate, fallback.analytics.rangeEndDate),
+      activeTab: normalizeAnalyticsTab(input?.analytics?.activeTab, fallback.analytics.activeTab),
       heatmapCategory: pickString(input?.analytics?.heatmapCategory, fallback.analytics.heatmapCategory),
       hourlyMode: normalizeHourlyMode(input?.analytics?.hourlyMode, fallback.analytics.hourlyMode),
+      distributionDisplayMode: normalizeAnalyticsDisplayMode(
+        input?.analytics?.distributionDisplayMode,
+        fallback.analytics.distributionDisplayMode,
+      ),
+      rankDisplayMode: normalizeAnalyticsDisplayMode(
+        input?.analytics?.rankDisplayMode,
+        fallback.analytics.rankDisplayMode,
+      ),
+      hourlyDisplayMode: normalizeAnalyticsDisplayMode(
+        input?.analytics?.hourlyDisplayMode,
+        fallback.analytics.hourlyDisplayMode,
+      ),
+      trendDisplayMode: normalizeAnalyticsDisplayMode(
+        input?.analytics?.trendDisplayMode,
+        fallback.analytics.trendDisplayMode,
+      ),
+      timelineDisplayMode: normalizeAnalyticsDisplayMode(
+        input?.analytics?.timelineDisplayMode,
+        fallback.analytics.timelineDisplayMode,
+      ),
     },
     inputActivity: {
       selectedDate: pickString(input?.inputActivity?.selectedDate, fallback.inputActivity.selectedDate),
