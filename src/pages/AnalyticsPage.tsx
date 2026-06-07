@@ -19,17 +19,17 @@ import {
   BarChart3,
   CalendarDays,
   ChartNoAxesColumn,
+  ChevronLeft,
+  ChevronRight,
   Keyboard,
   Mouse,
   MousePointerClick,
   RotateCcw,
 } from 'lucide-react';
-import { DateRange } from 'react-day-picker';
 import { toast } from 'sonner';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Calendar } from '@/components/ui/calendar';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -74,6 +74,10 @@ const INPUT_METRICS: Array<{ key: InputActivityMetric; label: string; shortLabel
 
 type AnalyticsTab = 'focus' | 'input';
 type KeyCountMap = Record<string, number>;
+type CalendarPanelMode = 'day' | 'month' | 'year';
+
+const CHINESE_MONTHS = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
+const CHINESE_WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 
 interface ChartSeries {
   key: string;
@@ -290,6 +294,32 @@ function eachDateKeyInRange(startDate: string, endDate: string) {
     cursor.setDate(cursor.getDate() + 1);
   }
   return output;
+}
+
+function cx(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(' ');
+}
+
+function addMonths(date: Date, months: number) {
+  return new Date(date.getFullYear(), date.getMonth() + months, 1);
+}
+
+function buildMonthCells(year: number, month: number) {
+  const firstDay = new Date(year, month, 1);
+  const leadingEmptyCount = (firstDay.getDay() + 6) % 7;
+  const dayCount = new Date(year, month + 1, 0).getDate();
+  const cells: Array<Date | null> = [];
+
+  for (let index = 0; index < leadingEmptyCount; index += 1) {
+    cells.push(null);
+  }
+  for (let day = 1; day <= dayCount; day += 1) {
+    cells.push(new Date(year, month, day));
+  }
+  while (cells.length % 7 !== 0) {
+    cells.push(null);
+  }
+  return cells;
 }
 
 function clampDateRange(startDate: string, endDate: string) {
@@ -635,6 +665,198 @@ function DisplayModeToggle({ value, onChange }: { value: DisplayMode; onChange: 
   );
 }
 
+function DatePanel({
+  title,
+  value,
+  rangeStartDate,
+  rangeEndDate,
+  onSelect,
+  dataDateSet,
+}: {
+  title: string;
+  value: string;
+  rangeStartDate: string;
+  rangeEndDate: string;
+  onSelect: (dateKey: string) => void;
+  dataDateSet: Set<string>;
+}) {
+  const [viewDate, setViewDate] = useState(() => new Date(`${value}T00:00:00`));
+  const [mode, setMode] = useState<CalendarPanelMode>('day');
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+  const monthCells = useMemo(() => buildMonthCells(year, month), [month, year]);
+  const yearBlockStart = Math.floor(year / 12) * 12;
+  const yearOptions = Array.from({ length: 12 }, (_, index) => yearBlockStart + index);
+  const today = toLocalDateInput(new Date());
+
+  useEffect(() => {
+    setViewDate(new Date(`${value}T00:00:00`));
+  }, [value]);
+
+  const shiftPanel = (direction: -1 | 1) => {
+    if (mode === 'day') {
+      setViewDate(current => addMonths(current, direction));
+      return;
+    }
+    if (mode === 'month') {
+      setViewDate(current => new Date(current.getFullYear() + direction, current.getMonth(), 1));
+      return;
+    }
+    setViewDate(current => new Date(current.getFullYear() + direction * 12, current.getMonth(), 1));
+  };
+
+  const selectMonth = (nextMonth: number) => {
+    setViewDate(current => new Date(current.getFullYear(), nextMonth, 1));
+    setMode('day');
+  };
+
+  const selectYear = (nextYear: number) => {
+    setViewDate(current => new Date(nextYear, current.getMonth(), 1));
+    setMode('month');
+  };
+
+  return (
+    <div className="rounded-2xl border border-border bg-card/80 p-3 shadow-sm">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="min-w-16">
+          <div className="text-xs font-semibold text-foreground">{title}</div>
+          <div className="text-[11px] text-muted-foreground">{value}</div>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => shiftPanel(-1)}>
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <button
+            type="button"
+            onClick={() => setMode('year')}
+            className={cx(
+              'h-7 rounded-lg px-2 text-xs font-semibold transition-colors hover:bg-accent',
+              mode === 'year' && 'bg-primary text-primary-foreground hover:bg-primary',
+            )}
+          >
+            {year}年
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('month')}
+            className={cx(
+              'h-7 rounded-lg px-2 text-xs font-semibold transition-colors hover:bg-accent',
+              mode === 'month' && 'bg-primary text-primary-foreground hover:bg-primary',
+            )}
+          >
+            {CHINESE_MONTHS[month]}
+          </button>
+          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => shiftPanel(1)}>
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      {mode === 'day' && (
+        <>
+          <div className="grid grid-cols-7 gap-1 pb-1 text-center text-[11px] font-medium text-muted-foreground">
+            {CHINESE_WEEKDAYS.map(day => (
+              <div key={day}>{day}</div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 gap-1">
+            {monthCells.map((date, index) => {
+              if (!date) {
+                return <div key={`empty-${index}`} className="h-9" />;
+              }
+
+              const dateKey = toLocalDateInput(date);
+              const hasData = dataDateSet.has(dateKey);
+              const isStart = dateKey === rangeStartDate;
+              const isEnd = dateKey === rangeEndDate;
+              const isSelected = dateKey === value || isStart || isEnd;
+              const isInRange =
+                startOfLocalDay(dateKey) > startOfLocalDay(rangeStartDate) &&
+                startOfLocalDay(dateKey) < startOfLocalDay(rangeEndDate);
+
+              return (
+                <button
+                  key={dateKey}
+                  type="button"
+                  onClick={() => onSelect(dateKey)}
+                  title={`${dateKey}${hasData ? '，有数据' : '，无数据'}`}
+                  className={cx(
+                    'relative h-9 rounded-xl border text-xs transition-all',
+                    'hover:-translate-y-0.5 hover:border-primary/70 hover:bg-primary/10 hover:text-foreground',
+                    hasData
+                      ? 'border-primary/30 bg-primary/10 font-bold text-primary shadow-[0_0_0_1px_hsl(var(--primary)/0.18)]'
+                      : 'border-transparent text-muted-foreground/45',
+                    isInRange && 'bg-primary/15 text-foreground',
+                    dateKey === today && !isSelected && 'outline outline-1 outline-primary/60',
+                    isSelected && 'border-primary bg-primary text-primary-foreground shadow-sm',
+                  )}
+                >
+                  <span>{date.getDate()}</span>
+                  {hasData && (
+                    <span
+                      className={cx(
+                        'absolute bottom-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full',
+                        isSelected ? 'bg-primary-foreground' : 'bg-primary',
+                      )}
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {mode === 'month' && (
+        <div className="grid grid-cols-3 gap-2">
+          {CHINESE_MONTHS.map((label, index) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => selectMonth(index)}
+              className={cx(
+                'h-10 rounded-xl border border-border text-xs font-medium transition-colors hover:border-primary/60 hover:bg-primary/10',
+                index === month && 'border-primary bg-primary text-primary-foreground hover:bg-primary',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {mode === 'year' && (
+        <div className="grid grid-cols-3 gap-2">
+          {yearOptions.map(item => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => selectYear(item)}
+              className={cx(
+                'h-10 rounded-xl border border-border text-xs font-medium transition-colors hover:border-primary/60 hover:bg-primary/10',
+                item === year && 'border-primary bg-primary text-primary-foreground hover:bg-primary',
+              )}
+            >
+              {item}年
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3 flex items-center gap-4 text-[11px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2.5 w-2.5 rounded-full bg-primary" />
+          有数据
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2.5 w-2.5 rounded-full border border-muted-foreground/30 bg-muted/50" />
+          无数据
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function RangeSelector({
   startDate,
   endDate,
@@ -657,10 +879,6 @@ function RangeSelector({
     setDraftEnd(endDate);
   }, [endDate, startDate]);
 
-  const selectedRange: DateRange = {
-    from: new Date(`${startDate}T00:00:00`),
-    to: new Date(`${endDate}T00:00:00`),
-  };
   const today = toLocalDateInput(new Date());
 
   const commit = (nextStart: string, nextEnd: string) => {
@@ -680,6 +898,16 @@ function RangeSelector({
       return;
     }
     commit(parsedStart, parsedEnd);
+  };
+
+  const commitStartDate = (nextStartDate: string) => {
+    const nextEndDate = startOfLocalDay(nextStartDate) > startOfLocalDay(endDate) ? nextStartDate : endDate;
+    commit(nextStartDate, nextEndDate);
+  };
+
+  const commitEndDate = (nextEndDate: string) => {
+    const nextStartDate = startOfLocalDay(nextEndDate) < startOfLocalDay(startDate) ? nextEndDate : startDate;
+    commit(nextStartDate, nextEndDate);
   };
 
   const quickRanges = [
@@ -727,7 +955,7 @@ function RangeSelector({
           />
         </div>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-auto p-3">
+      <PopoverContent align="start" className="w-[min(780px,calc(100vw-2rem))] p-3">
         <div className="flex flex-wrap gap-2 pb-3">
           {quickRanges.map(item => (
             <Button
@@ -745,25 +973,24 @@ function RangeSelector({
             </Button>
           ))}
         </div>
-        <Calendar
-          mode="range"
-          numberOfMonths={2}
-          selected={selectedRange}
-          onSelect={range => {
-            if (!range?.from) return;
-            const nextStart = toLocalDateInput(range.from);
-            const nextEnd = toLocalDateInput(range.to ?? range.from);
-            commit(nextStart, nextEnd);
-          }}
-          modifiers={{
-            hasData: date => dataDateSet.has(toLocalDateInput(date)),
-            noData: date => !dataDateSet.has(toLocalDateInput(date)),
-          }}
-          modifiersClassNames={{
-            hasData: 'font-semibold text-foreground',
-            noData: 'text-muted-foreground/45',
-          }}
-        />
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <DatePanel
+            title="开始日期"
+            value={startDate}
+            rangeStartDate={startDate}
+            rangeEndDate={endDate}
+            onSelect={commitStartDate}
+            dataDateSet={dataDateSet}
+          />
+          <DatePanel
+            title="结束日期"
+            value={endDate}
+            rangeStartDate={startDate}
+            rangeEndDate={endDate}
+            onSelect={commitEndDate}
+            dataDateSet={dataDateSet}
+          />
+        </div>
       </PopoverContent>
     </Popover>
   );
