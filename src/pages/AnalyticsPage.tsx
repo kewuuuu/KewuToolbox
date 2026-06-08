@@ -374,6 +374,28 @@ function formatMetricValue(metric: InputActivityMetric, value: number) {
   return formatInteger(value);
 }
 
+function ResponsiveNumber({
+  value,
+  suffix = '',
+  className,
+}: {
+  value: number;
+  suffix?: string;
+  className?: string;
+}) {
+  const formattedValue = formatInteger(value);
+  return (
+    <span
+      className={cx('min-w-0 max-w-full tabular-nums leading-tight tracking-tight', className)}
+      style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+      title={`${formattedValue}${suffix}`}
+    >
+      {formattedValue}
+      {suffix && <span className="ml-1 text-[0.72em] text-muted-foreground">{suffix}</span>}
+    </span>
+  );
+}
+
 function mergeKeyCounts(target: KeyCountMap, incoming: KeyCountMap) {
   const next = { ...target };
   for (const [key, value] of Object.entries(incoming || {})) {
@@ -610,13 +632,19 @@ function MetricRow({
 }) {
   const width = max > 0 ? Math.max(4, Math.min(100, (value / max) * 100)) : 0;
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-2 text-xs">
-        <span className="flex-1 truncate text-foreground" title={label}>
+    <div className="space-y-1.5 min-w-0">
+      <div className="flex flex-wrap items-start gap-x-2 gap-y-1 text-xs">
+        <span className="min-w-0 flex-1 truncate text-foreground" title={label}>
           {label}
         </span>
-        {sub && <span className="text-muted-foreground shrink-0">{sub}</span>}
-        <span className="font-semibold text-foreground tabular-nums shrink-0">{formattedValue || formatInteger(value)}</span>
+        {sub && <span className="max-w-full text-muted-foreground sm:shrink-0">{sub}</span>}
+        <span
+          className="max-w-full font-semibold text-foreground tabular-nums leading-tight sm:shrink-0"
+          style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+          title={formattedValue || formatInteger(value)}
+        >
+          {formattedValue || formatInteger(value)}
+        </span>
       </div>
       <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
         <div className="h-full rounded-full" style={{ width: `${width}%`, backgroundColor: color }} />
@@ -638,7 +666,14 @@ function KeyboardKey({ keyDef, count, max }: { keyDef: KeyDefinition; count: num
       }}
     >
       <span className="max-w-full truncate">{keyDef.label}</span>
-      {count > 0 && <span className="mt-1 text-[9px] text-foreground/80 tabular-nums">{formatInteger(count)}</span>}
+      {count > 0 && (
+        <span
+          className="mt-1 max-w-full text-center text-[9px] text-foreground/80 tabular-nums leading-tight"
+          style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+        >
+          {formatInteger(count)}
+        </span>
+      )}
     </div>
   );
 }
@@ -1446,14 +1481,18 @@ export default function AnalyticsPage() {
                 { label: '鼠标移动', value: inputTotals.mouseMovePixels, icon: ArrowLeftRight, suffix: ' px' },
                 { label: '滚轮滚动', value: inputTotals.scrollTicks, icon: RotateCcw, suffix: '' },
               ].map(item => (
-                <Card key={item.label} className="p-4 border-border bg-card">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center">
+                <Card key={item.label} className="overflow-hidden p-4 border-border bg-card">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <div className="w-9 h-9 shrink-0 rounded-xl bg-primary/10 flex items-center justify-center">
                       <item.icon className="w-4 h-4 text-primary" />
                     </div>
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <p className="text-xs text-muted-foreground">{item.label}</p>
-                      <p className="text-2xl font-semibold text-foreground tabular-nums">{formatInteger(item.value)}{item.suffix}</p>
+                      <ResponsiveNumber
+                        value={item.value}
+                        suffix={item.suffix.trim()}
+                        className="mt-1 block text-[clamp(1.05rem,2.4vw,1.5rem)] font-semibold text-foreground"
+                      />
                     </div>
                   </div>
                 </Card>
@@ -1466,7 +1505,7 @@ export default function AnalyticsPage() {
                   <h3 className="text-sm font-semibold text-foreground">鼠标点击明细</h3>
                   <Mouse className="w-4 h-4 text-primary" />
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-3 gap-2">
                   {[
                     { label: '左键', value: inputTotals.leftClicks },
                     { label: '中键', value: inputTotals.middleClicks },
@@ -1474,9 +1513,12 @@ export default function AnalyticsPage() {
                     { label: '后退', value: inputTotals.sideBackClicks },
                     { label: '前进', value: inputTotals.sideForwardClicks },
                   ].map(item => (
-                    <div key={item.label} className="rounded-xl bg-secondary/60 px-4 py-3">
+                    <div key={item.label} className="min-w-0 overflow-hidden rounded-xl bg-secondary/60 px-3 py-3">
                       <p className="text-xs text-muted-foreground">{item.label}</p>
-                      <p className="mt-1 text-2xl font-semibold text-foreground tabular-nums">{formatInteger(item.value)}</p>
+                      <ResponsiveNumber
+                        value={item.value}
+                        className="mt-1 block text-[clamp(1rem,2.2vw,1.5rem)] font-semibold text-foreground"
+                      />
                     </div>
                   ))}
                 </div>
@@ -1571,10 +1613,16 @@ export default function AnalyticsPage() {
                         </ResponsiveContainer>
                         <div className="space-y-1 max-h-32 overflow-auto">
                           {inputPieRows.map((item, index) => (
-                            <div key={item.name} className="flex items-center gap-2 text-[11px]">
+                            <div key={item.name} className="flex min-w-0 items-start gap-2 text-[11px]">
                               <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: getSeriesColor(index) }} />
                               <span className="truncate flex-1 text-muted-foreground" title={item.name}>{item.name}</span>
-                              <span className="text-foreground tabular-nums">{formatMetricValue(inputMetric, item.value)}</span>
+                              <span
+                                className="max-w-[48%] text-right text-foreground tabular-nums leading-tight"
+                                style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+                                title={formatMetricValue(inputMetric, item.value)}
+                              >
+                                {formatMetricValue(inputMetric, item.value)}
+                              </span>
                             </div>
                           ))}
                         </div>
