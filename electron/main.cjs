@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, powerMonitor, Notification, Tray, Menu, shell, net } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, powerMonitor, Notification, Tray, Menu, shell, net, clipboard, nativeImage } = require('electron');
 const childProcess = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -22,6 +22,8 @@ const INPUT_ACTIVITY_BUCKET_MS = 10 * 60 * 1000;
 const INPUT_ACTIVITY_FLUSH_DELAY_MS = 1000;
 const MOUSE_MOVE_SAMPLE_MS = 120;
 const MOUSE_MOVE_MAX_DELTA_PIXELS = 3000;
+const CLIPBOARD_POLL_INTERVAL_MS = 800;
+const CLIPBOARD_HISTORY_LIMIT = 80;
 
 const DESKTOP_KEY = 'desktop';
 const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain';
@@ -105,6 +107,8 @@ let mainWindow = null;
 let monitorTimer = null;
 let saveTimer = null;
 let inputActivityFlushTimer = null;
+let clipboardTimer = null;
+let lastClipboardSignature = '';
 let activeWinApi = null;
 let inputHookApi = null;
 let inputHookStarted = false;
@@ -119,6 +123,7 @@ let isHandlingCloseDecision = false;
 /** @type {import('../src/types').AppState} */
 let appState = createEmptyState();
 let consoleCaptureInstalled = false;
+const clipboardHistory = [];
 
 const monitorCursor = {
   lastTickAtMs: null,
@@ -5584,6 +5589,193 @@ function registerIpc() {
     }
     return result.filePaths[0];
   });
+  ipcMain.handle('clipboard:get-current', () => {
+    const snapshot = readClipboardSnapshot();
+    pushClipboardHistory(snapshot);
+    return snapshot;
+  });
+  ipcMain.handle('clipboard:get-history', () => getClipboardHistoryForRenderer());
+  ipcMain.handle('clipboard:write-item', (_event, payload) => writeClipboardItem(payload));
+}
+
+function safeClipboardFormats() {
+  try {
+    return clipboard.availableFormats();
+  } catch {
+    return [];
+  }
+}
+
+function inferImageMime(dataUrl) {
+  const match = /^data:image\/([^;,]+)/i.exec(dataUrl || '');
+  return match ? match[1].toLowerCase() : 'png';
+}
+
+function hashClipboardPayload(value) {
+  return crypto.createHash('sha1').update(String(value || '')).digest('hex');
+}
+
+function createOtherClipboardSnapshot(formats, capturedAt) {
+  return {
+    id: `clip-${capturedAt}-${hashClipboardPayload(formats.join('|')).slice(0, 10)}`,
+    kind: 'other',
+    capturedAt: new Date(capturedAt).toISOString(),
+    formats,
+    title: formats.length > 0 ? `${formats.length} 种剪贴板格式` : '空剪贴板',
+    details: formats.map(format => ({ name: format })),
+  };
+}
+
+function readClipboardSnapshot() {
+  const capturedAt = Date.now();
+  const formats = safeClipboardFormats();
+
+  try {
+    const image = clipboard.readImage();
+    if (image && !image.isEmpty()) {
+      const size = image.getSize();
+      const dataUrl = image.toDataURL();
+      const imageType = inferImageMime(dataUrl);
+      return {
+        id: `clip-${capturedAt}-${hashClipboardPayload(`${size.width}x${size.height}:${dataUrl.slice(0, 256)}:${dataUrl.length}`).slice(0, 10)}`,
+        kind: 'image',
+        capturedAt: new Date(capturedAt).toISOString(),
+        formats,
+        title: `${size.width} × ${size.height} ${imageType.toUpperCase()}`,
+        image: {
+          dataUrl,
+          width: size.width,
+          height: size.height,
+          type: imageType,
+          byteLength: Math.max(0, Math.floor((dataUrl.length * 3) / 4)),
+        },
+      };
+    }
+  } catch (error) {
+    addDiagnosticLog('warn', '读取剪贴板图片失败', error?.message || String(error));
+  }
+
+  try {
+    const text = clipboard.readText();
+    if (typeof text === 'string' && text.length > 0) {
+      return {
+        id: `clip-${capturedAt}-${hashClipboardPayload(text).slice(0, 10)}`,
+        kind: 'text',
+        capturedAt: new Date(capturedAt).toISOString(),
+        formats,
+        title: text.slice(0, 80).replace(/\s+/g, ' ') || '文本',
+        text,
+      };
+    }
+  } catch (error) {
+    addDiagnosticLog('warn', '读取剪贴板文本失败', error?.message || String(error));
+  }
+
+  return createOtherClipboardSnapshot(formats, capturedAt);
+}
+
+function getClipboardSignature(snapshot) {
+  if (!snapshot) {
+    return '';
+  }
+  if (snapshot.kind === 'text') {
+    return `text:${hashClipboardPayload(snapshot.text || '')}`;
+  }
+  if (snapshot.kind === 'image') {
+    return `image:${snapshot.image?.width || 0}x${snapshot.image?.height || 0}:${hashClipboardPayload(snapshot.image?.dataUrl || '')}`;
+  }
+  return `other:${hashClipboardPayload((snapshot.formats || []).join('|'))}`;
+}
+
+function pushClipboardHistory(snapshot) {
+  if (!snapshot) {
+    return;
+  }
+  if (snapshot.kind === 'other' && (!Array.isArray(snapshot.formats) || snapshot.formats.length === 0)) {
+    return;
+  }
+  const signature = getClipboardSignature(snapshot);
+  if (!signature || signature === lastClipboardSignature) {
+    return;
+  }
+  lastClipboardSignature = signature;
+  clipboardHistory.unshift({ ...snapshot, signature });
+  const seen = new Set();
+  const compacted = [];
+  for (const item of clipboardHistory) {
+    if (seen.has(item.signature)) {
+      continue;
+    }
+    seen.add(item.signature);
+    compacted.push(item);
+    if (compacted.length >= CLIPBOARD_HISTORY_LIMIT) {
+      break;
+    }
+  }
+  clipboardHistory.splice(0, clipboardHistory.length, ...compacted);
+}
+
+function getClipboardHistoryForRenderer() {
+  return clipboardHistory.map(item => {
+    if (item.kind !== 'image') {
+      return item;
+    }
+    return {
+      ...item,
+      image: {
+        ...item.image,
+        dataUrl: item.image?.dataUrl || '',
+      },
+    };
+  });
+}
+
+function writeClipboardItem(payload) {
+  const kind = payload?.kind;
+  try {
+    if (kind === 'text') {
+      const text = typeof payload?.text === 'string' ? payload.text : '';
+      clipboard.writeText(text);
+      const snapshot = readClipboardSnapshot();
+      pushClipboardHistory(snapshot);
+      return { ok: true };
+    }
+
+    if (kind === 'image') {
+      const dataUrl = typeof payload?.dataUrl === 'string' ? payload.dataUrl : '';
+      if (!dataUrl.startsWith('data:image/')) {
+        return { ok: false, error: 'invalid_image' };
+      }
+      const image = nativeImage.createFromDataURL(dataUrl);
+      if (!image || image.isEmpty()) {
+        return { ok: false, error: 'invalid_image' };
+      }
+      clipboard.writeImage(image);
+      const snapshot = readClipboardSnapshot();
+      pushClipboardHistory(snapshot);
+      return { ok: true };
+    }
+
+    return { ok: false, error: 'unsupported_kind' };
+  } catch (error) {
+    addDiagnosticLog('error', '写入剪贴板失败', error?.message || String(error));
+    return { ok: false, error: 'write_failed', detail: error?.message || String(error) };
+  }
+}
+
+function startClipboardMonitoring() {
+  if (clipboardTimer) {
+    clearInterval(clipboardTimer);
+  }
+  const capture = () => {
+    try {
+      pushClipboardHistory(readClipboardSnapshot());
+    } catch (error) {
+      addDiagnosticLog('warn', '剪贴板监听失败', error?.message || String(error));
+    }
+  };
+  capture();
+  clipboardTimer = setInterval(capture, CLIPBOARD_POLL_INTERVAL_MS);
 }
 
 function registerPowerEvents() {
@@ -5736,6 +5928,7 @@ app.whenReady().then(async () => {
   addPowerEvent('开机', '应用启动并开始监测', '#22c55e');
   startMonitoring();
   startInputActivityMonitoring();
+  startClipboardMonitoring();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -5769,6 +5962,10 @@ app.on('before-quit', () => {
   if (inputActivityFlushTimer) {
     clearTimeout(inputActivityFlushTimer);
     inputActivityFlushTimer = null;
+  }
+  if (clipboardTimer) {
+    clearInterval(clipboardTimer);
+    clipboardTimer = null;
   }
   persistState();
 });

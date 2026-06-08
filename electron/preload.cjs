@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('desktopApi', {
   notify: (payload) => ipcRenderer.invoke('app:notify', payload),
   hideToTray: () => ipcRenderer.invoke('app:hide-to-tray'),
   selectAudioFile: () => ipcRenderer.invoke('app:select-audio-file'),
+  getClipboardCurrent: () => ipcRenderer.invoke('clipboard:get-current'),
+  getClipboardHistory: () => ipcRenderer.invoke('clipboard:get-history'),
+  writeClipboardItem: (payload) => ipcRenderer.invoke('clipboard:write-item', payload),
   onUpdateProgress: (callback) => {
     if (typeof callback !== 'function') {
       return () => {};

@@ -78,6 +78,33 @@ declare global {
     status?: StorageStatusResult;
   }
 
+  type ClipboardSnapshotKind = 'text' | 'image' | 'other';
+
+  interface ClipboardImagePayload {
+    dataUrl: string;
+    width: number;
+    height: number;
+    type: string;
+    byteLength?: number;
+  }
+
+  interface ClipboardSnapshot {
+    id: string;
+    kind: ClipboardSnapshotKind;
+    capturedAt: string;
+    title?: string;
+    formats?: string[];
+    text?: string;
+    image?: ClipboardImagePayload;
+    details?: Array<{ name: string; value?: string }>;
+  }
+
+  interface WriteClipboardResult {
+    ok: boolean;
+    error?: string;
+    detail?: string;
+  }
+
   interface Window {
     desktopApi?: {
       isElectron: boolean;
@@ -105,6 +132,13 @@ declare global {
       notify: (payload: { title: string; body?: string }) => Promise<{ ok: boolean; error?: string }>;
       hideToTray: () => Promise<{ ok: boolean }>;
       selectAudioFile: () => Promise<string | null>;
+      getClipboardCurrent: () => Promise<ClipboardSnapshot>;
+      getClipboardHistory: () => Promise<ClipboardSnapshot[]>;
+      writeClipboardItem: (payload: {
+        kind: 'text' | 'image';
+        text?: string;
+        dataUrl?: string;
+      }) => Promise<WriteClipboardResult>;
       onUpdateProgress: (callback: (progress: UpdateProgressEvent) => void) => () => void;
       onState: (callback: (nextState: AppState) => void) => () => void;
     };

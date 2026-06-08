@@ -16,6 +16,7 @@ import SettingsPage from './pages/SettingsPage';
 import ClockPage from './pages/ClockPage';
 import StopwatchRecordDetailPage from './pages/StopwatchRecordDetailPage';
 import CalculatorPage from './pages/CalculatorPage';
+import ClipboardPage from './pages/ClipboardPage';
 import NotFound from './pages/NotFound';
 
 const queryClient = new QueryClient();
@@ -42,6 +43,7 @@ const App = () => (
             <Route path="/archives" element={<ArchiveListPage />} />
             <Route path="/archives/:taskId" element={<ArchiveDetailPage />} />
             <Route path="/monitoring" element={<MonitoringPage />} />
+            <Route path="/clipboard" element={<ClipboardPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
