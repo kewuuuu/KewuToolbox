@@ -63,6 +63,7 @@ declare global {
       sessions: number;
       processTimeline: number;
       inputActivityTimeline: number;
+      clipboardHistory?: number;
     };
     legacy?: {
       hasLegacyJson: boolean;
@@ -92,6 +93,9 @@ declare global {
     id: string;
     kind: ClipboardSnapshotKind;
     capturedAt: string;
+    lastSeenAt?: string;
+    seenCount?: number;
+    signature?: string;
     title?: string;
     formats?: string[];
     text?: string;
@@ -139,6 +143,10 @@ declare global {
         text?: string;
         dataUrl?: string;
       }) => Promise<WriteClipboardResult>;
+      onClipboardChanged: (callback: (payload: {
+        current?: ClipboardSnapshot;
+        history?: ClipboardSnapshot[];
+      }) => void) => () => void;
       onUpdateProgress: (callback: (progress: UpdateProgressEvent) => void) => () => void;
       onState: (callback: (nextState: AppState) => void) => () => void;
     };

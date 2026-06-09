@@ -8,11 +8,15 @@
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "vite",
+    "predev:electron": "npm run build:clipboard-listener",
     "dev:electron": "wait-on http://localhost:8080 && set ELECTRON_RUN_AS_NODE=&& electron .",
+    "prestart": "npm run build:clipboard-listener",
     "start": "set ELECTRON_RUN_AS_NODE=&& electron .",
     "build": "vite build",
+    "build:clipboard-listener": "cargo build --manifest-path native/clipboard-listener/Cargo.toml --release",
     "build:dev": "vite build --mode development",
-    "build:desktop": "npm run build && electron-builder --win nsis",
+    "build:desktop": "npm run build:clipboard-listener && npm run build && electron-builder --win nsis",
+    "prepackage:portable:win": "npm run build:clipboard-listener",
     "package:portable:win": "electron-builder --win portable",
     "package:portable:mac": "electron-builder --mac zip",
     "build:portable": "npm run build && npm run package:portable:win",
@@ -127,7 +131,13 @@
       ],
       "icon": "public/favicon.ico",
       "signAndEditExecutable": true,
-      "artifactName": "KewuToolbox-${version}.${ext}"
+      "artifactName": "KewuToolbox-${version}.${ext}",
+      "extraResources": [
+        {
+          "from": "native/clipboard-listener/target/release/kewu-clipboard-listener.exe",
+          "to": "native/kewu-clipboard-listener.exe"
+        }
+      ]
     },
     "nsis": {
       "artifactName": "KewuToolbox-${version}-setup.${ext}",

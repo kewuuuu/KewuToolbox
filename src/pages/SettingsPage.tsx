@@ -1504,7 +1504,7 @@ export default function SettingsPage() {
                     {storageStatus?.dbPath || '-'}
                   </p>
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-xs">
                   <div className="rounded-lg bg-secondary/30 p-2">
                     <p className="text-muted-foreground">文件大小</p>
                     <p className="text-foreground font-medium">{formatBytes(storageStatus?.sizeBytes)}</p>
@@ -1520,6 +1520,10 @@ export default function SettingsPage() {
                   <div className="rounded-lg bg-secondary/30 p-2">
                     <p className="text-muted-foreground">键鼠时间线</p>
                     <p className="text-foreground font-medium">{storageStatus?.counts?.inputActivityTimeline ?? '-'}</p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/30 p-2">
+                    <p className="text-muted-foreground">剪贴板历史</p>
+                    <p className="text-foreground font-medium">{storageStatus?.counts?.clipboardHistory ?? '-'}</p>
                   </div>
                   <div className="rounded-lg bg-secondary/30 p-2">
                     <p className="text-muted-foreground">配置片段</p>

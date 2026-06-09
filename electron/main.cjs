@@ -23,7 +23,8 @@ const INPUT_ACTIVITY_FLUSH_DELAY_MS = 1000;
 const MOUSE_MOVE_SAMPLE_MS = 120;
 const MOUSE_MOVE_MAX_DELTA_PIXELS = 3000;
 const CLIPBOARD_POLL_INTERVAL_MS = 800;
-const CLIPBOARD_HISTORY_LIMIT = 80;
+const CLIPBOARD_HISTORY_LIMIT = 300;
+const CLIPBOARD_OWN_WRITE_IGNORE_MS = 2500;
 
 const DESKTOP_KEY = 'desktop';
 const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain';
@@ -109,6 +110,11 @@ let saveTimer = null;
 let inputActivityFlushTimer = null;
 let clipboardTimer = null;
 let lastClipboardSignature = '';
+let lastAppClipboardWriteSignature = '';
+let lastAppClipboardWriteAtMs = 0;
+let clipboardListenerProcess = null;
+let clipboardListenerStdoutBuffer = '';
+let isStoppingClipboardMonitoring = false;
 let activeWinApi = null;
 let inputHookApi = null;
 let inputHookStarted = false;
@@ -123,7 +129,6 @@ let isHandlingCloseDecision = false;
 /** @type {import('../src/types').AppState} */
 let appState = createEmptyState();
 let consoleCaptureInstalled = false;
-const clipboardHistory = [];
 
 const monitorCursor = {
   lastTickAtMs: null,
@@ -2505,6 +2510,11 @@ function resetRuntimeTrackingState() {
 
 function clearAllData() {
   appState = createEmptyState();
+  try {
+    getSqliteStateStore(getStatePath()).clearClipboardHistory();
+  } catch (error) {
+    addDiagnosticLog('warn', 'Failed to clear clipboard history', error?.message || String(error));
+  }
   syncStorageMetaToState();
   addDiagnosticLog('warn', '用户执行清空所有数据');
   appState.preferences.autoLaunchEnabled = applySystemAutoLaunchEnabled(false);
@@ -5591,7 +5601,7 @@ function registerIpc() {
   });
   ipcMain.handle('clipboard:get-current', () => {
     const snapshot = readClipboardSnapshot();
-    pushClipboardHistory(snapshot);
+    pushClipboardHistory(snapshot, 'renderer-current');
     return snapshot;
   });
   ipcMain.handle('clipboard:get-history', () => getClipboardHistoryForRenderer());
@@ -5687,36 +5697,77 @@ function getClipboardSignature(snapshot) {
   return `other:${hashClipboardPayload((snapshot.formats || []).join('|'))}`;
 }
 
-function pushClipboardHistory(snapshot) {
-  if (!snapshot) {
+function markClipboardWriteByApp(signature) {
+  lastAppClipboardWriteSignature = signature || '';
+  lastAppClipboardWriteAtMs = Date.now();
+}
+
+function shouldIgnoreClipboardWriteByApp(signature) {
+  if (!signature || !lastAppClipboardWriteSignature) {
+    return false;
+  }
+  const elapsedMs = Date.now() - lastAppClipboardWriteAtMs;
+  if (signature !== lastAppClipboardWriteSignature || elapsedMs > CLIPBOARD_OWN_WRITE_IGNORE_MS) {
+    return false;
+  }
+  lastAppClipboardWriteSignature = '';
+  lastAppClipboardWriteAtMs = 0;
+  return true;
+}
+
+function emitClipboardChanged(snapshot) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
+  try {
+    mainWindow.webContents.send('clipboard:changed', {
+      current: snapshot,
+      history: getClipboardHistoryForRenderer(),
+    });
+  } catch {
+    // Ignore renderer update failures.
+  }
+}
+
+function pushClipboardHistory(snapshot, source = 'unknown') {
+  if (!snapshot) {
+    return false;
+  }
   if (snapshot.kind === 'other' && (!Array.isArray(snapshot.formats) || snapshot.formats.length === 0)) {
-    return;
+    return false;
   }
   const signature = getClipboardSignature(snapshot);
   if (!signature || signature === lastClipboardSignature) {
-    return;
+    return false;
   }
   lastClipboardSignature = signature;
-  clipboardHistory.unshift({ ...snapshot, signature });
-  const seen = new Set();
-  const compacted = [];
-  for (const item of clipboardHistory) {
-    if (seen.has(item.signature)) {
-      continue;
-    }
-    seen.add(item.signature);
-    compacted.push(item);
-    if (compacted.length >= CLIPBOARD_HISTORY_LIMIT) {
-      break;
-    }
+  if (shouldIgnoreClipboardWriteByApp(signature)) {
+    addDiagnosticLog('debug', 'Clipboard change ignored because it was written by KewuToolbox', source);
+    emitClipboardChanged(snapshot);
+    return false;
   }
-  clipboardHistory.splice(0, clipboardHistory.length, ...compacted);
+
+  try {
+    getSqliteStateStore(getStatePath()).saveClipboardSnapshot(snapshot, signature, CLIPBOARD_HISTORY_LIMIT);
+  } catch (error) {
+    addDiagnosticLog('error', 'Failed to persist clipboard history', error?.message || String(error));
+    return false;
+  }
+
+  emitClipboardChanged(snapshot);
+  return true;
 }
 
 function getClipboardHistoryForRenderer() {
-  return clipboardHistory.map(item => {
+  let history = [];
+  try {
+    history = getSqliteStateStore(getStatePath()).getClipboardHistory(CLIPBOARD_HISTORY_LIMIT);
+  } catch (error) {
+    addDiagnosticLog('error', 'Failed to read clipboard history', error?.message || String(error));
+    return [];
+  }
+
+  return history.map(item => {
     if (item.kind !== 'image') {
       return item;
     }
@@ -5730,6 +5781,154 @@ function getClipboardHistoryForRenderer() {
   });
 }
 
+function captureClipboardNow(source = 'unknown') {
+  try {
+    return pushClipboardHistory(readClipboardSnapshot(), source);
+  } catch (error) {
+    addDiagnosticLog('warn', 'Clipboard capture failed', error?.message || String(error));
+    return false;
+  }
+}
+
+function getClipboardListenerExecutablePath() {
+  if (process.platform !== 'win32') {
+    return null;
+  }
+
+  const candidates = [
+    path.join(process.resourcesPath || '', 'native', 'kewu-clipboard-listener.exe'),
+    path.join(__dirname, '..', 'native', 'clipboard-listener', 'target', 'release', 'kewu-clipboard-listener.exe'),
+    path.join(__dirname, 'native', 'kewu-clipboard-listener.exe'),
+  ];
+
+  return candidates.find(candidate => candidate && fs.existsSync(candidate)) || null;
+}
+
+function handleClipboardListenerLine(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed) {
+    return;
+  }
+
+  let payload = null;
+  try {
+    payload = JSON.parse(trimmed);
+  } catch {
+    addDiagnosticLog('debug', 'Clipboard listener output', trimmed);
+    return;
+  }
+
+  if (payload.event === 'ready') {
+    addDiagnosticLog('info', 'Native clipboard listener started');
+    return;
+  }
+
+  if (payload.event === 'clipboard-update') {
+    setTimeout(() => captureClipboardNow('native-event'), 30);
+    return;
+  }
+
+  if (payload.event === 'error') {
+    addDiagnosticLog('warn', 'Native clipboard listener error', payload.message || '');
+  }
+}
+
+function handleClipboardListenerStdout(chunk) {
+  clipboardListenerStdoutBuffer += chunk.toString('utf8');
+  const lines = clipboardListenerStdoutBuffer.split(/\r?\n/);
+  clipboardListenerStdoutBuffer = lines.pop() || '';
+  for (const line of lines) {
+    handleClipboardListenerLine(line);
+  }
+}
+
+function startClipboardPollingFallback(reason) {
+  if (clipboardTimer) {
+    return;
+  }
+  addDiagnosticLog('warn', 'Using clipboard polling fallback', reason || '');
+  clipboardTimer = setInterval(() => captureClipboardNow('polling-fallback'), CLIPBOARD_POLL_INTERVAL_MS);
+}
+
+function startNativeClipboardListener() {
+  if (clipboardListenerProcess) {
+    return true;
+  }
+
+  const executablePath = getClipboardListenerExecutablePath();
+  if (!executablePath) {
+    return false;
+  }
+
+  try {
+    clipboardListenerProcess = childProcess.spawn(executablePath, [], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  } catch (error) {
+    addDiagnosticLog('warn', 'Failed to start native clipboard listener', error?.message || String(error));
+    clipboardListenerProcess = null;
+    return false;
+  }
+
+  clipboardListenerStdoutBuffer = '';
+  clipboardListenerProcess.stdout?.on('data', handleClipboardListenerStdout);
+  clipboardListenerProcess.stderr?.on('data', chunk => {
+    const message = chunk.toString('utf8').trim();
+    if (message) {
+      addDiagnosticLog('warn', 'Native clipboard listener stderr', message);
+    }
+  });
+  clipboardListenerProcess.on('error', error => {
+    addDiagnosticLog('warn', 'Native clipboard listener process error', error?.message || String(error));
+    clipboardListenerProcess = null;
+    if (!isStoppingClipboardMonitoring && !forceQuitRequested) {
+      startClipboardPollingFallback('native-listener-error');
+    }
+  });
+  clipboardListenerProcess.on('exit', (code, signal) => {
+    const wasStopping = isStoppingClipboardMonitoring || forceQuitRequested;
+    clipboardListenerProcess = null;
+    if (!wasStopping) {
+      addDiagnosticLog('warn', 'Native clipboard listener exited', `code=${code ?? ''} signal=${signal ?? ''}`);
+      startClipboardPollingFallback('native-listener-exit');
+    }
+  });
+
+  return true;
+}
+
+function stopClipboardMonitoring() {
+  isStoppingClipboardMonitoring = true;
+  if (clipboardTimer) {
+    clearInterval(clipboardTimer);
+    clipboardTimer = null;
+  }
+  if (clipboardListenerProcess) {
+    const processToStop = clipboardListenerProcess;
+    clipboardListenerProcess = null;
+    try {
+      processToStop.removeAllListeners('exit');
+      processToStop.removeAllListeners('error');
+      processToStop.kill();
+    } catch {
+      // Ignore helper termination failures.
+    }
+  }
+  clipboardListenerStdoutBuffer = '';
+  setTimeout(() => {
+    isStoppingClipboardMonitoring = false;
+  }, 100);
+}
+
+function startClipboardMonitoring() {
+  stopClipboardMonitoring();
+  captureClipboardNow('startup');
+  if (!startNativeClipboardListener()) {
+    startClipboardPollingFallback('native-listener-unavailable');
+  }
+}
+
 function writeClipboardItem(payload) {
   const kind = payload?.kind;
   try {
@@ -5737,7 +5936,8 @@ function writeClipboardItem(payload) {
       const text = typeof payload?.text === 'string' ? payload.text : '';
       clipboard.writeText(text);
       const snapshot = readClipboardSnapshot();
-      pushClipboardHistory(snapshot);
+      markClipboardWriteByApp(getClipboardSignature(snapshot));
+      emitClipboardChanged(snapshot);
       return { ok: true };
     }
 
@@ -5752,30 +5952,16 @@ function writeClipboardItem(payload) {
       }
       clipboard.writeImage(image);
       const snapshot = readClipboardSnapshot();
-      pushClipboardHistory(snapshot);
+      markClipboardWriteByApp(getClipboardSignature(snapshot));
+      emitClipboardChanged(snapshot);
       return { ok: true };
     }
 
     return { ok: false, error: 'unsupported_kind' };
   } catch (error) {
-    addDiagnosticLog('error', '写入剪贴板失败', error?.message || String(error));
+    addDiagnosticLog('error', 'Failed to write clipboard item', error?.message || String(error));
     return { ok: false, error: 'write_failed', detail: error?.message || String(error) };
   }
-}
-
-function startClipboardMonitoring() {
-  if (clipboardTimer) {
-    clearInterval(clipboardTimer);
-  }
-  const capture = () => {
-    try {
-      pushClipboardHistory(readClipboardSnapshot());
-    } catch (error) {
-      addDiagnosticLog('warn', '剪贴板监听失败', error?.message || String(error));
-    }
-  };
-  capture();
-  clipboardTimer = setInterval(capture, CLIPBOARD_POLL_INTERVAL_MS);
 }
 
 function registerPowerEvents() {
@@ -5963,10 +6149,7 @@ app.on('before-quit', () => {
     clearTimeout(inputActivityFlushTimer);
     inputActivityFlushTimer = null;
   }
-  if (clipboardTimer) {
-    clearInterval(clipboardTimer);
-    clipboardTimer = null;
-  }
+  stopClipboardMonitoring();
   persistState();
 });
 

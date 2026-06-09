@@ -146,7 +146,9 @@ export default function ClipboardPage() {
   const [magnifier, setMagnifier] = useState<MagnifierState>({ active: false, displayX: 0, displayY: 0, imageX: 0, imageY: 0 });
   const [zoom, setZoom] = useState(8);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const imageViewportRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const magnifierActiveRef = useRef(false);
 
   const isElectron = Boolean(window.desktopApi?.isElectron);
 
@@ -168,10 +170,21 @@ export default function ClipboardPage() {
 
   useEffect(() => {
     void refreshClipboard();
+    const unsubscribe = window.desktopApi?.onClipboardChanged?.(payload => {
+      if (payload.current) {
+        setCurrent(payload.current);
+      }
+      if (Array.isArray(payload.history)) {
+        setHistory(payload.history);
+      }
+    });
     const timer = window.setInterval(() => {
       void refreshClipboard();
     }, 1200);
-    return () => window.clearInterval(timer);
+    return () => {
+      unsubscribe?.();
+      window.clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -183,6 +196,32 @@ export default function ClipboardPage() {
       setMagnifier({ active: false, displayX: 0, displayY: 0, imageX: 0, imageY: 0 });
     }
   }, [current?.id, current?.kind, current?.text]);
+
+  useEffect(() => {
+    magnifierActiveRef.current = magnifier.active;
+  }, [magnifier.active]);
+
+  useEffect(() => {
+    const viewport = imageViewportRef.current;
+    if (!viewport) {
+      return undefined;
+    }
+
+    const handleWheel = (event: WheelEvent) => {
+      if (!magnifierActiveRef.current) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      setZoom(prev => Math.max(2, Math.min(32, prev + (event.deltaY < 0 ? 1 : -1))));
+    };
+
+    viewport.addEventListener('wheel', handleWheel, { passive: false, capture: true });
+    return () => {
+      viewport.removeEventListener('wheel', handleWheel, { capture: true });
+    };
+  }, [current?.id]);
 
   const textStats = useMemo(() => {
     const text = current?.kind === 'text' ? current.text || '' : '';
@@ -428,14 +467,8 @@ export default function ClipboardPage() {
               <Badge variant="secondary">{zoom}x</Badge>
             </div>
             <div
-              className="relative max-h-[620px] overflow-auto rounded-2xl border border-border bg-secondary/30 p-3"
-              onWheel={event => {
-                if (!magnifier.active) {
-                  return;
-                }
-                event.preventDefault();
-                setZoom(prev => Math.max(2, Math.min(32, prev + (event.deltaY < 0 ? 1 : -1))));
-              }}
+              ref={imageViewportRef}
+              className="relative max-h-[620px] overscroll-contain overflow-auto rounded-2xl border border-border bg-secondary/30 p-3"
             >
               <img
                 ref={imageRef}

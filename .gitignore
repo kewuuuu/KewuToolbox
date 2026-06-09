@@ -29,3 +29,4 @@ release
 bin/
 obj/
 /reference-repos/
+/native/**/target/

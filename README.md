@@ -127,8 +127,9 @@ npm run dev
 1. 进入“剪贴板”页面。
 2. 在“信息显示”子页面查看当前剪贴板内容：文本会显示总字数、不含标点字数和可编辑文本框；图片会显示尺寸、类型、格式、取色结果和图片预览。
 3. 文本内容可修改后重新复制；图片可长按取色，点击颜色格式值可复制。
-4. 在“剪贴板”子页面查看 KewuToolbox 运行期间监听到的复制历史，点击某项可重新复制。
-5. 说明：Windows 系统 Win+V 历史没有稳定的 Electron 读取接口，因此这里显示的是软件运行期间监听到的历史。
+4. 在“剪贴板”子页面查看 KewuToolbox 监听并持久化保存的复制历史，点击某项可重新复制。
+5. Windows 下优先使用原生剪贴板事件监听，历史写入 SQLite；如果原生监听组件不可用，会自动退回兼容轮询。
+6. 说明：Windows 系统 Win+V 历史没有稳定的 Electron 读取接口，因此这里显示的是软件自行监听并保存的历史。
 
 #### 4.6 待办与归档
 
@@ -185,6 +186,12 @@ npm run build:mac:portable
 
 # 一键交付构建（按当前系统打包便携版 + 插件压缩包 + sha256）
 npm run build:deliver
+```
+
+Windows 桌面版包含一个 Rust 原生剪贴板监听组件。`npm run dev`、`npm run start`、Windows 打包和交付构建会自动编译它；如需单独编译，可执行：
+
+```bash
+npm run build:clipboard-listener
 ```
 
 ### 3. electron-builder 关键配置（package.json）

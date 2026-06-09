@@ -3,8 +3,9 @@ const path = require('node:path');
 const initSqlJs = require('sql.js');
 
 const SQLITE_FILE_NAME = 'kewu-toolbox.sqlite';
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const TABLE_SECTION_KEYS = new Set(['sessions', 'processTimeline', 'inputActivityTimeline']);
+const DEFAULT_CLIPBOARD_HISTORY_LIMIT = 300;
 
 let SQL = null;
 let initializingSql = null;
@@ -70,6 +71,14 @@ function toStringValue(value) {
 
 function toJsonPayload(value) {
   return JSON.stringify(value ?? null);
+}
+
+function normalizeLimit(value, fallback = DEFAULT_CLIPBOARD_HISTORY_LIMIT) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(1, Math.min(5000, Math.floor(parsed)));
 }
 
 class SqliteStateStore {
@@ -178,6 +187,30 @@ class SqliteStateStore {
         ON input_activity_timeline(bucket_start_ms, bucket_end_ms);
       CREATE INDEX IF NOT EXISTS idx_input_activity_timeline_key_time
         ON input_activity_timeline(classification_key, bucket_start_ms, bucket_end_ms);
+
+      CREATE TABLE IF NOT EXISTS clipboard_history (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        signature TEXT NOT NULL UNIQUE,
+        captured_at_ms INTEGER NOT NULL,
+        last_seen_at_ms INTEGER NOT NULL,
+        seen_count INTEGER NOT NULL DEFAULT 1,
+        title TEXT,
+        text TEXT,
+        image_data_url TEXT,
+        image_width INTEGER,
+        image_height INTEGER,
+        image_type TEXT,
+        image_byte_length INTEGER,
+        formats_json TEXT NOT NULL,
+        details_json TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_clipboard_history_captured_at
+        ON clipboard_history(captured_at_ms DESC);
+      CREATE INDEX IF NOT EXISTS idx_clipboard_history_kind_time
+        ON clipboard_history(kind, captured_at_ms DESC);
     `);
 
     this.upsertMeta('schema_version', String(SCHEMA_VERSION));
@@ -388,6 +421,190 @@ class SqliteStateStore {
     }
   }
 
+  getClipboardHistory(limit = DEFAULT_CLIPBOARD_HISTORY_LIMIT) {
+    const normalizedLimit = normalizeLimit(limit);
+    const stmt = this.db.prepare(`
+      SELECT payload_json, seen_count, last_seen_at_ms
+      FROM clipboard_history
+      ORDER BY captured_at_ms DESC
+      LIMIT ?
+    `);
+    const rows = [];
+    try {
+      stmt.bind([normalizedLimit]);
+      while (stmt.step()) {
+        const row = stmt.get();
+        const snapshot = safeJsonParse(row[0], null);
+        if (!snapshot) {
+          continue;
+        }
+        const seenCount = toNumber(row[1], 1);
+        const lastSeenAtMs = toTimeMs(row[2]);
+        rows.push({
+          ...snapshot,
+          seenCount,
+          lastSeenAt: lastSeenAtMs > 0 ? new Date(lastSeenAtMs).toISOString() : snapshot.capturedAt,
+        });
+      }
+    } finally {
+      stmt.free();
+    }
+    return rows;
+  }
+
+  findClipboardHistoryBySignature(signature) {
+    const stmt = this.db.prepare('SELECT id, seen_count FROM clipboard_history WHERE signature = ? LIMIT 1');
+    try {
+      stmt.bind([signature]);
+      if (!stmt.step()) {
+        return null;
+      }
+      const row = stmt.get();
+      return {
+        id: toStringValue(row[0]),
+        seenCount: toNumber(row[1], 1),
+      };
+    } finally {
+      stmt.free();
+    }
+  }
+
+  saveClipboardSnapshot(snapshot, signature, limit = DEFAULT_CLIPBOARD_HISTORY_LIMIT) {
+    if (!snapshot || !signature) {
+      return false;
+    }
+
+    const normalizedLimit = normalizeLimit(limit);
+    const capturedAtMs = toTimeMs(snapshot.capturedAt) || Date.now();
+    const lastSeenAt = new Date(capturedAtMs).toISOString();
+    const existing = this.findClipboardHistoryBySignature(signature);
+    const seenCount = existing ? existing.seenCount + 1 : 1;
+    const storedSnapshot = {
+      ...snapshot,
+      id: existing?.id || toStringValue(snapshot.id) || `clip-${capturedAtMs}`,
+      signature,
+      seenCount,
+      lastSeenAt,
+    };
+    const image = storedSnapshot.image || {};
+
+    this.db.run('BEGIN IMMEDIATE TRANSACTION');
+    try {
+      if (existing) {
+        this.db.run(
+          `
+          UPDATE clipboard_history
+          SET
+            kind = ?,
+            captured_at_ms = ?,
+            last_seen_at_ms = ?,
+            seen_count = ?,
+            title = ?,
+            text = ?,
+            image_data_url = ?,
+            image_width = ?,
+            image_height = ?,
+            image_type = ?,
+            image_byte_length = ?,
+            formats_json = ?,
+            details_json = ?,
+            payload_json = ?
+          WHERE signature = ?
+          `,
+          [
+            toStringValue(storedSnapshot.kind),
+            capturedAtMs,
+            capturedAtMs,
+            seenCount,
+            toStringValue(storedSnapshot.title),
+            toStringValue(storedSnapshot.text),
+            toStringValue(image.dataUrl),
+            toNumber(image.width),
+            toNumber(image.height),
+            toStringValue(image.type),
+            toNumber(image.byteLength),
+            toJsonPayload(storedSnapshot.formats || []),
+            toJsonPayload(storedSnapshot.details || []),
+            toJsonPayload(storedSnapshot),
+            signature,
+          ],
+        );
+      } else {
+        this.db.run(
+          `
+          INSERT INTO clipboard_history (
+            id,
+            kind,
+            signature,
+            captured_at_ms,
+            last_seen_at_ms,
+            seen_count,
+            title,
+            text,
+            image_data_url,
+            image_width,
+            image_height,
+            image_type,
+            image_byte_length,
+            formats_json,
+            details_json,
+            payload_json
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            storedSnapshot.id,
+            toStringValue(storedSnapshot.kind),
+            signature,
+            capturedAtMs,
+            capturedAtMs,
+            seenCount,
+            toStringValue(storedSnapshot.title),
+            toStringValue(storedSnapshot.text),
+            toStringValue(image.dataUrl),
+            toNumber(image.width),
+            toNumber(image.height),
+            toStringValue(image.type),
+            toNumber(image.byteLength),
+            toJsonPayload(storedSnapshot.formats || []),
+            toJsonPayload(storedSnapshot.details || []),
+            toJsonPayload(storedSnapshot),
+          ],
+        );
+      }
+
+      const cleanup = this.db.prepare(`
+        DELETE FROM clipboard_history
+        WHERE id NOT IN (
+          SELECT id FROM clipboard_history
+          ORDER BY captured_at_ms DESC
+          LIMIT ?
+        )
+      `);
+      try {
+        cleanup.run([normalizedLimit]);
+      } finally {
+        cleanup.free();
+      }
+
+      this.db.run('COMMIT');
+      this.flush();
+      return true;
+    } catch (error) {
+      try {
+        this.db.run('ROLLBACK');
+      } catch {
+        // Ignore rollback failures.
+      }
+      throw error;
+    }
+  }
+
+  clearClipboardHistory() {
+    this.db.run('DELETE FROM clipboard_history');
+    this.flush();
+  }
+
   getStatus() {
     const countRows = tableName => {
       const result = this.db.exec(`SELECT COUNT(*) AS count FROM ${tableName}`);
@@ -410,6 +627,7 @@ class SqliteStateStore {
         sessions: countRows('focus_sessions'),
         processTimeline: countRows('process_timeline'),
         inputActivityTimeline: countRows('input_activity_timeline'),
+        clipboardHistory: countRows('clipboard_history'),
       },
     };
   }

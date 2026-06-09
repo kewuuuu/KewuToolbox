@@ -22,6 +22,20 @@ contextBridge.exposeInMainWorld('desktopApi', {
   getClipboardCurrent: () => ipcRenderer.invoke('clipboard:get-current'),
   getClipboardHistory: () => ipcRenderer.invoke('clipboard:get-history'),
   writeClipboardItem: (payload) => ipcRenderer.invoke('clipboard:write-item', payload),
+  onClipboardChanged: (callback) => {
+    if (typeof callback !== 'function') {
+      return () => {};
+    }
+
+    const listener = (_event, payload) => {
+      callback(payload);
+    };
+
+    ipcRenderer.on('clipboard:changed', listener);
+    return () => {
+      ipcRenderer.removeListener('clipboard:changed', listener);
+    };
+  },
   onUpdateProgress: (callback) => {
     if (typeof callback !== 'function') {
       return () => {};
