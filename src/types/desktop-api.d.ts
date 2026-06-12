@@ -100,7 +100,7 @@ declare global {
     formats?: string[];
     text?: string;
     image?: ClipboardImagePayload;
-    details?: Array<{ name: string; value?: string }>;
+    details?: Array<{ name: string; value?: string; byteLength?: number; digest?: string }>;
   }
 
   interface WriteClipboardResult {

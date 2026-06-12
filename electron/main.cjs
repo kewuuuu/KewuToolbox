@@ -25,6 +25,7 @@ const MOUSE_MOVE_MAX_DELTA_PIXELS = 3000;
 const CLIPBOARD_POLL_INTERVAL_MS = 800;
 const CLIPBOARD_HISTORY_LIMIT = 300;
 const CLIPBOARD_OWN_WRITE_IGNORE_MS = 2500;
+const CLIPBOARD_OTHER_FORMAT_HASH_LIMIT_BYTES = 4 * 1024 * 1024;
 
 const DESKTOP_KEY = 'desktop';
 const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain';
@@ -112,6 +113,8 @@ let clipboardTimer = null;
 let lastClipboardSignature = '';
 let lastAppClipboardWriteSignature = '';
 let lastAppClipboardWriteAtMs = 0;
+let currentClipboardSignature = '';
+let currentClipboardSnapshot = null;
 let clipboardListenerProcess = null;
 let clipboardListenerStdoutBuffer = '';
 let isStoppingClipboardMonitoring = false;
@@ -5600,9 +5603,7 @@ function registerIpc() {
     return result.filePaths[0];
   });
   ipcMain.handle('clipboard:get-current', () => {
-    const snapshot = readClipboardSnapshot();
-    pushClipboardHistory(snapshot, 'renderer-current');
-    return snapshot;
+    return readStableClipboardSnapshot();
   });
   ipcMain.handle('clipboard:get-history', () => getClipboardHistoryForRenderer());
   ipcMain.handle('clipboard:write-item', (_event, payload) => writeClipboardItem(payload));
@@ -5625,14 +5626,60 @@ function hashClipboardPayload(value) {
   return crypto.createHash('sha1').update(String(value || '')).digest('hex');
 }
 
+function hashClipboardBuffer(buffer) {
+  const source = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
+  const hash = crypto.createHash('sha1');
+  hash.update(source.subarray(0, CLIPBOARD_OTHER_FORMAT_HASH_LIMIT_BYTES));
+  hash.update(String(source.length));
+  return hash.digest('hex');
+}
+
+function parseClipboardUnicodeList(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    return [];
+  }
+  return buffer
+    .toString('utf16le')
+    .split('\u0000')
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function readClipboardFormatDetails(formats) {
+  return formats.map(format => {
+    const detail = { name: format };
+    try {
+      const buffer = clipboard.readBuffer(format);
+      if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+        return detail;
+      }
+
+      detail.byteLength = buffer.length;
+      detail.digest = hashClipboardBuffer(buffer);
+
+      if (/file|filename|shell/i.test(format)) {
+        const names = parseClipboardUnicodeList(buffer);
+        if (names.length > 0) {
+          detail.value = names.slice(0, 4).join(' / ');
+        }
+      }
+    } catch {
+      // Some clipboard formats are not readable through Electron's generic buffer API.
+    }
+    return detail;
+  });
+}
+
 function createOtherClipboardSnapshot(formats, capturedAt) {
+  const details = readClipboardFormatDetails(formats);
+  const detailDigest = hashClipboardPayload(JSON.stringify(details));
   return {
-    id: `clip-${capturedAt}-${hashClipboardPayload(formats.join('|')).slice(0, 10)}`,
+    id: `clip-${capturedAt}-${detailDigest.slice(0, 10)}`,
     kind: 'other',
     capturedAt: new Date(capturedAt).toISOString(),
     formats,
     title: formats.length > 0 ? `${formats.length} 种剪贴板格式` : '空剪贴板',
-    details: formats.map(format => ({ name: format })),
+    details,
   };
 }
 
@@ -5694,7 +5741,25 @@ function getClipboardSignature(snapshot) {
   if (snapshot.kind === 'image') {
     return `image:${snapshot.image?.width || 0}x${snapshot.image?.height || 0}:${hashClipboardPayload(snapshot.image?.dataUrl || '')}`;
   }
-  return `other:${hashClipboardPayload((snapshot.formats || []).join('|'))}`;
+  return `other:${hashClipboardPayload(JSON.stringify(snapshot.details || snapshot.formats || []))}`;
+}
+
+function rememberCurrentClipboardSnapshot(snapshot, signature = getClipboardSignature(snapshot)) {
+  if (!snapshot) {
+    return snapshot;
+  }
+  currentClipboardSignature = signature || '';
+  currentClipboardSnapshot = snapshot;
+  return snapshot;
+}
+
+function readStableClipboardSnapshot() {
+  const snapshot = readClipboardSnapshot();
+  const signature = getClipboardSignature(snapshot);
+  if (signature && signature === currentClipboardSignature && currentClipboardSnapshot) {
+    return currentClipboardSnapshot;
+  }
+  return rememberCurrentClipboardSnapshot(snapshot, signature);
 }
 
 function markClipboardWriteByApp(signature) {
@@ -5740,6 +5805,7 @@ function pushClipboardHistory(snapshot, source = 'unknown') {
   if (!signature || signature === lastClipboardSignature) {
     return false;
   }
+  rememberCurrentClipboardSnapshot(snapshot, signature);
   lastClipboardSignature = signature;
   if (shouldIgnoreClipboardWriteByApp(signature)) {
     addDiagnosticLog('debug', 'Clipboard change ignored because it was written by KewuToolbox', source);
@@ -5936,7 +6002,9 @@ function writeClipboardItem(payload) {
       const text = typeof payload?.text === 'string' ? payload.text : '';
       clipboard.writeText(text);
       const snapshot = readClipboardSnapshot();
-      markClipboardWriteByApp(getClipboardSignature(snapshot));
+      const signature = getClipboardSignature(snapshot);
+      rememberCurrentClipboardSnapshot(snapshot, signature);
+      markClipboardWriteByApp(signature);
       emitClipboardChanged(snapshot);
       return { ok: true };
     }
@@ -5952,7 +6020,9 @@ function writeClipboardItem(payload) {
       }
       clipboard.writeImage(image);
       const snapshot = readClipboardSnapshot();
-      markClipboardWriteByApp(getClipboardSignature(snapshot));
+      const signature = getClipboardSignature(snapshot);
+      rememberCurrentClipboardSnapshot(snapshot, signature);
+      markClipboardWriteByApp(signature);
       emitClipboardChanged(snapshot);
       return { ok: true };
     }

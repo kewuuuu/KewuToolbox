@@ -61,6 +61,7 @@ interface AppContextType {
   updateTodo: (t: TodoTask) => void;
   completeTodo: (id: string) => void;
   deleteTodo: (id: string) => void;
+  updateArchiveInsight: (recordId: string, taskId: string, insight: string) => void;
   deleteArchiveGroup: (taskId: string) => void;
   deleteMonitoringRecords: (classificationKeys: string[]) => void;
   addProcessTag: (name: string) => ProcessTag | null;
@@ -91,6 +92,18 @@ function getFocusSecondsForQueueIndex(queue: FocusQueueItem[], queueIndex: numbe
   const item = queue[queueIndex];
   const focusMinutes = clampFocusMinutes(item?.durationMinutes ?? FALLBACK_FOCUS_MINUTES);
   return focusMinutes * 60;
+}
+
+function patchArchiveSnapshotInsight(snapshotJson: string, insight: string) {
+  try {
+    const snapshot = JSON.parse(snapshotJson || '{}');
+    if (snapshot && typeof snapshot === 'object') {
+      return JSON.stringify({ ...snapshot, currentInsight: insight });
+    }
+  } catch {
+    // Keep malformed legacy snapshots untouched.
+  }
+  return snapshotJson || '{}';
 }
 
 function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppUiState): AppUiState {
@@ -1760,6 +1773,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setState(s => ({ ...s, todos: s.todos.filter(todo => todo.id !== id) }));
   }, []);
 
+  const updateArchiveInsight = useCallback((recordId: string, taskId: string, insight: string) => {
+    setState(s => {
+      const hasArchiveRecord = s.archives.some(record => record.id === recordId);
+      const now = new Date().toISOString();
+
+      if (hasArchiveRecord) {
+        return {
+          ...s,
+          archives: s.archives.map(record =>
+            record.id === recordId
+              ? {
+                  ...record,
+                  insightSnapshot: insight,
+                  taskSnapshotJson: patchArchiveSnapshotInsight(record.taskSnapshotJson, insight),
+                }
+              : record,
+          ),
+        };
+      }
+
+      return {
+        ...s,
+        todos: s.todos.map(todo =>
+          todo.id === taskId && todo.isArchived
+            ? { ...todo, currentInsight: insight, updatedAt: now }
+            : todo,
+        ),
+      };
+    });
+  }, []);
+
   const deleteArchiveGroup = useCallback((taskId: string) => {
     setState(s => ({
       ...s,
@@ -1905,6 +1949,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       updateTodo,
       completeTodo,
       deleteTodo,
+      updateArchiveInsight,
       deleteArchiveGroup,
       deleteMonitoringRecords,
       addProcessTag,
@@ -1939,6 +1984,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       updateTodo,
       completeTodo,
       deleteTodo,
+      updateArchiveInsight,
       deleteArchiveGroup,
       deleteMonitoringRecords,
       addProcessTag,

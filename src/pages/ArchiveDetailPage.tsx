@@ -4,6 +4,7 @@ import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { Textarea } from '@/components/ui/textarea';
 import { useAppState } from '@/store/AppContext';
 import { TodoArchiveRecord } from '@/types';
 
@@ -36,7 +37,7 @@ function formatTaskSnapshot(snapshotJson: string) {
 
 export default function ArchiveDetailPage() {
   const { taskId } = useParams<{ taskId: string }>();
-  const { state } = useAppState();
+  const { state, updateArchiveInsight } = useAppState();
   const navigate = useNavigate();
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -100,11 +101,18 @@ export default function ArchiveDetailPage() {
                     </Button>
                   </div>
 
-                  {record.insightSnapshot ? (
-                    <p className="text-sm text-foreground mt-2 whitespace-pre-wrap">{record.insightSnapshot}</p>
-                  ) : (
-                    <p className="text-xs text-muted-foreground mt-2">本次没有填写心得。</p>
-                  )}
+                  <div className="mt-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs font-medium text-muted-foreground">心得记录</p>
+                      <p className="text-[11px] text-muted-foreground">输入后自动保存</p>
+                    </div>
+                    <Textarea
+                      value={record.insightSnapshot || ''}
+                      onChange={event => updateArchiveInsight(record.id, record.taskId, event.target.value)}
+                      className="min-h-[120px] resize-y text-sm leading-6"
+                      placeholder="本次没有填写心得，可以在这里补充或修改。"
+                    />
+                  </div>
 
                   {expandedId === record.id && (
                     <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
