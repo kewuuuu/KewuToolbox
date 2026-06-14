@@ -36,6 +36,21 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Setup Python for native rebuild
+        # node-gyp 9 used by nested native dependencies still imports distutils.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configure node-gyp Python
+        shell: pwsh
+        run: |
+          $python = (Get-Command python).Source
+          "PYTHON=$python" >> $env:GITHUB_ENV
+          "npm_config_python=$python" >> $env:GITHUB_ENV
+          npm config set python "$python"
+          python --version
+
       - name: Cache Electron builder downloads
         # actions/cache@v5.0.5
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
