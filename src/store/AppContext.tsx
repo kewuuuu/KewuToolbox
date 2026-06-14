@@ -1822,6 +1822,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    if (isElectronRuntime() && window.desktopApi?.deleteMonitoringRecords) {
+      void window.desktopApi.deleteMonitoringRecords({ classificationKeys: [...keySet] });
+    }
+
     setState(s => {
       const currentFocusedWindow =
         s.currentFocusedWindow && keySet.has(s.currentFocusedWindow.classificationKey)

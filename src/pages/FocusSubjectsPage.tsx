@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { FocusSubnav } from '@/components/focus/FocusSubnav';
 import { useAppState } from '@/store/AppContext';
@@ -47,6 +47,8 @@ function formatDurationSeconds(seconds: number) {
 
 export default function FocusSubjectsPage() {
   const { state, addSubject, updateSubject, deleteSubject, addToQueue, updateUiState } = useAppState();
+  const electronActivityEnabled = Boolean(window.desktopApi?.isElectron && window.desktopApi.getActivityData);
+  const [todaySessions, setTodaySessions] = useState(state.sessions);
   const focusSubjectsUi = state.uiState.focusSubjects;
   const updateFocusSubjectsUi = (partial: Partial<typeof focusSubjectsUi>) => {
     updateUiState({
@@ -200,11 +202,50 @@ export default function FocusSubjectsPage() {
 
   const recordGapSeconds = state.preferences.recordWindowThresholdSeconds;
 
+  useEffect(() => {
+    if (!electronActivityEnabled) {
+      setTodaySessions(state.sessions);
+    }
+  }, [electronActivityEnabled, state.sessions]);
+
+  useEffect(() => {
+    if (!electronActivityEnabled) {
+      return;
+    }
+
+    let disposed = false;
+    const load = async () => {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      try {
+        const result = await window.desktopApi!.getActivityData({
+          startMs: todayStart.getTime(),
+          endMs: Date.now(),
+          limit: 50000,
+        });
+        if (!disposed && result?.ok) {
+          setTodaySessions(result.sessions || []);
+        }
+      } catch {
+        if (!disposed) {
+          setTodaySessions([]);
+        }
+      }
+    };
+
+    void load();
+    const timer = window.setInterval(load, 5000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [electronActivityEnabled]);
+
   const todayFocusSegments = useMemo(() => {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     return compileMergedFocusSegments(
-      state.sessions,
+      todaySessions,
       state.profiles,
       {
         startMs: todayStart.getTime(),
@@ -212,7 +253,7 @@ export default function FocusSubjectsPage() {
       },
       recordGapSeconds,
     );
-  }, [recordGapSeconds, state.profiles, state.sessions]);
+  }, [recordGapSeconds, state.profiles, todaySessions]);
 
   const getSubjectFocusTime = (subject: FocusSubject) => {
     return todayFocusSegments

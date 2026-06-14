@@ -320,6 +320,16 @@ export default function ClipboardPage() {
       toast.error('当前环境不支持写入剪贴板');
       return;
     }
+    if (window.desktopApi.restoreClipboardHistoryItem) {
+      const result = await window.desktopApi.restoreClipboardHistoryItem({ id: item.id });
+      if (result.ok) {
+        toast.success('已复制该历史项');
+        await refreshClipboard();
+        return;
+      }
+      toast.error('复制历史项失败', { description: result.detail || result.error });
+      return;
+    }
     const payload =
       item.kind === 'text'
         ? { kind: 'text' as const, text: item.text || '' }
@@ -566,7 +576,11 @@ export default function ClipboardPage() {
               </div>
               <div className="space-y-2">
                 {history.length > 0 ? (
-                  history.map(item => (
+                  history.map(item => {
+                    const previewDataUrl = item.kind === 'image'
+                      ? item.image?.thumbnailDataUrl || item.image?.dataUrl || ''
+                      : '';
+                    return (
                     <button
                       key={item.id}
                       type="button"
@@ -574,8 +588,8 @@ export default function ClipboardPage() {
                       className="flex w-full min-w-0 items-center gap-3 rounded-2xl border border-border bg-secondary/30 p-3 text-left transition-colors hover:border-primary/70 hover:bg-primary/10"
                     >
                       <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-card">
-                        {item.kind === 'image' && item.image?.dataUrl ? (
-                          <img src={item.image.dataUrl} alt="" className="h-full w-full object-cover" />
+                        {item.kind === 'image' && previewDataUrl ? (
+                          <img src={previewDataUrl} alt="" className="h-full w-full object-cover" />
                         ) : item.kind === 'text' ? (
                           <TypeIcon className="h-5 w-5 text-primary" />
                         ) : (
@@ -593,7 +607,8 @@ export default function ClipboardPage() {
                       </div>
                       <Copy className="h-4 w-4 shrink-0 text-muted-foreground" />
                     </button>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="rounded-2xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
                     暂无剪贴板历史。复制文本或图片后会在这里出现。

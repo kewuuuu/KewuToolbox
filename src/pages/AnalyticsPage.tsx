@@ -52,7 +52,7 @@ import {
   HeatmapCategory,
   TimeRange,
 } from '@/lib/analyticsReadModel';
-import { Category, InputActivityMetric, InputActivityTimelineRecord, ObjectType } from '@/types';
+import { AppState, Category, InputActivityMetric, InputActivityTimelineRecord, ObjectType } from '@/types';
 
 const tooltipStyle = {
   backgroundColor: 'hsl(var(--card))',
@@ -1042,21 +1042,155 @@ export default function AnalyticsPage() {
   const mergeGapSeconds = state.preferences.recordWindowThresholdSeconds;
   const windowItemLimit = Math.max(1, Math.floor(Number(state.preferences.analyticsWindowItemLimit) || 10));
   const activeTab: AnalyticsTab = analyticsUi.activeTab === 'input' ? 'input' : 'focus';
+  const analyticsSummaryEnabled = Boolean(window.desktopApi?.isElectron && window.desktopApi.getAnalyticsSummary);
+  const electronActivityEnabled = Boolean(window.desktopApi?.isElectron && window.desktopApi.getActivityData);
+  const summaryInputMetric = inputUi.selectedMetric || 'keyPresses';
+  const summaryHeatmapCategory: HeatmapCategory =
+    analyticsUi.heatmapCategory === ALL_HEATMAP_CATEGORIES || CATEGORIES.includes(analyticsUi.heatmapCategory)
+      ? analyticsUi.heatmapCategory
+      : CATEGORIES[0];
+  const heatmapQueryStartMs = useMemo(() => {
+    const end = new Date(`${endDate}T00:00:00`);
+    end.setHours(0, 0, 0, 0);
+    end.setDate(end.getDate() - 89);
+    return end.getTime();
+  }, [endDate]);
+  const activityQueryRange = useMemo(
+    () => ({
+      startMs: Math.min(range.startMs, heatmapQueryStartMs),
+      endMs: range.endMs,
+    }),
+    [heatmapQueryStartMs, range],
+  );
+  const [activityData, setActivityData] = useState<Pick<AppState, 'sessions' | 'processTimeline' | 'inputActivityTimeline'>>({
+    sessions: [],
+    processTimeline: [],
+    inputActivityTimeline: [],
+  });
+  const [activityDateKeys, setActivityDateKeys] = useState<string[]>([]);
+  const [analyticsSummary, setAnalyticsSummary] = useState<AnalyticsSummaryResult | null>(null);
+
+  useEffect(() => {
+    if (!window.desktopApi?.isElectron || !window.desktopApi.getActivityDateKeys) {
+      return;
+    }
+    let disposed = false;
+    const load = async () => {
+      try {
+        const keys = await window.desktopApi!.getActivityDateKeys();
+        if (!disposed) {
+          setActivityDateKeys(Array.isArray(keys) ? keys : []);
+        }
+      } catch {
+        if (!disposed) {
+          setActivityDateKeys([]);
+        }
+      }
+    };
+    void load();
+    const timer = window.setInterval(load, 60000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!electronActivityEnabled || analyticsSummaryEnabled) {
+      return;
+    }
+
+    let disposed = false;
+    const load = async () => {
+      try {
+        const result = await window.desktopApi!.getActivityData({
+          startMs: activityQueryRange.startMs,
+          endMs: activityQueryRange.endMs,
+          limit: 200000,
+        });
+        if (!disposed && result?.ok) {
+          setActivityData({
+            sessions: result.sessions || [],
+            processTimeline: result.processTimeline || [],
+            inputActivityTimeline: result.inputActivityTimeline || [],
+          });
+        }
+      } catch {
+        if (!disposed) {
+          setActivityData({
+            sessions: [],
+            processTimeline: [],
+            inputActivityTimeline: [],
+          });
+        }
+      }
+    };
+    void load();
+    return () => {
+      disposed = true;
+    };
+  }, [
+    activityQueryRange.endMs,
+    activityQueryRange.startMs,
+    analyticsSummaryEnabled,
+    electronActivityEnabled,
+  ]);
+  useEffect(() => {
+    if (!analyticsSummaryEnabled) {
+      setAnalyticsSummary(null);
+      return;
+    }
+
+    let disposed = false;
+    const load = async () => {
+      try {
+        const result = await window.desktopApi!.getAnalyticsSummary({
+          startDate,
+          endDate,
+          heatmapCategory: summaryHeatmapCategory,
+          inputMetric: summaryInputMetric,
+          windowLimit: windowItemLimit,
+          timelineLimit: 120,
+        });
+        if (!disposed && result?.ok) {
+          setAnalyticsSummary(result);
+        }
+      } catch {
+        if (!disposed) {
+          setAnalyticsSummary(null);
+        }
+      }
+    };
+
+    void load();
+    return () => {
+      disposed = true;
+    };
+  }, [analyticsSummaryEnabled, endDate, startDate, summaryHeatmapCategory, summaryInputMetric, windowItemLimit]);
+  const activitySessions = electronActivityEnabled ? activityData.sessions : state.sessions;
+  const activityInputTimeline = electronActivityEnabled
+    ? activityData.inputActivityTimeline
+    : state.inputActivityTimeline;
 
   const dataDateSet = useMemo(() => {
     const set = new Set<string>();
-    for (const session of state.sessions) {
+    for (const key of activityDateKeys) {
+      if (typeof key === 'string' && key) {
+        set.add(key);
+      }
+    }
+    for (const session of activitySessions) {
       const start = new Date(session.startAt).getTime();
       const end = new Date(session.endAt).getTime();
       if (Number.isFinite(start)) set.add(toLocalDateInput(new Date(start)));
       if (Number.isFinite(end)) set.add(toLocalDateInput(new Date(end)));
     }
-    for (const record of state.inputActivityTimeline) {
+    for (const record of activityInputTimeline) {
       const start = new Date(record.bucketStartAt).getTime();
       if (Number.isFinite(start)) set.add(toLocalDateInput(new Date(start)));
     }
     return set;
-  }, [state.inputActivityTimeline, state.sessions]);
+  }, [activityDateKeys, activityInputTimeline, activitySessions]);
 
   const earliestDate = useMemo(() => {
     const dates = [...dataDateSet].sort();
@@ -1089,12 +1223,12 @@ export default function AnalyticsPage() {
   ) => updateAnalyticsUi({ [key]: mode } as Partial<typeof analyticsUi>);
 
   const daySegments = useMemo(
-    () => compileMergedFocusSegments(state.sessions, state.profiles, range, mergeGapSeconds),
-    [mergeGapSeconds, range, state.profiles, state.sessions],
+    () => compileMergedFocusSegments(activitySessions, state.profiles, range, mergeGapSeconds),
+    [activitySessions, mergeGapSeconds, range, state.profiles],
   );
   const rawFocusSegments = useMemo(
-    () => compileFocusSegments(state.sessions, state.profiles, range),
-    [range, state.profiles, state.sessions],
+    () => compileFocusSegments(activitySessions, state.profiles, range),
+    [activitySessions, range, state.profiles],
   );
   const focusSecondsByKey = useMemo(() => {
     const map = new Map<string, number>();
@@ -1109,20 +1243,23 @@ export default function AnalyticsPage() {
   const hourlyDisplayMode: DisplayMode = analyticsUi.hourlyDisplayMode === 'window' ? 'window' : 'category';
   const trendDisplayMode: DisplayMode = analyticsUi.trendDisplayMode === 'window' ? 'window' : 'category';
   const timelineDisplayMode: DisplayMode = analyticsUi.timelineDisplayMode === 'window' ? 'window' : 'category';
-  const heatmapCategory: HeatmapCategory =
-    analyticsUi.heatmapCategory === ALL_HEATMAP_CATEGORIES || CATEGORIES.includes(analyticsUi.heatmapCategory)
-      ? analyticsUi.heatmapCategory
-      : CATEGORIES[0];
+  const heatmapCategory = summaryHeatmapCategory;
   const hourlyMode = analyticsUi.hourlyMode;
+  const summaryFocus = analyticsSummary?.focus;
+  const summaryInput = analyticsSummary?.input;
 
   const buildChartDistribution = useCallback((mode: DisplayMode) => {
+    const summaryRows = summaryFocus?.distribution?.[mode];
+    if (summaryRows) {
+      return summaryRows;
+    }
     const raw = buildDistribution(daySegments, mode);
     if (mode === 'window') return raw.slice(0, windowItemLimit);
     const map = new Map(raw.map(item => [item.name, item]));
     const categoryItems = CATEGORIES.map(category => map.get(category) ?? { name: category, seconds: 0, minutes: 0 });
     const extraItems = raw.filter(item => !CATEGORIES.includes(item.name));
     return [...categoryItems, ...extraItems].sort((a, b) => b.seconds - a.seconds || a.name.localeCompare(b.name, 'zh-CN-u-co-pinyin'));
-  }, [daySegments, windowItemLimit]);
+  }, [daySegments, summaryFocus?.distribution, windowItemLimit]);
 
   const distribution = useMemo(() => buildChartDistribution(distributionMode), [buildChartDistribution, distributionMode]);
   const rankData = useMemo(
@@ -1135,22 +1272,36 @@ export default function AnalyticsPage() {
 
   const hourlyDistribution = useMemo(() => buildChartDistribution(hourlyDisplayMode), [buildChartDistribution, hourlyDisplayMode]);
   const hourlySeries = useMemo<ChartSeries[]>(
-    () =>
-      hourlyDisplayMode === 'category'
+    () => {
+      const summarySeries = summaryFocus?.hourly?.[hourlyDisplayMode]?.series;
+      if (summarySeries) {
+        return summarySeries.map((item, index) => ({
+          key: item.key,
+          name: item.name,
+          color: getDisplayModeColor(item.name, hourlyDisplayMode, index),
+        }));
+      }
+      return hourlyDisplayMode === 'category'
         ? CATEGORIES.map(category => ({ key: category, name: category, color: getCategoryColor(category) }))
-        : hourlyDistribution.map((item, index) => ({ key: `series-${index}`, name: item.name, color: getWindowSeriesColor(index) })),
-    [hourlyDisplayMode, hourlyDistribution],
+        : hourlyDistribution.map((item, index) => ({ key: `series-${index}`, name: item.name, color: getWindowSeriesColor(index) }));
+    },
+    [hourlyDisplayMode, hourlyDistribution, summaryFocus?.hourly],
   );
   const hourlyData = useMemo(
-    () =>
-      hourlyDisplayMode === 'category'
+    () => {
+      const summaryData = summaryFocus?.hourly?.[hourlyDisplayMode]?.data;
+      if (summaryData) {
+        return summaryData;
+      }
+      return hourlyDisplayMode === 'category'
         ? buildHourlyActivity(daySegments, range, CATEGORIES)
-        : buildHourlyWindowActivity(daySegments, range, hourlySeries),
-    [daySegments, hourlyDisplayMode, hourlySeries, range],
+        : buildHourlyWindowActivity(daySegments, range, hourlySeries);
+    },
+    [daySegments, hourlyDisplayMode, hourlySeries, range, summaryFocus?.hourly],
   );
   const trend = useMemo(
-    () => buildMultiSeriesTrendForRange(daySegments, trendDisplayMode, startDate, endDate, windowItemLimit),
-    [daySegments, endDate, startDate, trendDisplayMode, windowItemLimit],
+    () => summaryFocus?.trend?.[trendDisplayMode] ?? buildMultiSeriesTrendForRange(daySegments, trendDisplayMode, startDate, endDate, windowItemLimit),
+    [daySegments, endDate, startDate, summaryFocus?.trend, trendDisplayMode, windowItemLimit],
   );
   const trendSeries = trend.series.map((item, index) => ({
     key: item.key,
@@ -1158,39 +1309,62 @@ export default function AnalyticsPage() {
     color: getDisplayModeColor(item.name, trendDisplayMode, index),
   }));
   const heatmapData = useMemo(
-    () => buildHeatmap(state.sessions, state.profiles, heatmapCategory, 90, new Date(`${endDate}T00:00:00`), { mergeGapSeconds }),
-    [endDate, heatmapCategory, mergeGapSeconds, state.profiles, state.sessions],
+    () => summaryFocus?.heatmap ?? buildHeatmap(activitySessions, state.profiles, heatmapCategory, 90, new Date(`${endDate}T00:00:00`), { mergeGapSeconds }),
+    [activitySessions, endDate, heatmapCategory, mergeGapSeconds, state.profiles, summaryFocus?.heatmap],
   );
   const maxHeatmapMinutes = Math.max(...heatmapData.map(item => item.minutes), 1);
 
   const timelineItems = useMemo(() => {
-    const segments = compileFocusSegments(state.sessions, state.profiles, range).filter(segment =>
+    if (summaryFocus?.timelineItems) {
+      const limit = timelineDisplayMode === 'window' ? windowItemLimit : 80;
+      return summaryFocus.timelineItems.slice(0, limit);
+    }
+    const segments = compileFocusSegments(activitySessions, state.profiles, range).filter(segment =>
       timelineDisplayMode === 'category' ? true : true,
     );
     const limit = timelineDisplayMode === 'window' ? windowItemLimit : 80;
     return buildTimelineItems(segments, state.powerEvents, range, { mergeFocusGapSeconds: mergeGapSeconds })
       .slice(-limit)
       .sort((a, b) => b.startMs - a.startMs || b.endMs - a.endMs);
-  }, [mergeGapSeconds, range, state.powerEvents, state.profiles, state.sessions, timelineDisplayMode, windowItemLimit]);
+  }, [activitySessions, mergeGapSeconds, range, state.powerEvents, state.profiles, summaryFocus?.timelineItems, timelineDisplayMode, windowItemLimit]);
 
   const topItem = rankData.find(item => item.seconds > 0);
-  const longestContinuousFocusSeconds = daySegments.reduce((max, segment) => Math.max(max, segment.durationSeconds), 0);
-  const objectCount = new Set(daySegments.map(segment => segment.classificationKey)).size;
+  const longestContinuousFocusSeconds =
+    summaryFocus?.metrics?.longestContinuousFocusSeconds ??
+    daySegments.reduce((max, segment) => Math.max(max, segment.durationSeconds), 0);
+  const objectCount = summaryFocus?.metrics?.objectCount ?? new Set(daySegments.map(segment => segment.classificationKey)).size;
   const currentFocused = state.currentFocusedWindow;
 
-  const inputMetric = inputUi.selectedMetric || 'keyPresses';
+  const inputMetric = summaryInputMetric;
   const selectedMetricConfig = INPUT_METRICS.find(item => item.key === inputMetric) ?? INPUT_METRICS[0];
   const inputRecords = useMemo(
-    () => state.inputActivityTimeline.filter(record => isInputRecordInRange(record, range)),
-    [range, state.inputActivityTimeline],
+    () => activityInputTimeline.filter(record => isInputRecordInRange(record, range)),
+    [activityInputTimeline, range],
   );
   const inputAggregates = useMemo(
-    () => buildWindowInputAggregates(inputRecords, focusSecondsByKey),
-    [focusSecondsByKey, inputRecords],
+    () =>
+      summaryInput?.rows
+        ? (summaryInput.rows as unknown as WindowInputAggregate[])
+        : buildWindowInputAggregates(inputRecords, focusSecondsByKey),
+    [focusSecondsByKey, inputRecords, summaryInput?.rows],
   );
   const inputTotals = useMemo(
-    () =>
-      inputAggregates.reduce(
+    () => {
+      if (summaryInput?.totals) {
+        return {
+          keyPresses: Number(summaryInput.totals.keyPresses || 0),
+          leftClicks: Number(summaryInput.totals.leftClicks || 0),
+          rightClicks: Number(summaryInput.totals.rightClicks || 0),
+          middleClicks: Number(summaryInput.totals.middleClicks || 0),
+          sideBackClicks: Number(summaryInput.totals.sideBackClicks || 0),
+          sideForwardClicks: Number(summaryInput.totals.sideForwardClicks || 0),
+          totalClicks: Number(summaryInput.totals.totalClicks || 0),
+          scrollTicks: Number(summaryInput.totals.scrollTicks || 0),
+          mouseMovePixels: Number(summaryInput.totals.mouseMovePixels || 0),
+          keyCounts: (summaryInput.totals.keyCounts || {}) as KeyCountMap,
+        };
+      }
+      return inputAggregates.reduce(
         (sum, item) => ({
           keyPresses: sum.keyPresses + item.keyPresses,
           leftClicks: sum.leftClicks + item.leftClicks,
@@ -1215,8 +1389,9 @@ export default function AnalyticsPage() {
           mouseMovePixels: 0,
           keyCounts: {} as KeyCountMap,
         },
-      ),
-    [inputAggregates],
+      );
+    },
+    [inputAggregates, summaryInput?.totals],
   );
   const inputRows = useMemo(
     () =>
@@ -1227,8 +1402,8 @@ export default function AnalyticsPage() {
     [inputAggregates, inputMetric],
   );
   const inputTrend = useMemo(
-    () => buildInputTrend(state.inputActivityTimeline, startDate, endDate, inputMetric),
-    [endDate, inputMetric, startDate, state.inputActivityTimeline],
+    () => summaryInput?.trend ?? buildInputTrend(activityInputTimeline, startDate, endDate, inputMetric),
+    [activityInputTimeline, endDate, inputMetric, startDate, summaryInput?.trend],
   );
   const keyRows = useMemo(() => buildKeyRows(inputTotals.keyCounts), [inputTotals.keyCounts]);
   const maxKeyCount = Math.max(1, ...keyRows.map(item => item.count));

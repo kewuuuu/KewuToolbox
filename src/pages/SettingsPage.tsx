@@ -188,6 +188,7 @@ export default function SettingsPage() {
   const [storageStatus, setStorageStatus] = useState<StorageStatusResult | null>(null);
   const [isRefreshingStorageStatus, setIsRefreshingStorageStatus] = useState(false);
   const [isMigratingStorage, setIsMigratingStorage] = useState(false);
+  const [isRebuildingAnalyticsCache, setIsRebuildingAnalyticsCache] = useState(false);
   const browserFilePickerRef = useRef<HTMLInputElement | null>(null);
   const settingsUi = state.uiState.settings;
   const updateSettingsUi = (partial: Partial<typeof settingsUi>) => {
@@ -208,6 +209,15 @@ export default function SettingsPage() {
   const thresholdInput = settingsUi.thresholdInput || String(state.preferences.recordWindowThresholdSeconds);
   const analyticsWindowItemLimitInput =
     settingsUi.analyticsWindowItemLimitInput || String(state.preferences.analyticsWindowItemLimit ?? 10);
+  const focusCacheHealth = storageStatus?.cacheHealth?.focus;
+  const inputCacheHealth = storageStatus?.cacheHealth?.input;
+  const monitoringCacheHealth = storageStatus?.cacheHealth?.monitoringSummary;
+  const cacheNeedsRebuild = Boolean(
+    focusCacheHealth &&
+      inputCacheHealth &&
+      monitoringCacheHealth &&
+      (!focusCacheHealth.ok || !inputCacheHealth.ok || !monitoringCacheHealth.ok),
+  );
   const setManualPath = (manualPath: string) => updateSettingsUi({ manualPath });
   const setManualName = (manualName: string) => updateSettingsUi({ manualName });
   const setWhitelistNameInput = (whitelistNameInput: string) => updateSettingsUi({ whitelistNameInput });
@@ -440,6 +450,39 @@ export default function SettingsPage() {
       toast.error('迁移失败，请查看控制台日志');
     } finally {
       setIsMigratingStorage(false);
+    }
+  };
+
+  const handleRebuildAnalyticsCache = async () => {
+    if (isRebuildingAnalyticsCache) {
+      return;
+    }
+    if (!window.desktopApi?.isElectron || !window.desktopApi.rebuildAnalyticsCache) {
+      toast.info('当前环境不支持重建统计缓存');
+      return;
+    }
+    const confirmed = window.confirm('确认重建统计缓存吗？该操作会重新扫描已有焦点记录和键鼠记录，数据量大时可能需要等待一段时间。');
+    if (!confirmed) {
+      return;
+    }
+
+    setIsRebuildingAnalyticsCache(true);
+    try {
+      const result = await window.desktopApi.rebuildAnalyticsCache();
+      if (result.status) {
+        setStorageStatus(result.status);
+      } else {
+        await refreshStorageStatus();
+      }
+      if (result.ok) {
+        toast.success('统计缓存已重建');
+      } else {
+        toast.error('重建统计缓存失败，请查看控制台日志');
+      }
+    } catch {
+      toast.error('重建统计缓存失败，请查看控制台日志');
+    } finally {
+      setIsRebuildingAnalyticsCache(false);
     }
   };
 
@@ -1488,6 +1531,16 @@ export default function SettingsPage() {
                     <Database className="w-4 h-4" />
                     {isMigratingStorage ? '迁移中...' : '从旧 JSON 迁移'}
                   </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="gap-1.5"
+                    disabled={isRebuildingAnalyticsCache}
+                    onClick={() => void handleRebuildAnalyticsCache()}
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isRebuildingAnalyticsCache ? 'animate-spin' : ''}`} />
+                    {isRebuildingAnalyticsCache ? '重建中...' : '重建统计缓存'}
+                  </Button>
                 </div>
               </div>
 
@@ -1504,7 +1557,7 @@ export default function SettingsPage() {
                     {storageStatus?.dbPath || '-'}
                   </p>
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-xs">
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-9 gap-2 text-xs">
                   <div className="rounded-lg bg-secondary/30 p-2">
                     <p className="text-muted-foreground">文件大小</p>
                     <p className="text-foreground font-medium">{formatBytes(storageStatus?.sizeBytes)}</p>
@@ -1522,6 +1575,18 @@ export default function SettingsPage() {
                     <p className="text-foreground font-medium">{storageStatus?.counts?.inputActivityTimeline ?? '-'}</p>
                   </div>
                   <div className="rounded-lg bg-secondary/30 p-2">
+                    <p className="text-muted-foreground">焦点缓存</p>
+                    <p className="text-foreground font-medium">{storageStatus?.counts?.focusDailyCache ?? '-'}</p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/30 p-2">
+                    <p className="text-muted-foreground">键鼠缓存</p>
+                    <p className="text-foreground font-medium">{storageStatus?.counts?.inputDailyCache ?? '-'}</p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/30 p-2">
+                    <p className="text-muted-foreground">历史汇总缓存</p>
+                    <p className="text-foreground font-medium">{storageStatus?.counts?.monitoringSummaryCache ?? '-'}</p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/30 p-2">
                     <p className="text-muted-foreground">剪贴板历史</p>
                     <p className="text-foreground font-medium">{storageStatus?.counts?.clipboardHistory ?? '-'}</p>
                   </div>
@@ -1530,6 +1595,34 @@ export default function SettingsPage() {
                     <p className="text-foreground font-medium">{storageStatus?.counts?.sections ?? '-'}</p>
                   </div>
                 </div>
+              </div>
+
+              <div className={`rounded-lg border p-3 flex flex-wrap items-center justify-between gap-3 ${
+                cacheNeedsRebuild ? 'border-amber-500/60 bg-amber-500/10' : 'border-border/70 bg-secondary/20'
+              }`}>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">统计缓存健康状态</p>
+                  <p className="text-xs text-muted-foreground">
+                    {cacheNeedsRebuild
+                      ? `需要重建：焦点缺失 ${focusCacheHealth?.missingSourceCount ?? 0} 条来源，键鼠缺失 ${inputCacheHealth?.missingSourceCount ?? 0} 条来源，历史汇总缺失焦点 ${monitoringCacheHealth?.missingSessionCount ?? 0} 条/进程 ${monitoringCacheHealth?.missingProcessTimelineCount ?? 0} 条来源。`
+                      : '统计缓存正常，数据统计页面可以直接读取每日缓存。'}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">
+                    焦点 {focusCacheHealth?.cachedSourceCount ?? '-'} / {focusCacheHealth?.sourceCount ?? '-'}，
+                    键鼠 {inputCacheHealth?.cachedSourceCount ?? '-'} / {inputCacheHealth?.sourceCount ?? '-'}，
+                    历史汇总 {monitoringCacheHealth?.rowCount ?? '-'} 项
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant={cacheNeedsRebuild ? 'default' : 'outline'}
+                  className="gap-1.5"
+                  disabled={isRebuildingAnalyticsCache}
+                  onClick={() => void handleRebuildAnalyticsCache()}
+                >
+                  <RefreshCw className={`w-4 h-4 ${isRebuildingAnalyticsCache ? 'animate-spin' : ''}`} />
+                  {isRebuildingAnalyticsCache ? '重建中...' : '重建统计缓存'}
+                </Button>
               </div>
 
               <div className="rounded-lg border border-border/70 p-3 flex flex-wrap items-center justify-between gap-3">

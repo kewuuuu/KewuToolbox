@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { useAppState } from '@/store/AppContext';
 import { CATEGORIES, getCategoryColor } from '@/lib/categories';
@@ -13,11 +13,20 @@ import {
   buildMonitoringTagStats,
   formatDuration,
   MonitoringDerivedRow,
+  MonitoringDerivedTagStat,
 } from '@/lib/analyticsReadModel';
 import { toast } from 'sonner';
 import { Ban, ChevronDown, ChevronRight, Edit2, Plus, Trash2 } from 'lucide-react';
 
 type ProcessRow = MonitoringDerivedRow;
+
+type MonitoringSnapshot = {
+  historyRows: MonitoringDerivedRow[];
+  currentRows: MonitoringDerivedRow[];
+  historyTotal: number;
+  currentTotal: number;
+  tagStats: MonitoringDerivedTagStat[];
+};
 
 type SortKey =
   | 'displayName'
@@ -49,6 +58,8 @@ const DEFAULT_SORT_DIRECTION: Record<SortKey, SortDirection> = {
   longestContinuousFocus: 'desc',
 };
 
+const MONITORING_PAGE_SIZE = 150;
+
 export default function MonitoringPage() {
   const {
     state,
@@ -69,6 +80,10 @@ export default function MonitoringPage() {
 
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [monitoringSnapshot, setMonitoringSnapshot] = useState<MonitoringSnapshot | null>(null);
+  const [monitoringReloadKey, setMonitoringReloadKey] = useState(0);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(1);
 
   const [expandedTagIds, setExpandedTagIds] = useState<Set<string>>(new Set());
   const monitoringDraftUi = state.uiState.monitoringDraft;
@@ -95,24 +110,101 @@ export default function MonitoringPage() {
     () => new Map(state.processTags.map(tag => [tag.id, tag])),
     [state.processTags],
   );
+  const electronMonitoringEnabled = Boolean(window.desktopApi?.isElectron && window.desktopApi.getMonitoringSummary);
+  const activeMonitoringScope = activeTab === 'current' ? 'current' : 'history';
+  const activeMonitoringPage = activeMonitoringScope === 'current' ? currentPage : historyPage;
+  const activeMonitoringSort = activeMonitoringScope === 'current' ? currentSort : historySort;
+  const monitoringMetadataSignature = useMemo(
+    () => [
+      state.preferences.recordWindowThresholdSeconds,
+      state.profiles
+        .map(profile => `${profile.classificationKey}:${profile.displayName}:${profile.category}`)
+        .join('\n'),
+      state.processTags.map(tag => `${tag.id}:${tag.name}`).join('\n'),
+      state.processTagAssignments.map(item => `${item.classificationKey}:${item.tagId}`).join('\n'),
+      state.currentProcessKeys.join('\n'),
+    ].join('\n---\n'),
+    [
+      state.currentProcessKeys,
+      state.preferences.recordWindowThresholdSeconds,
+      state.processTagAssignments,
+      state.processTags,
+      state.profiles,
+    ],
+  );
+
+  useEffect(() => {
+    if (!electronMonitoringEnabled) {
+      setMonitoringSnapshot(null);
+      return;
+    }
+
+    let disposed = false;
+    const load = async () => {
+      try {
+        const result = await window.desktopApi!.getMonitoringSummary({
+          scope: activeMonitoringScope,
+          page: activeMonitoringPage,
+          pageSize: MONITORING_PAGE_SIZE,
+          sort: activeMonitoringSort,
+        });
+        if (!disposed && result?.ok) {
+          setMonitoringSnapshot({
+            historyRows: result.historyRows || [],
+            currentRows: result.currentRows || [],
+            historyTotal: result.historyTotal ?? result.historyRows?.length ?? 0,
+            currentTotal: result.currentTotal ?? result.currentRows?.length ?? 0,
+            tagStats: result.tagStats || [],
+          });
+        }
+      } catch {
+        if (!disposed) {
+          setMonitoringSnapshot(null);
+        }
+      }
+    };
+
+    void load();
+    const timer = window.setInterval(load, 3000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    activeMonitoringPage,
+    activeMonitoringScope,
+    activeMonitoringSort,
+    electronMonitoringEnabled,
+    monitoringMetadataSignature,
+    monitoringReloadKey,
+  ]);
+
   const tagStatsMap = useMemo(
-    () => new Map(buildMonitoringTagStats(state, {
-      mergeGapSeconds: state.preferences.recordWindowThresholdSeconds,
-    }).map(item => [item.tagId, item])),
-    [state],
+    () => new Map(
+      (monitoringSnapshot?.tagStats ?? buildMonitoringTagStats(state, {
+        mergeGapSeconds: state.preferences.recordWindowThresholdSeconds,
+      })).map(item => [item.tagId, item]),
+    ),
+    [monitoringSnapshot?.tagStats, state],
   );
 
   const historyRowsRaw = useMemo<ProcessRow[]>(() => {
+    if (monitoringSnapshot) {
+      return monitoringSnapshot.historyRows;
+    }
     return buildMonitoringRows(state, 'history', {
       mergeGapSeconds: state.preferences.recordWindowThresholdSeconds,
     });
-  }, [state]);
+  }, [monitoringSnapshot, state]);
 
   const currentRowsRaw = useMemo<ProcessRow[]>(() => {
+    if (monitoringSnapshot) {
+      return monitoringSnapshot.currentRows;
+    }
     return buildMonitoringRows(state, 'current', {
       mergeGapSeconds: state.preferences.recordWindowThresholdSeconds,
     });
-  }, [state]);
+  }, [monitoringSnapshot, state]);
 
   const compareString = useCallback(
     (a: string, b: string) => collator.compare(a || '', b || ''),
@@ -184,12 +276,30 @@ export default function MonitoringPage() {
     () => [...currentRowsRaw].sort((a, b) => compareRows(a, b, currentSort)),
     [compareRows, currentRowsRaw, currentSort],
   );
+  const historyTotal = monitoringSnapshot?.historyTotal ?? historyRows.length;
+  const currentTotal = monitoringSnapshot?.currentTotal ?? currentRows.length;
+  const historyPageCount = Math.max(1, Math.ceil(historyTotal / MONITORING_PAGE_SIZE));
+  const currentPageCount = Math.max(1, Math.ceil(currentTotal / MONITORING_PAGE_SIZE));
+  const safeHistoryPage = Math.min(historyPage, historyPageCount);
+  const safeCurrentPage = Math.min(currentPage, currentPageCount);
+  const pagedHistoryRows = useMemo(
+    () => monitoringSnapshot
+      ? historyRows
+      : historyRows.slice((safeHistoryPage - 1) * MONITORING_PAGE_SIZE, safeHistoryPage * MONITORING_PAGE_SIZE),
+    [historyRows, monitoringSnapshot, safeHistoryPage],
+  );
+  const pagedCurrentRows = useMemo(
+    () => monitoringSnapshot
+      ? currentRows
+      : currentRows.slice((safeCurrentPage - 1) * MONITORING_PAGE_SIZE, safeCurrentPage * MONITORING_PAGE_SIZE),
+    [currentRows, monitoringSnapshot, safeCurrentPage],
+  );
 
   const historyGroups = useMemo(() => {
     const tagged = new Map<string, ProcessRow[]>();
     const untagged: ProcessRow[] = [];
 
-    for (const row of historyRows) {
+    for (const row of pagedHistoryRows) {
       if (!row.tagId || !tagMap.has(row.tagId)) {
         untagged.push(row);
         continue;
@@ -230,9 +340,9 @@ export default function MonitoringPage() {
       });
 
     return { groups, untagged };
-  }, [compareString, historyRows, historySort, tagMap, tagStatsMap]);
+  }, [compareString, historySort, pagedHistoryRows, tagMap, tagStatsMap]);
 
-  const rowsForSelection = activeTab === 'current' ? currentRows : historyRows;
+  const rowsForSelection = activeTab === 'current' ? pagedCurrentRows : pagedHistoryRows;
   const allSelected = rowsForSelection.length > 0 && selectedKeys.size === rowsForSelection.length;
   const partialSelected = selectedKeys.size > 0 && !allSelected;
 
@@ -270,6 +380,7 @@ export default function MonitoringPage() {
     const keys = [...selectedKeys];
     if (keys.length > 0) {
       deleteMonitoringRecords(keys);
+      setMonitoringReloadKey(value => value + 1);
       toast.success(`已删除 ${keys.length} 条记录`);
     }
 
@@ -295,6 +406,11 @@ export default function MonitoringPage() {
         [scope === 'history' ? 'historySort' : 'currentSort']: nextSort,
       },
     });
+    if (scope === 'history') {
+      setHistoryPage(1);
+    } else {
+      setCurrentPage(1);
+    }
   };
 
   const getSortArrow = (scope: 'history' | 'current', key: SortKey) => {
@@ -581,6 +697,14 @@ export default function MonitoringPage() {
                 </thead>
                 <tbody>{renderHistoryGroupedRows()}</tbody>
               </table>
+              <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+                <span>共 {historyTotal} 项，每页 {MONITORING_PAGE_SIZE} 项</span>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" disabled={safeHistoryPage <= 1} onClick={() => setHistoryPage(page => Math.max(1, page - 1))}>上一页</Button>
+                  <span>{safeHistoryPage} / {historyPageCount}</span>
+                  <Button size="sm" variant="outline" disabled={safeHistoryPage >= historyPageCount} onClick={() => setHistoryPage(page => Math.min(historyPageCount, page + 1))}>下一页</Button>
+                </div>
+              </div>
             </Card>
           </TabsContent>
 
@@ -609,8 +733,16 @@ export default function MonitoringPage() {
                     <th className="text-right py-2 px-2">屏蔽</th>
                   </tr>
                 </thead>
-                <tbody>{renderProcessRows(currentRows, true)}</tbody>
+                <tbody>{renderProcessRows(pagedCurrentRows, true)}</tbody>
               </table>
+              <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+                <span>共 {currentTotal} 项，每页 {MONITORING_PAGE_SIZE} 项</span>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" disabled={safeCurrentPage <= 1} onClick={() => setCurrentPage(page => Math.max(1, page - 1))}>上一页</Button>
+                  <span>{safeCurrentPage} / {currentPageCount}</span>
+                  <Button size="sm" variant="outline" disabled={safeCurrentPage >= currentPageCount} onClick={() => setCurrentPage(page => Math.min(currentPageCount, page + 1))}>下一页</Button>
+                </div>
+              </div>
             </Card>
           </TabsContent>
 

@@ -15,6 +15,9 @@ const POLL_INTERVAL_MS = 1000;
 const MAX_SESSIONS = 60000;
 const MAX_PROCESS_TIMELINE_RECORDS = 100000;
 const MAX_INPUT_ACTIVITY_TIMELINE_RECORDS = 100000;
+const MAX_IN_MEMORY_ACTIVITY_ROWS = 5000;
+const DEFAULT_RENDERER_ACTIVITY_QUERY_LIMIT = 200000;
+const DEFAULT_MONITORING_QUERY_LIMIT = 200000;
 const MAX_POWER_EVENTS = 5000;
 const DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS = 60;
 const DEFAULT_ANALYTICS_WINDOW_ITEM_LIMIT = 10;
@@ -32,6 +35,7 @@ const BROWSER_DOMAIN_KEY_PREFIX = 'browser-domain';
 const PROCESS_WHITELIST_KEY_PREFIX = 'process-whitelist';
 const DEFAULT_CATEGORY = '其他';
 const DESKTOP_CATEGORY = '休息';
+const ANALYTICS_CATEGORIES = ['学习', '娱乐', '社交', '休息', '其他'];
 const DEFAULT_DISPLAY_MODE = '显示性质';
 const BUILTIN_COMPLETION_SOUND_ID = 'builtin-completion';
 const BUILTIN_WARNING_SOUND_ID = 'builtin-warning';
@@ -1880,6 +1884,7 @@ function buildWhitelistMergeResult() {
 }
 
 function mergeRecordsByCurrentWhitelist() {
+  hydrateActivityTablesForMaintenance();
   const result = buildWhitelistMergeResult();
   if (result.changedCount > 0) {
     scheduleSave();
@@ -1888,14 +1893,32 @@ function mergeRecordsByCurrentWhitelist() {
   return {
     ok: true,
     changedCount: result.changedCount,
-    state: appState,
+    state: getRendererStateSnapshot(),
   };
+}
+
+function hydrateActivityTablesForMaintenance() {
+  try {
+    const raw = getSqliteStateStore(getStatePath()).readStateWithOptions({ includeActivityTables: true });
+    if (!raw || typeof raw !== 'object') {
+      return;
+    }
+    appState.sessions = mergeRowsById(raw.sessions || [], appState.sessions || []);
+    appState.processTimeline = mergeRowsById(raw.processTimeline || [], appState.processTimeline || []);
+    appState.inputActivityTimeline = mergeRowsById(
+      raw.inputActivityTimeline || [],
+      appState.inputActivityTimeline || [],
+    );
+  } catch (error) {
+    addDiagnosticLog('error', 'SQLite maintenance hydrate failed', error instanceof Error ? error.message : String(error));
+  }
 }
 
 function persistState() {
   syncStorageMetaToState();
   const dataDirPath = getStatePath();
   if (writeStateSections(dataDirPath, appState)) {
+    pruneInMemoryActivityRows();
     return;
   }
 
@@ -1906,6 +1929,7 @@ function persistState() {
   const fallbackDataDir = path.join(app.getPath('userData'), DEFAULT_STORAGE_DIR_NAME);
   if (fallbackDataDir !== dataDirPath && writeStateSections(fallbackDataDir, appState)) {
     applyStatePath(fallbackDataDir);
+    pruneInMemoryActivityRows();
   }
 }
 
@@ -2428,7 +2452,7 @@ function setDataFilePath(targetPath, createIfMissing = false) {
     path: normalizedDataDir,
     existed: !created,
     created,
-    state: appState,
+    state: getRendererStateSnapshot(),
   };
 }
 
@@ -2447,7 +2471,10 @@ function getLegacyJsonStorageStatus(dataDirPath = getStatePath()) {
 
 function getStorageStatus() {
   const dataDirPath = getStatePath();
-  const sqliteStatus = getSqliteStateStore(dataDirPath).getStatus();
+  const sqliteStatus = getSqliteStateStore(dataDirPath).getStatus({
+    monitoringMergeGapSeconds:
+      appState.preferences?.recordWindowThresholdSeconds ?? DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS,
+  });
   return {
     ...sqliteStatus,
     dataDirectoryPath: dataDirPath,
@@ -2488,9 +2515,38 @@ function migrateLegacyJsonStorageToSqlite() {
 
   return {
     ok: true,
-    state: appState,
+    state: getRendererStateSnapshot(),
     status: getStorageStatus(),
   };
+}
+
+function rebuildAnalyticsDailyCache() {
+  try {
+    persistState();
+    const store = getSqliteStateStore(getStatePath());
+    const dailyResult = store.rebuildDailyCaches();
+    const monitoringResult = store.rebuildMonitoringSummaryCache(
+      appState.preferences?.recordWindowThresholdSeconds ?? DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS,
+    );
+    syncStorageMetaToState();
+    addDiagnosticLog(
+      'info',
+      'Analytics cache rebuilt',
+      `focus=${dailyResult.focusDailyCache}, input=${dailyResult.inputDailyCache}, monitoring=${monitoringResult.rowCount}`,
+    );
+    return {
+      ...dailyResult,
+      monitoringSummaryCache: monitoringResult,
+      status: getStorageStatus(),
+    };
+  } catch (error) {
+    addDiagnosticLog('error', 'Analytics daily cache rebuild failed', error instanceof Error ? error.message : String(error));
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      status: getStorageStatus(),
+    };
+  }
 }
 
 function resetRuntimeTrackingState() {
@@ -2515,8 +2571,9 @@ function clearAllData() {
   appState = createEmptyState();
   try {
     getSqliteStateStore(getStatePath()).clearClipboardHistory();
+    getSqliteStateStore(getStatePath()).clearActivityTables();
   } catch (error) {
-    addDiagnosticLog('warn', 'Failed to clear clipboard history', error?.message || String(error));
+    addDiagnosticLog('warn', 'Failed to clear SQLite history tables', error?.message || String(error));
   }
   syncStorageMetaToState();
   addDiagnosticLog('warn', '用户执行清空所有数据');
@@ -2524,14 +2581,1153 @@ function clearAllData() {
   resetRuntimeTrackingState();
   scheduleSave();
   emitState();
-  return appState;
+  return getRendererStateSnapshot();
+}
+
+function normalizeRendererQueryLimit(value, fallback = DEFAULT_RENDERER_ACTIVITY_QUERY_LIMIT) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(1, Math.min(500000, Math.floor(parsed)));
+}
+
+function toFiniteTimeMs(value, fallback = 0) {
+  const parsed = typeof value === 'string' ? new Date(value).getTime() : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function toLocalDateKeyFromMs(value) {
+  const time = toFiniteTimeMs(value, 0);
+  if (time <= 0) {
+    return '';
+  }
+  const date = new Date(time);
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+}
+
+function normalizeActivityRangePayload(payload = {}) {
+  const nowMs = Date.now();
+  const fallbackStartMs = nowMs - 24 * 60 * 60 * 1000;
+  const startMs = toFiniteTimeMs(payload?.startMs, fallbackStartMs);
+  const endMs = toFiniteTimeMs(payload?.endMs, nowMs);
+  return {
+    startMs: Math.min(startMs, endMs),
+    endMs: Math.max(startMs, endMs),
+    limit: normalizeRendererQueryLimit(payload?.limit),
+  };
+}
+
+function mergeRowsById(storedRows, liveRows) {
+  const map = new Map();
+  for (const row of Array.isArray(storedRows) ? storedRows : []) {
+    if (row?.id) {
+      map.set(row.id, row);
+    }
+  }
+  for (const row of Array.isArray(liveRows) ? liveRows : []) {
+    if (row?.id) {
+      map.set(row.id, row);
+    }
+  }
+  return [...map.values()];
+}
+
+function recordOverlapsRange(record, startProp, endProp, range) {
+  const startMs = toFiniteTimeMs(record?.[startProp], 0);
+  const endMs = toFiniteTimeMs(record?.[endProp], startMs);
+  return startMs < range.endMs && endMs > range.startMs;
+}
+
+function getActivityDataForRenderer(payload = {}) {
+  const range = normalizeActivityRangePayload(payload);
+  let stored = {
+    sessions: [],
+    processTimeline: [],
+    inputActivityTimeline: [],
+  };
+  try {
+    stored = getSqliteStateStore(getStatePath()).readActivityRowsInRange(range.startMs, range.endMs, range.limit);
+  } catch (error) {
+    addDiagnosticLog('error', 'SQLite activity range query failed', error instanceof Error ? error.message : String(error));
+  }
+
+  return {
+    ok: true,
+    range,
+    sessions: mergeRowsById(
+      stored.sessions,
+      (appState.sessions || []).filter(item => recordOverlapsRange(item, 'startAt', 'endAt', range)),
+    ),
+    processTimeline: mergeRowsById(
+      stored.processTimeline,
+      (appState.processTimeline || []).filter(item => recordOverlapsRange(item, 'startAt', 'endAt', range)),
+    ),
+    inputActivityTimeline: mergeRowsById(
+      stored.inputActivityTimeline,
+      (appState.inputActivityTimeline || []).filter(item =>
+        recordOverlapsRange(item, 'bucketStartAt', 'bucketEndAt', range),
+      ),
+    ),
+  };
+}
+
+function getActivityDateKeysForRenderer() {
+  const dates = new Set();
+  try {
+    for (const key of getSqliteStateStore(getStatePath()).readActivityDateKeys()) {
+      if (typeof key === 'string' && key) {
+        dates.add(key);
+      }
+    }
+  } catch (error) {
+    addDiagnosticLog('error', 'SQLite activity date query failed', error instanceof Error ? error.message : String(error));
+  }
+
+  for (const session of appState.sessions || []) {
+    const startKey = toLocalDateKeyFromMs(session.startAt);
+    const endKey = toLocalDateKeyFromMs(session.endAt);
+    if (startKey) dates.add(startKey);
+    if (endKey) dates.add(endKey);
+  }
+  for (const record of appState.inputActivityTimeline || []) {
+    const key = toLocalDateKeyFromMs(record.bucketStartAt);
+    if (key) dates.add(key);
+  }
+  return [...dates].sort();
+}
+
+function normalizeDateKeyInput(value, fallbackDate = new Date()) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (match) {
+    const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    if (
+      date.getFullYear() === Number(match[1]) &&
+      date.getMonth() === Number(match[2]) - 1 &&
+      date.getDate() === Number(match[3])
+    ) {
+      return raw;
+    }
+  }
+  return toLocalDateKeyFromMs(fallbackDate.getTime());
+}
+
+function addDaysToDateKey(dateKey, days) {
+  const startMs = startOfLocalDateKeyMs(dateKey);
+  const date = new Date(startMs || Date.now());
+  date.setDate(date.getDate() + days);
+  return toLocalDateKeyFromMs(date.getTime());
+}
+
+function startOfLocalDateKeyMs(dateKey) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey || ''));
+  if (!match) {
+    return 0;
+  }
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).getTime();
+}
+
+function makeDateRangeMs(startDate, endDate) {
+  const startMs = startOfLocalDateKeyMs(startDate);
+  const endStartMs = startOfLocalDateKeyMs(endDate);
+  return {
+    startMs,
+    endMs: endStartMs + 24 * 60 * 60 * 1000,
+  };
+}
+
+function eachDateKey(startDate, endDate) {
+  const output = [];
+  let cursor = startOfLocalDateKeyMs(startDate);
+  const end = startOfLocalDateKeyMs(endDate);
+  while (cursor > 0 && cursor <= end) {
+    output.push(toLocalDateKeyFromMs(cursor));
+    cursor += 24 * 60 * 60 * 1000;
+  }
+  return output;
+}
+
+function resolveAnalyticsRow(row, profileMap) {
+  const classificationKey = row.classificationKey;
+  const profile = profileMap.get(classificationKey);
+  return {
+    classificationKey,
+    displayName: profile?.displayName || row.displayName || classificationKey,
+    objectType: profile?.objectType || row.objectType || 'AppWindow',
+    processName: profile?.processName || row.processName || '',
+    category: profile?.category || row.categoryAtThatTime || row.category || DEFAULT_CATEGORY,
+  };
+}
+
+function aggregateFocusRows(rows, profileMap, mode, limit = DEFAULT_ANALYTICS_WINDOW_ITEM_LIMIT) {
+  const totals = new Map();
+  for (const row of rows) {
+    const resolved = resolveAnalyticsRow(row, profileMap);
+    const key = mode === 'category' ? resolved.category : resolved.displayName;
+    totals.set(key, (totals.get(key) || 0) + Number(row.seconds || 0));
+  }
+
+  if (mode === 'category') {
+    const known = ANALYTICS_CATEGORIES.map(category => ({
+      name: category,
+      seconds: Math.round(totals.get(category) || 0),
+      minutes: Math.round((totals.get(category) || 0) / 60),
+    }));
+    const extra = [...totals.entries()]
+      .filter(([name]) => !ANALYTICS_CATEGORIES.includes(name))
+      .map(([name, seconds]) => ({
+        name,
+        seconds: Math.round(seconds),
+        minutes: Math.round(seconds / 60),
+      }));
+    return [...known, ...extra].sort((a, b) => b.seconds - a.seconds || a.name.localeCompare(b.name, 'zh-CN-u-co-pinyin'));
+  }
+
+  return [...totals.entries()]
+    .map(([name, seconds]) => ({
+      name,
+      seconds: Math.round(seconds),
+      minutes: Math.round(seconds / 60),
+    }))
+    .sort((a, b) => b.seconds - a.seconds || a.name.localeCompare(b.name, 'zh-CN-u-co-pinyin'))
+    .slice(0, Math.max(1, Math.floor(Number(limit) || DEFAULT_ANALYTICS_WINDOW_ITEM_LIMIT)));
+}
+
+function buildTrendFromFocusRows(rows, profileMap, mode, startDate, endDate, limit) {
+  const dates = eachDateKey(startDate, endDate);
+  const totalsByDate = new Map(dates.map(date => [date, 0]));
+  const perDate = new Map(dates.map(date => [date, new Map()]));
+  const seriesTotals = new Map();
+
+  for (const row of rows) {
+    if (!totalsByDate.has(row.dateKey)) {
+      continue;
+    }
+    const resolved = resolveAnalyticsRow(row, profileMap);
+    const key = mode === 'category' ? resolved.category : resolved.displayName;
+    const seconds = Number(row.seconds || 0);
+    totalsByDate.set(row.dateKey, (totalsByDate.get(row.dateKey) || 0) + seconds);
+    const rowMap = perDate.get(row.dateKey);
+    rowMap.set(key, (rowMap.get(key) || 0) + seconds);
+    seriesTotals.set(key, (seriesTotals.get(key) || 0) + seconds);
+  }
+
+  const series =
+    mode === 'category'
+      ? ANALYTICS_CATEGORIES.map(category => ({
+          key: category,
+          name: category,
+          totalSeconds: Math.round(seriesTotals.get(category) || 0),
+        }))
+      : [...seriesTotals.entries()]
+          .map(([name, seconds]) => ({ key: name, name, totalSeconds: Math.round(seconds) }))
+          .sort((a, b) => b.totalSeconds - a.totalSeconds || a.name.localeCompare(b.name, 'zh-CN-u-co-pinyin'))
+          .slice(0, Math.max(1, Math.floor(Number(limit) || DEFAULT_ANALYTICS_WINDOW_ITEM_LIMIT)));
+  const seriesKeyByName = new Map(series.map(item => [item.name, item.key]));
+
+  const data = dates.map(date => {
+    const output = {
+      date: date.slice(5),
+      totalMinutes: Math.round((totalsByDate.get(date) || 0) / 60),
+    };
+    for (const item of series) {
+      output[item.key] = 0;
+    }
+    for (const [name, seconds] of perDate.get(date).entries()) {
+      const key = seriesKeyByName.get(name);
+      if (key) {
+        output[key] = Math.round(seconds / 60);
+      }
+    }
+    return output;
+  });
+  return { data, series };
+}
+
+function buildHeatmapFromFocusRows(rows, profileMap, heatmapCategory, endDate) {
+  const startDate = addDaysToDateKey(endDate, -89);
+  const dates = eachDateKey(startDate, endDate);
+  const totals = new Map(dates.map(date => [date, 0]));
+  for (const row of rows) {
+    if (!totals.has(row.dateKey)) {
+      continue;
+    }
+    const resolved = resolveAnalyticsRow(row, profileMap);
+    if (heatmapCategory !== '全部' && resolved.category !== heatmapCategory) {
+      continue;
+    }
+    totals.set(row.dateKey, (totals.get(row.dateKey) || 0) + Number(row.seconds || 0));
+  }
+  return dates.map(date => {
+    const seconds = Math.round(totals.get(date) || 0);
+    return {
+      date,
+      seconds,
+      minutes: Math.round(seconds / 60),
+    };
+  });
+}
+
+function buildFocusSegmentsForAnalytics(sessions, profileMap, range, mergeGapSeconds) {
+  const segments = [];
+  for (const session of Array.isArray(sessions) ? sessions : []) {
+    const segment = toMonitoringSegment(session, profileMap, 'startAt', 'endAt');
+    if (!segment || segment.endMs <= range.startMs || segment.startMs >= range.endMs) {
+      continue;
+    }
+    const clippedStart = Math.max(segment.startMs, range.startMs);
+    const clippedEnd = Math.min(segment.endMs, range.endMs);
+    const spanMs = Math.max(1, segment.endMs - segment.startMs);
+    const durationSeconds = segment.durationSeconds * ((clippedEnd - clippedStart) / spanMs);
+    if (durationSeconds <= 0) {
+      continue;
+    }
+    segments.push({
+      ...segment,
+      startMs: clippedStart,
+      endMs: clippedEnd,
+      durationSeconds,
+    });
+  }
+  return mergeAdjacentMonitoringSegments(segments, mergeGapSeconds);
+}
+
+function buildHourlyAnalytics(segments, range, mode, limit) {
+  const startHour = new Date(range.startMs);
+  startHour.setMinutes(0, 0, 0);
+  const endHour = new Date(range.endMs);
+  endHour.setMinutes(0, 0, 0);
+  if (endHour.getTime() < range.endMs) {
+    endHour.setHours(endHour.getHours() + 1);
+  }
+  const totals = aggregateFocusRows(
+    segments.map(segment => ({
+      ...segment,
+      seconds: segment.durationSeconds,
+    })),
+    new Map(),
+    mode,
+    limit,
+  );
+  const series =
+    mode === 'category'
+      ? ANALYTICS_CATEGORIES.map(category => ({ key: category, name: category }))
+      : totals.map((item, index) => ({ key: `series-${index}`, name: item.name }));
+  const keyByName = new Map(series.map(item => [item.name, item.key]));
+  const buckets = [];
+  for (let cursor = startHour.getTime(); cursor < endHour.getTime(); cursor += 3600000) {
+    const row = {
+      hour: new Date(cursor).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false }),
+      timestamp: cursor,
+      totalMinutes: 0,
+    };
+    for (const item of series) {
+      row[item.key] = 0;
+    }
+    buckets.push(row);
+  }
+  for (const segment of segments) {
+    for (const bucket of buckets) {
+      const bucketStart = Number(bucket.timestamp);
+      const bucketEnd = bucketStart + 3600000;
+      const overlapStart = Math.max(segment.startMs, bucketStart);
+      const overlapEnd = Math.min(segment.endMs, bucketEnd);
+      if (overlapEnd <= overlapStart) {
+        continue;
+      }
+      const spanMs = Math.max(1, segment.endMs - segment.startMs);
+      const minutes = (segment.durationSeconds * ((overlapEnd - overlapStart) / spanMs)) / 60;
+      bucket.totalMinutes = Number(bucket.totalMinutes) + minutes;
+      const name = mode === 'category' ? segment.category : segment.displayName;
+      const key = keyByName.get(name);
+      if (key) {
+        bucket[key] = Number(bucket[key] || 0) + minutes;
+      }
+    }
+  }
+  return {
+    data: buckets.map(bucket => {
+      const row = { ...bucket, totalMinutes: Math.round(Number(bucket.totalMinutes)) };
+      for (const item of series) {
+        row[item.key] = Math.round(Number(row[item.key] || 0));
+      }
+      return row;
+    }),
+    series,
+  };
+}
+
+function buildTimelineAnalytics(segments, powerEvents, range, limit) {
+  const focusItems = segments.map(segment => ({
+    id: segment.id,
+    type: 'focus',
+    label: segment.displayName,
+    detail: `${segment.objectType} / ${formatSecondsForRenderer(segment.durationSeconds)}`,
+    category: segment.category,
+    startMs: segment.startMs,
+    endMs: segment.endMs,
+    durationSeconds: Math.round(segment.durationSeconds),
+  }));
+  const powerItems = (powerEvents || [])
+    .map(event => ({
+      event,
+      occurredMs: toFiniteTimeMs(event.occurredAt, 0),
+    }))
+    .filter(item => item.occurredMs >= range.startMs && item.occurredMs <= range.endMs)
+    .map(({ event, occurredMs }) => ({
+      id: event.id,
+      type: 'power',
+      label: event.eventType,
+      detail: event.detail,
+      startMs: occurredMs,
+      endMs: occurredMs,
+      durationSeconds: 0,
+      markerColor: event.markerColor,
+    }));
+  return [...focusItems, ...powerItems]
+    .sort((a, b) => b.startMs - a.startMs || b.endMs - a.endMs)
+    .slice(0, Math.max(1, Math.floor(Number(limit) || 80)));
+}
+
+function formatSecondsForRenderer(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = total % 60;
+  if (hours > 0) {
+    return `${hours}小时${minutes}分`;
+  }
+  if (minutes > 0) {
+    return `${minutes}分${rest}秒`;
+  }
+  return `${rest}秒`;
+}
+
+function mergeKeyCountMaps(target, incoming) {
+  const next = { ...target };
+  for (const [key, value] of Object.entries(incoming || {})) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      next[key] = (next[key] || 0) + Math.floor(parsed);
+    }
+  }
+  return next;
+}
+
+function getInputMetricValue(row, metric) {
+  return Number(row?.[metric] || 0);
+}
+
+function buildInputAnalytics(inputRows, focusSecondsByKey, startDate, endDate, metric, limit) {
+  const aggregateMap = new Map();
+  const trendTotals = new Map(eachDateKey(startDate, endDate).map(date => [date, 0]));
+  const totals = {
+    keyPresses: 0,
+    leftClicks: 0,
+    rightClicks: 0,
+    middleClicks: 0,
+    sideBackClicks: 0,
+    sideForwardClicks: 0,
+    totalClicks: 0,
+    scrollTicks: 0,
+    mouseMovePixels: 0,
+    keyCounts: {},
+  };
+
+  for (const row of inputRows) {
+    const key = row.classificationKey;
+    const existing = aggregateMap.get(key) || {
+      classificationKey: key,
+      displayName: row.displayName || key,
+      objectType: row.objectType || 'AppWindow',
+      processName: row.processName || '',
+      keyPresses: 0,
+      leftClicks: 0,
+      rightClicks: 0,
+      middleClicks: 0,
+      sideBackClicks: 0,
+      sideForwardClicks: 0,
+      totalClicks: 0,
+      scrollTicks: 0,
+      mouseMovePixels: 0,
+      keyCounts: {},
+      focusSeconds: focusSecondsByKey.get(key) || 0,
+      lastAt: '',
+    };
+    existing.keyPresses += Number(row.keyPresses || 0);
+    existing.leftClicks += Number(row.leftClicks || 0);
+    existing.rightClicks += Number(row.rightClicks || 0);
+    existing.middleClicks += Number(row.middleClicks || 0);
+    existing.sideBackClicks += Number(row.sideBackClicks || 0);
+    existing.sideForwardClicks += Number(row.sideForwardClicks || 0);
+    existing.totalClicks =
+      existing.leftClicks +
+      existing.rightClicks +
+      existing.middleClicks +
+      existing.sideBackClicks +
+      existing.sideForwardClicks;
+    existing.scrollTicks += Number(row.scrollTicks || 0);
+    existing.mouseMovePixels += Number(row.mouseMovePixels || 0);
+    existing.keyCounts = mergeKeyCountMaps(existing.keyCounts, row.keyCounts);
+    if (!existing.lastAt || Number(row.lastAtMs || 0) > toFiniteTimeMs(existing.lastAt, 0)) {
+      existing.lastAt = new Date(Number(row.lastAtMs || 0)).toISOString();
+    }
+    aggregateMap.set(key, existing);
+
+    totals.keyPresses += Number(row.keyPresses || 0);
+    totals.leftClicks += Number(row.leftClicks || 0);
+    totals.rightClicks += Number(row.rightClicks || 0);
+    totals.middleClicks += Number(row.middleClicks || 0);
+    totals.sideBackClicks += Number(row.sideBackClicks || 0);
+    totals.sideForwardClicks += Number(row.sideForwardClicks || 0);
+    totals.scrollTicks += Number(row.scrollTicks || 0);
+    totals.mouseMovePixels += Number(row.mouseMovePixels || 0);
+    totals.keyCounts = mergeKeyCountMaps(totals.keyCounts, row.keyCounts);
+    trendTotals.set(row.dateKey, (trendTotals.get(row.dateKey) || 0) + getInputMetricValue(row, metric));
+  }
+  totals.totalClicks =
+    totals.leftClicks +
+    totals.rightClicks +
+    totals.middleClicks +
+    totals.sideBackClicks +
+    totals.sideForwardClicks;
+
+  const rows = [...aggregateMap.values()]
+    .sort((a, b) => getInputMetricValue(b, metric) - getInputMetricValue(a, metric) || a.displayName.localeCompare(b.displayName, 'zh-CN-u-co-pinyin'))
+    .slice(0, Math.max(1, Math.floor(Number(limit) || DEFAULT_ANALYTICS_WINDOW_ITEM_LIMIT)));
+  const trend = [...trendTotals.entries()].map(([date, value]) => ({
+    date,
+    label: date.slice(5),
+    value: Math.round(value),
+  }));
+
+  return { rows, totals, trend };
+}
+
+function getAnalyticsSummaryForRenderer(payload = {}) {
+  const today = toLocalDateKeyFromMs(Date.now());
+  const startDate = normalizeDateKeyInput(payload?.startDate, new Date());
+  const endDate = normalizeDateKeyInput(payload?.endDate, new Date(startOfLocalDateKeyMs(startDate) || Date.now()));
+  const safeStartDate = startOfLocalDateKeyMs(startDate) <= startOfLocalDateKeyMs(endDate) ? startDate : endDate;
+  const safeEndDate = startOfLocalDateKeyMs(startDate) <= startOfLocalDateKeyMs(endDate) ? endDate : startDate;
+  const heatmapCategory = typeof payload?.heatmapCategory === 'string' ? payload.heatmapCategory : '学习';
+  const inputMetric = typeof payload?.inputMetric === 'string' ? payload.inputMetric : 'keyPresses';
+  const windowLimit = normalizeRendererQueryLimit(payload?.windowLimit, DEFAULT_ANALYTICS_WINDOW_ITEM_LIMIT);
+  const range = makeDateRangeMs(safeStartDate, safeEndDate);
+  const heatmapStartDate = addDaysToDateKey(safeEndDate || today, -89);
+  const store = getSqliteStateStore(getStatePath());
+
+  try {
+    persistState();
+  } catch {
+    // A stale cache is still preferable to failing the analytics view.
+  }
+
+  const profileMap = getProfileMapForState();
+  const focusRowsForCharts = store.readFocusDailyCache(heatmapStartDate, safeEndDate);
+  const selectedFocusRows = focusRowsForCharts.filter(row => row.dateKey >= safeStartDate && row.dateKey <= safeEndDate);
+  const focusSecondsByKey = new Map();
+  for (const row of selectedFocusRows) {
+    focusSecondsByKey.set(row.classificationKey, (focusSecondsByKey.get(row.classificationKey) || 0) + Number(row.seconds || 0));
+  }
+  const rawActivity = store.readActivityRowsInRange(range.startMs, range.endMs, DEFAULT_RENDERER_ACTIVITY_QUERY_LIMIT);
+  const focusSegments = buildFocusSegmentsForAnalytics(
+    mergeRowsById(rawActivity.sessions || [], appState.sessions || []),
+    profileMap,
+    range,
+    appState.preferences?.recordWindowThresholdSeconds ?? DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS,
+  );
+  const categoryHourly = buildHourlyAnalytics(focusSegments, range, 'category', windowLimit);
+  const windowHourly = buildHourlyAnalytics(focusSegments, range, 'window', windowLimit);
+  const inputRows = store.readInputDailyCache(safeStartDate, safeEndDate);
+
+  return {
+    ok: true,
+    range: {
+      startDate: safeStartDate,
+      endDate: safeEndDate,
+      startMs: range.startMs,
+      endMs: range.endMs,
+    },
+    focus: {
+      distribution: {
+        category: aggregateFocusRows(selectedFocusRows, profileMap, 'category', windowLimit),
+        window: aggregateFocusRows(selectedFocusRows, profileMap, 'window', windowLimit),
+      },
+      trend: {
+        category: buildTrendFromFocusRows(selectedFocusRows, profileMap, 'category', safeStartDate, safeEndDate, windowLimit),
+        window: buildTrendFromFocusRows(selectedFocusRows, profileMap, 'window', safeStartDate, safeEndDate, windowLimit),
+      },
+      heatmap: buildHeatmapFromFocusRows(focusRowsForCharts, profileMap, heatmapCategory, safeEndDate),
+      hourly: {
+        category: categoryHourly,
+        window: windowHourly,
+      },
+      timelineItems: buildTimelineAnalytics(focusSegments, appState.powerEvents, range, payload?.timelineLimit || 80),
+      metrics: {
+        objectCount: new Set(selectedFocusRows.map(row => row.classificationKey)).size,
+        longestContinuousFocusSeconds: Math.round(
+          focusSegments.reduce((max, segment) => Math.max(max, Number(segment.durationSeconds) || 0), 0),
+        ),
+      },
+    },
+    input: buildInputAnalytics(inputRows, focusSecondsByKey, safeStartDate, safeEndDate, inputMetric, windowLimit),
+  };
+}
+
+function getProfileMapForState() {
+  return new Map((appState.profiles || []).map(profile => [profile.classificationKey, profile]));
+}
+
+function resolveMonitoringProfile(profileMap, classificationKey, fallback = {}) {
+  const profile = profileMap.get(classificationKey);
+  return {
+    id: profile?.id || fallback.profileId || `profile-${classificationKey}`,
+    classificationKey,
+    displayName: profile?.displayName || fallback.displayName || classificationKey,
+    objectType: profile?.objectType || fallback.objectType || 'AppWindow',
+    processName: profile?.processName || fallback.processName || '',
+    category: profile?.category || fallback.categoryAtThatTime || fallback.category || DEFAULT_CATEGORY,
+  };
+}
+
+function getActivityDurationSeconds(record, startProp, endProp) {
+  const explicit = Number(record?.durationSeconds);
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  const startMs = toFiniteTimeMs(record?.[startProp], 0);
+  const endMs = toFiniteTimeMs(record?.[endProp], startMs);
+  return Math.max(0, Math.floor((endMs - startMs) / 1000));
+}
+
+function toMonitoringSegment(record, profileMap, startProp, endProp) {
+  if (!record || typeof record.classificationKey !== 'string') {
+    return null;
+  }
+  const startMs = toFiniteTimeMs(record[startProp], 0);
+  const endMs = toFiniteTimeMs(record[endProp], startMs);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    return null;
+  }
+  const resolved = resolveMonitoringProfile(profileMap, record.classificationKey, record);
+  return {
+    id: typeof record.id === 'string' ? record.id : `${record.classificationKey}-${startMs}`,
+    classificationKey: record.classificationKey,
+    displayName: resolved.displayName,
+    objectType: resolved.objectType,
+    processName: resolved.processName,
+    category: resolved.category,
+    startMs,
+    endMs,
+    durationSeconds: getActivityDurationSeconds(record, startProp, endProp),
+  };
+}
+
+function mergeAdjacentMonitoringSegments(segments, maxGapSeconds = 0) {
+  const maxGapMs = Math.max(0, Number(maxGapSeconds) || 0) * 1000;
+  const merged = [];
+  for (const segment of [...segments].sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs)) {
+    const previous = merged[merged.length - 1];
+    const gapMs = previous ? Math.max(0, segment.startMs - previous.endMs) : Number.POSITIVE_INFINITY;
+    if (!previous || previous.classificationKey !== segment.classificationKey || gapMs > maxGapMs) {
+      merged.push({ ...segment });
+      continue;
+    }
+    previous.endMs = Math.max(previous.endMs, segment.endMs);
+    previous.durationSeconds += gapMs / 1000 + segment.durationSeconds;
+    previous.id = `${previous.id}+${segment.id}`;
+  }
+  return merged;
+}
+
+function buildMonitoringRowsForRenderer(stateLike, scope, options = {}) {
+  const profileMap = getProfileMapForState();
+  const assignmentMap = new Map((appState.processTagAssignments || []).map(item => [item.classificationKey, item]));
+  const mergeGapSeconds = Math.max(0, Number(options.mergeGapSeconds) || 0);
+  const rows = new Map();
+
+  const ensureRow = (classificationKey, segment) => {
+    const resolved = resolveMonitoringProfile(profileMap, classificationKey, segment);
+    const existing = rows.get(classificationKey);
+    if (existing) {
+      existing.displayName = resolved.displayName;
+      existing.objectType = resolved.objectType;
+      existing.processName = resolved.processName;
+      existing.category = resolved.category;
+      return existing;
+    }
+    const next = {
+      classificationKey,
+      profileId: resolved.id,
+      displayName: resolved.displayName,
+      objectType: resolved.objectType,
+      processName: resolved.processName,
+      totalVisible: 0,
+      focusTime: 0,
+      lastFocus: '',
+      longestContinuousFocus: 0,
+      category: resolved.category,
+    };
+    rows.set(classificationKey, next);
+    return next;
+  };
+
+  const presenceSegments = mergeAdjacentMonitoringSegments(
+    (stateLike.processTimeline || [])
+      .map(record => toMonitoringSegment(record, profileMap, 'startAt', 'endAt'))
+      .filter(Boolean),
+    mergeGapSeconds,
+  );
+  for (const segment of presenceSegments) {
+    const row = ensureRow(segment.classificationKey, segment);
+    row.totalVisible += segment.durationSeconds;
+  }
+
+  const focusSegments = mergeAdjacentMonitoringSegments(
+    (stateLike.sessions || [])
+      .map(record => toMonitoringSegment(record, profileMap, 'startAt', 'endAt'))
+      .filter(Boolean),
+    mergeGapSeconds,
+  );
+  for (const segment of focusSegments) {
+    const row = ensureRow(segment.classificationKey, segment);
+    row.focusTime += segment.durationSeconds;
+    row.longestContinuousFocus = Math.max(row.longestContinuousFocus, segment.durationSeconds);
+    const lastFocusIso = new Date(segment.endMs).toISOString();
+    row.lastFocus =
+      !row.lastFocus || toFiniteTimeMs(row.lastFocus, 0) < segment.endMs ? lastFocusIso : row.lastFocus;
+  }
+
+  const runtimeMap = new Map((appState.currentProcessRuntimeStats || []).map(item => [item.classificationKey, item]));
+  for (const classificationKey of appState.currentProcessKeys || []) {
+    const runtime = runtimeMap.get(classificationKey);
+    const profile = profileMap.get(classificationKey);
+    if (!runtime && !profile) {
+      continue;
+    }
+    const row = ensureRow(classificationKey, runtime || profile || {});
+    row.totalVisible = Math.max(row.totalVisible, Number(runtime?.totalVisibleSeconds) || 0);
+    row.focusTime = Math.max(row.focusTime, Number(runtime?.totalFocusSeconds) || 0);
+    row.longestContinuousFocus = Math.max(
+      row.longestContinuousFocus,
+      Number(runtime?.longestContinuousFocusSeconds) || 0,
+    );
+    if (runtime?.lastFocusAt && toFiniteTimeMs(runtime.lastFocusAt, 0) > toFiniteTimeMs(row.lastFocus, 0)) {
+      row.lastFocus = runtime.lastFocusAt;
+    }
+  }
+
+  for (const stat of appState.windowStats || []) {
+    if (rows.has(stat.classificationKey)) {
+      continue;
+    }
+    const row = ensureRow(stat.classificationKey, stat);
+    row.totalVisible = Number(stat.totalVisibleSeconds) || 0;
+    row.focusTime = Number(stat.focusSeconds) || 0;
+    row.lastFocus = typeof stat.lastFocusAt === 'string' ? stat.lastFocusAt : '';
+    row.longestContinuousFocus = Number(stat.longestContinuousFocusSeconds) || 0;
+  }
+
+  for (const row of rows.values()) {
+    row.totalVisible = Math.round(Math.max(row.totalVisible, row.focusTime));
+    row.focusTime = Math.round(row.focusTime);
+    row.longestContinuousFocus = Math.round(row.longestContinuousFocus);
+    const assignment = assignmentMap.get(row.classificationKey);
+    if (assignment) {
+      row.tagId = assignment.tagId;
+    }
+  }
+
+  const output = [...rows.values()];
+  if (scope === 'current') {
+    const currentKeys = new Set(appState.currentProcessKeys || []);
+    return output.filter(row => currentKeys.has(row.classificationKey));
+  }
+  return output;
+}
+
+function buildMonitoringTagStatsForRenderer(rows) {
+  const tagSet = new Set((appState.processTags || []).map(tag => tag.id));
+  const stats = new Map();
+  const ensure = (tagId) => {
+    const existing = stats.get(tagId);
+    if (existing) {
+      return existing;
+    }
+    const next = {
+      tagId,
+      totalVisibleSeconds: 0,
+      focusSeconds: 0,
+      lastFocusAt: '',
+      longestContinuousFocusSeconds: 0,
+    };
+    stats.set(tagId, next);
+    return next;
+  };
+  for (const row of rows) {
+    if (!row.tagId || !tagSet.has(row.tagId)) {
+      continue;
+    }
+    const stat = ensure(row.tagId);
+    stat.totalVisibleSeconds += row.totalVisible;
+    stat.focusSeconds += row.focusTime;
+    stat.longestContinuousFocusSeconds = Math.max(stat.longestContinuousFocusSeconds, row.longestContinuousFocus);
+    if (row.lastFocus && toFiniteTimeMs(row.lastFocus, 0) > toFiniteTimeMs(stat.lastFocusAt, 0)) {
+      stat.lastFocusAt = row.lastFocus;
+    }
+  }
+  return [...stats.values()].map(stat => ({
+    ...stat,
+    totalVisibleSeconds: Math.round(Math.max(stat.totalVisibleSeconds, stat.focusSeconds)),
+    focusSeconds: Math.round(stat.focusSeconds),
+    longestContinuousFocusSeconds: Math.round(stat.longestContinuousFocusSeconds),
+  }));
+}
+
+function normalizeMonitoringPage(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 1;
+  }
+  return Math.max(1, Math.floor(parsed));
+}
+
+function normalizeMonitoringPageSize(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 150;
+  }
+  return Math.max(20, Math.min(500, Math.floor(parsed)));
+}
+
+function normalizeMonitoringSort(payloadSort, fallback) {
+  const validKeys = new Set([
+    'displayName',
+    'objectType',
+    'processName',
+    'category',
+    'tag',
+    'totalVisible',
+    'focusTime',
+    'lastFocus',
+    'longestContinuousFocus',
+  ]);
+  const key = validKeys.has(payloadSort?.key) ? payloadSort.key : fallback.key;
+  const direction = payloadSort?.direction === 'asc' || payloadSort?.direction === 'desc'
+    ? payloadSort.direction
+    : fallback.direction;
+  return { key, direction };
+}
+
+function getMonitoringRowTagName(row, tagMap) {
+  if (!row?.tagId) {
+    return '';
+  }
+  return tagMap.get(row.tagId)?.name || '';
+}
+
+const monitoringSortCollator = new Intl.Collator('zh-CN-u-co-pinyin', { sensitivity: 'base' });
+
+function compareMonitoringRowsForRenderer(a, b, sort, tagMap) {
+  const compareString = (left, right) => monitoringSortCollator.compare(String(left || ''), String(right || ''));
+  let result = 0;
+  switch (sort.key) {
+    case 'displayName':
+      result = compareString(a.displayName, b.displayName);
+      break;
+    case 'objectType':
+      result = compareString(a.objectType, b.objectType);
+      break;
+    case 'processName':
+      result = compareString(a.processName, b.processName);
+      break;
+    case 'category':
+      result = compareString(a.category, b.category);
+      break;
+    case 'tag':
+      result = compareString(getMonitoringRowTagName(a, tagMap), getMonitoringRowTagName(b, tagMap));
+      break;
+    case 'totalVisible':
+      result = Number(a.totalVisible || 0) - Number(b.totalVisible || 0);
+      break;
+    case 'focusTime':
+      result = Number(a.focusTime || 0) - Number(b.focusTime || 0);
+      break;
+    case 'lastFocus':
+      result = toFiniteTimeMs(a.lastFocus, 0) - toFiniteTimeMs(b.lastFocus, 0);
+      break;
+    case 'longestContinuousFocus':
+      result = Number(a.longestContinuousFocus || 0) - Number(b.longestContinuousFocus || 0);
+      break;
+    default:
+      result = 0;
+  }
+  if (result === 0) {
+    result = compareString(a.displayName, b.displayName);
+  }
+  if (result === 0) {
+    result = compareString(a.classificationKey, b.classificationKey);
+  }
+  return sort.direction === 'asc' ? result : -result;
+}
+
+function paginateMonitoringRows(rows, page, pageSize) {
+  const safePage = normalizeMonitoringPage(page);
+  const safePageSize = normalizeMonitoringPageSize(pageSize);
+  const startIndex = (safePage - 1) * safePageSize;
+  return rows.slice(startIndex, startIndex + safePageSize);
+}
+
+function buildMonitoringRowsFromAggregates(aggregateRows) {
+  const profileMap = getProfileMapForState();
+  const assignmentMap = new Map((appState.processTagAssignments || []).map(item => [item.classificationKey, item]));
+  const rows = new Map();
+
+  const ensureRow = (classificationKey, fallback = {}) => {
+    const key = typeof classificationKey === 'string' ? classificationKey : '';
+    if (!key) {
+      return null;
+    }
+    const existing = rows.get(key);
+    if (existing) {
+      return existing;
+    }
+    const resolved = resolveMonitoringProfile(profileMap, key, fallback);
+    const next = {
+      classificationKey: key,
+      profileId: resolved.id,
+      displayName: resolved.displayName,
+      objectType: resolved.objectType,
+      processName: resolved.processName,
+      totalVisible: 0,
+      focusTime: 0,
+      lastFocus: '',
+      longestContinuousFocus: 0,
+      category: resolved.category,
+    };
+    rows.set(key, next);
+    return next;
+  };
+
+  for (const aggregate of Array.isArray(aggregateRows) ? aggregateRows : []) {
+    const row = ensureRow(aggregate.classificationKey, aggregate);
+    if (!row) {
+      continue;
+    }
+    const resolved = resolveMonitoringProfile(profileMap, aggregate.classificationKey, aggregate);
+    row.displayName = resolved.displayName;
+    row.objectType = resolved.objectType;
+    row.processName = resolved.processName;
+    row.category = resolved.category;
+    row.totalVisible = Math.max(row.totalVisible, Number(aggregate.totalVisible) || 0);
+    row.focusTime = Math.max(row.focusTime, Number(aggregate.focusTime) || 0);
+    row.longestContinuousFocus = Math.max(
+      row.longestContinuousFocus,
+      Number(aggregate.longestContinuousFocus) || 0,
+    );
+    const lastFocusMs = Number(aggregate.lastFocusMs) || 0;
+    if (lastFocusMs > 0 && lastFocusMs > toFiniteTimeMs(row.lastFocus, 0)) {
+      row.lastFocus = new Date(lastFocusMs).toISOString();
+    }
+  }
+
+  const runtimeMap = new Map((appState.currentProcessRuntimeStats || []).map(item => [item.classificationKey, item]));
+  for (const classificationKey of appState.currentProcessKeys || []) {
+    const runtime = runtimeMap.get(classificationKey);
+    const profile = profileMap.get(classificationKey);
+    if (!runtime && !profile) {
+      continue;
+    }
+    const row = ensureRow(classificationKey, runtime || profile || {});
+    if (!row) {
+      continue;
+    }
+    row.totalVisible = Math.max(row.totalVisible, Number(runtime?.totalVisibleSeconds) || 0);
+    row.focusTime = Math.max(row.focusTime, Number(runtime?.totalFocusSeconds) || 0);
+    row.longestContinuousFocus = Math.max(
+      row.longestContinuousFocus,
+      Number(runtime?.longestContinuousFocusSeconds) || 0,
+    );
+    if (runtime?.lastFocusAt && toFiniteTimeMs(runtime.lastFocusAt, 0) > toFiniteTimeMs(row.lastFocus, 0)) {
+      row.lastFocus = runtime.lastFocusAt;
+    }
+  }
+
+  for (const stat of appState.windowStats || []) {
+    if (rows.has(stat.classificationKey)) {
+      continue;
+    }
+    const row = ensureRow(stat.classificationKey, stat);
+    if (!row) {
+      continue;
+    }
+    row.totalVisible = Number(stat.totalVisibleSeconds) || 0;
+    row.focusTime = Number(stat.focusSeconds) || 0;
+    row.lastFocus = typeof stat.lastFocusAt === 'string' ? stat.lastFocusAt : '';
+    row.longestContinuousFocus = Number(stat.longestContinuousFocusSeconds) || 0;
+  }
+
+  for (const row of rows.values()) {
+    row.totalVisible = Math.round(Math.max(row.totalVisible, row.focusTime));
+    row.focusTime = Math.round(row.focusTime);
+    row.longestContinuousFocus = Math.round(row.longestContinuousFocus);
+    const assignment = assignmentMap.get(row.classificationKey);
+    if (assignment) {
+      row.tagId = assignment.tagId;
+    }
+  }
+
+  return [...rows.values()];
+}
+
+function getMonitoringSummaryForRenderer(payload = {}) {
+  const page = normalizeMonitoringPage(payload?.page);
+  const pageSize = normalizeMonitoringPageSize(payload?.pageSize);
+  const requestedScope = payload?.scope === 'current' ? 'current' : 'history';
+  const activeSort = normalizeMonitoringSort(payload?.sort, { key: 'lastFocus', direction: 'desc' });
+  const tagMap = new Map((appState.processTags || []).map(tag => [tag.id, tag]));
+  const mergeGapSeconds = appState.preferences?.recordWindowThresholdSeconds ?? DEFAULT_RECORD_WINDOW_THRESHOLD_SECONDS;
+  const currentKeySet = new Set(appState.currentProcessKeys || []);
+  let allRows = [];
+  try {
+    const aggregateRows = getSqliteStateStore(getStatePath()).readMonitoringAggregateRows(
+      mergeGapSeconds,
+      requestedScope === 'current' ? { classificationKeys: [...currentKeySet] } : {},
+    );
+    allRows = buildMonitoringRowsFromAggregates(aggregateRows);
+  } catch (error) {
+    addDiagnosticLog('error', 'SQLite monitoring summary query failed', error instanceof Error ? error.message : String(error));
+    const limit = normalizeRendererQueryLimit(payload?.limit, DEFAULT_MONITORING_QUERY_LIMIT);
+    let stored = {
+      sessions: [],
+      processTimeline: [],
+    };
+    try {
+      stored = getSqliteStateStore(getStatePath()).readAllMonitoringRows(limit);
+    } catch {
+      stored = { sessions: [], processTimeline: [] };
+    }
+    const stateLike = {
+      sessions: mergeRowsById(stored.sessions, appState.sessions || []),
+      processTimeline: mergeRowsById(stored.processTimeline, appState.processTimeline || []),
+    };
+    allRows = buildMonitoringRowsForRenderer(stateLike, 'history', { mergeGapSeconds });
+  }
+
+  const scopedRows = requestedScope === 'current'
+    ? allRows.filter(row => currentKeySet.has(row.classificationKey))
+    : allRows;
+  const sortedRows = scopedRows.sort((a, b) => compareMonitoringRowsForRenderer(a, b, activeSort, tagMap));
+  const pagedRows = paginateMonitoringRows(sortedRows, page, pageSize);
+
+  return {
+    ok: true,
+    historyRows: requestedScope === 'history' ? pagedRows : [],
+    currentRows: requestedScope === 'current' ? pagedRows : [],
+    historyTotal: requestedScope === 'history' ? sortedRows.length : 0,
+    currentTotal: requestedScope === 'current' ? sortedRows.length : 0,
+    page,
+    pageSize,
+    tagStats: requestedScope === 'history' ? buildMonitoringTagStatsForRenderer(sortedRows) : [],
+  };
+}
+
+function deleteMonitoringRecordsByKeys(classificationKeys) {
+  const keySet = new Set(
+    (Array.isArray(classificationKeys) ? classificationKeys : [])
+      .map(key => String(key || '').trim())
+      .filter(Boolean),
+  );
+  if (keySet.size === 0) {
+    return { ok: true, changedCount: 0, state: getRendererStateSnapshot() };
+  }
+
+  let changedCount = 0;
+  try {
+    changedCount += getSqliteStateStore(getStatePath()).deleteActivityByClassificationKeys([...keySet]);
+  } catch (error) {
+    addDiagnosticLog('error', 'SQLite monitoring delete failed', error instanceof Error ? error.message : String(error));
+  }
+
+  appState.profiles = (appState.profiles || []).filter(profile => !keySet.has(profile.classificationKey));
+  appState.sessions = (appState.sessions || []).filter(session => !keySet.has(session.classificationKey));
+  appState.windowStats = (appState.windowStats || []).filter(stat => !keySet.has(stat.classificationKey));
+  appState.processTimeline = (appState.processTimeline || []).filter(item => !keySet.has(item.classificationKey));
+  appState.inputActivityStats = (appState.inputActivityStats || []).filter(item => !keySet.has(item.classificationKey));
+  appState.inputActivityTimeline = (appState.inputActivityTimeline || []).filter(item => !keySet.has(item.classificationKey));
+  appState.currentProcessKeys = (appState.currentProcessKeys || []).filter(key => !keySet.has(key));
+  appState.currentProcessRuntimeStats = (appState.currentProcessRuntimeStats || []).filter(
+    item => !keySet.has(item.classificationKey),
+  );
+  appState.processTagAssignments = (appState.processTagAssignments || []).filter(
+    assignment => !keySet.has(assignment.classificationKey),
+  );
+  if (appState.currentFocusedWindow && keySet.has(appState.currentFocusedWindow.classificationKey)) {
+    appState.currentFocusedWindow = null;
+  }
+  for (const key of keySet) {
+    pendingWindowRuntime.delete(key);
+    recentlyClosedWindowRuntime.delete(key);
+  }
+
+  scheduleSave();
+  emitState();
+  return { ok: true, changedCount, state: getRendererStateSnapshot() };
+}
+
+function keepRecentActivityRows(rows, maxRows, keepIds = []) {
+  if (!Array.isArray(rows) || rows.length <= maxRows) {
+    return Array.isArray(rows) ? rows : [];
+  }
+  const keepSet = new Set(keepIds.filter(Boolean));
+  const map = new Map();
+  for (const row of rows.slice(-maxRows)) {
+    if (row?.id) {
+      map.set(row.id, row);
+    }
+  }
+  for (const row of rows) {
+    if (row?.id && keepSet.has(row.id)) {
+      map.set(row.id, row);
+    }
+  }
+  return [...map.values()];
+}
+
+function pruneInMemoryActivityRows() {
+  const activeIds = [monitorCursor.activeSessionId].filter(Boolean);
+  const openTimelineIds = [...pendingWindowRuntime.values()]
+    .map(item => item?.processTimelineId)
+    .filter(Boolean);
+  appState.sessions = keepRecentActivityRows(appState.sessions, MAX_IN_MEMORY_ACTIVITY_ROWS, activeIds);
+  appState.processTimeline = keepRecentActivityRows(
+    appState.processTimeline,
+    MAX_IN_MEMORY_ACTIVITY_ROWS,
+    openTimelineIds,
+  );
+  appState.inputActivityTimeline = keepRecentActivityRows(appState.inputActivityTimeline, MAX_IN_MEMORY_ACTIVITY_ROWS);
+}
+
+function getRendererStateSnapshot() {
+  return {
+    ...appState,
+    sessions: [],
+    processTimeline: [],
+    inputActivityTimeline: [],
+  };
 }
 
 function emitState() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
-  mainWindow.webContents.send('monitor:state', appState);
+  mainWindow.webContents.send('monitor:state', getRendererStateSnapshot());
 }
 
 function normalizeProcessName(ownerPath, ownerName) {
@@ -5528,8 +6724,15 @@ async function startPortableUpdate(payload) {
 function registerIpc() {
   ipcMain.handle('app:get-state', () => {
     syncStorageMetaToState();
-    return appState;
+    return getRendererStateSnapshot();
   });
+  ipcMain.handle('app:get-activity-data', (_event, payload) => getActivityDataForRenderer(payload));
+  ipcMain.handle('app:get-activity-date-keys', () => getActivityDateKeysForRenderer());
+  ipcMain.handle('app:get-analytics-summary', (_event, payload) => getAnalyticsSummaryForRenderer(payload));
+  ipcMain.handle('app:get-monitoring-summary', (_event, payload) => getMonitoringSummaryForRenderer(payload));
+  ipcMain.handle('app:delete-monitoring-records', (_event, payload) =>
+    deleteMonitoringRecordsByKeys(payload?.classificationKeys),
+  );
   ipcMain.handle('app:get-app-version', () => app.getVersion());
   ipcMain.handle('app:check-for-updates', () => checkForPortableUpdate());
   ipcMain.handle('app:start-portable-update', (_event, payload) => startPortableUpdate(payload));
@@ -5548,6 +6751,7 @@ function registerIpc() {
   ipcMain.handle('app:get-data-file-path', () => getStatePath());
   ipcMain.handle('app:get-storage-status', () => getStorageStatus());
   ipcMain.handle('app:migrate-legacy-json-storage', () => migrateLegacyJsonStorageToSqlite());
+  ipcMain.handle('app:rebuild-analytics-cache', () => rebuildAnalyticsDailyCache());
   ipcMain.handle('app:set-data-file-path', (_event, payload) =>
     setDataFilePath(payload?.targetPath, Boolean(payload?.createIfMissing)),
   );
@@ -5607,6 +6811,7 @@ function registerIpc() {
   });
   ipcMain.handle('clipboard:get-history', () => getClipboardHistoryForRenderer());
   ipcMain.handle('clipboard:write-item', (_event, payload) => writeClipboardItem(payload));
+  ipcMain.handle('clipboard:restore-history-item', (_event, payload) => restoreClipboardHistoryItem(payload?.id));
 }
 
 function safeClipboardFormats() {
@@ -5620,6 +6825,29 @@ function safeClipboardFormats() {
 function inferImageMime(dataUrl) {
   const match = /^data:image\/([^;,]+)/i.exec(dataUrl || '');
   return match ? match[1].toLowerCase() : 'png';
+}
+
+function createClipboardThumbnailDataUrl(image, maxSize = 160) {
+  try {
+    if (!image || image.isEmpty()) {
+      return '';
+    }
+    const size = image.getSize();
+    if (!size.width || !size.height) {
+      return '';
+    }
+    const scale = Math.min(1, maxSize / Math.max(size.width, size.height));
+    const thumbnail = scale < 1
+      ? image.resize({
+          width: Math.max(1, Math.round(size.width * scale)),
+          height: Math.max(1, Math.round(size.height * scale)),
+          quality: 'good',
+        })
+      : image;
+    return thumbnail.toDataURL();
+  } catch {
+    return '';
+  }
 }
 
 function hashClipboardPayload(value) {
@@ -5701,6 +6929,7 @@ function readClipboardSnapshot() {
         title: `${size.width} × ${size.height} ${imageType.toUpperCase()}`,
         image: {
           dataUrl,
+          thumbnailDataUrl: createClipboardThumbnailDataUrl(image),
           width: size.width,
           height: size.height,
           type: imageType,
@@ -5827,7 +7056,9 @@ function pushClipboardHistory(snapshot, source = 'unknown') {
 function getClipboardHistoryForRenderer() {
   let history = [];
   try {
-    history = getSqliteStateStore(getStatePath()).getClipboardHistory(CLIPBOARD_HISTORY_LIMIT);
+    history = getSqliteStateStore(getStatePath()).getClipboardHistory(CLIPBOARD_HISTORY_LIMIT, {
+      hydrateImages: false,
+    });
   } catch (error) {
     addDiagnosticLog('error', 'Failed to read clipboard history', error?.message || String(error));
     return [];
@@ -5845,6 +7076,25 @@ function getClipboardHistoryForRenderer() {
       },
     };
   });
+}
+
+function restoreClipboardHistoryItem(id) {
+  try {
+    const item = getSqliteStateStore(getStatePath()).getClipboardHistoryItem(id, { hydrateImages: true });
+    if (!item) {
+      return { ok: false, error: 'not_found' };
+    }
+    if (item.kind === 'text') {
+      return writeClipboardItem({ kind: 'text', text: item.text || '' });
+    }
+    if (item.kind === 'image') {
+      return writeClipboardItem({ kind: 'image', dataUrl: item.image?.dataUrl || '' });
+    }
+    return { ok: false, error: 'unsupported_kind' };
+  } catch (error) {
+    addDiagnosticLog('error', 'Failed to restore clipboard history item', error?.message || String(error));
+    return { ok: false, error: 'restore_failed', detail: error?.message || String(error) };
+  }
 }
 
 function captureClipboardNow(source = 'unknown') {
