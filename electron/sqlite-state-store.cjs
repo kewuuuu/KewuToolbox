@@ -136,9 +136,20 @@ class NativeStatementAdapter {
   }
 
   bind(params) {
+    this.closeIterator();
     this.boundParams = normalizeBindParams(params);
-    this.iterator = null;
     this.current = null;
+  }
+
+  closeIterator() {
+    if (this.iterator && typeof this.iterator.return === 'function') {
+      try {
+        this.iterator.return();
+      } catch {
+        // Ignore iterator cleanup failures.
+      }
+    }
+    this.iterator = null;
   }
 
   step() {
@@ -148,6 +159,7 @@ class NativeStatementAdapter {
     const next = this.iterator.next();
     if (next.done) {
       this.current = null;
+      this.closeIterator();
       return false;
     }
     this.current = next.value;
@@ -165,7 +177,7 @@ class NativeStatementAdapter {
   }
 
   free() {
-    this.iterator = null;
+    this.closeIterator();
     this.current = null;
   }
 }
@@ -561,6 +573,15 @@ class SqliteStateStore {
       if (cachedRows) {
         return cachedRows;
       }
+      try {
+        this.rebuildMonitoringSummaryCache(mergeGapMs / 1000);
+        const rebuiltRows = this.readMonitoringSummaryCacheRowsIfHealthy(mergeGapMs);
+        if (rebuiltRows) {
+          return rebuiltRows;
+        }
+      } catch {
+        // Fall back to direct aggregation below.
+      }
     }
 
     return this.computeMonitoringAggregateRows(mergeGapMs, filterKeys);
@@ -908,13 +929,163 @@ class SqliteStateStore {
     return [...dates].sort();
   }
 
+  countValidFocusSources() {
+    const row = this.db.all(
+      'SELECT COUNT(*) AS count FROM focus_sessions WHERE end_at_ms > start_at_ms',
+    )[0];
+    return Number(row?.count || 0);
+  }
+
+  countValidInputSources() {
+    const row = this.db.all(
+      'SELECT COUNT(*) AS count FROM input_activity_timeline WHERE bucket_end_ms > bucket_start_ms',
+    )[0];
+    return Number(row?.count || 0);
+  }
+
+  isDailyCacheFresh() {
+    const focusSourceCount = this.countValidFocusSources();
+    const inputSourceCount = this.countValidInputSources();
+    const cachedFocusSourceCount = this.countDistinctRows('focus_daily_cache', 'source_id');
+    const cachedInputSourceCount = this.countDistinctRows('input_daily_cache', 'source_id');
+    return (
+      cachedFocusSourceCount === focusSourceCount &&
+      cachedInputSourceCount === inputSourceCount
+    );
+  }
+
+  ensureDailyCachesFresh() {
+    if (this.isDailyCacheFresh()) {
+      return { ok: true, rebuilt: false };
+    }
+    return { ...this.rebuildDailyCaches(), rebuilt: true };
+  }
+
+  readFocusDailyRowsFromSource(startDate, endDate) {
+    const startKey = String(startDate || '').slice(0, 10);
+    const endKey = String(endDate || '').slice(0, 10);
+    const startMs = startOfLocalDateMs(startKey);
+    const endMs = startOfLocalDateMs(endKey) + 24 * 60 * 60 * 1000;
+    if (!startKey || !endKey || startMs <= 0 || endMs <= startMs) {
+      return [];
+    }
+
+    const sourceRows = this.db.all(
+      `
+      SELECT
+        classification_key AS classificationKey,
+        display_name AS displayName,
+        object_type AS objectType,
+        process_name AS processName,
+        category_at_that_time AS categoryAtThatTime,
+        start_at_ms AS startAtMs,
+        end_at_ms AS endAtMs,
+        duration_seconds AS durationSeconds
+      FROM focus_sessions
+      WHERE start_at_ms < ? AND end_at_ms > ? AND end_at_ms > start_at_ms
+      ORDER BY start_at_ms ASC
+      `,
+      [endMs, startMs],
+    );
+
+    const rows = new Map();
+    for (const source of sourceRows) {
+      for (const slice of splitDurationByLocalDay(
+        Number(source.startAtMs),
+        Number(source.endAtMs),
+        Number(source.durationSeconds),
+      )) {
+        if (slice.dateKey < startKey || slice.dateKey > endKey) {
+          continue;
+        }
+        const key = [
+          slice.dateKey,
+          source.classificationKey,
+          source.displayName,
+          source.objectType,
+          source.processName,
+          source.categoryAtThatTime,
+        ].join('\u001f');
+        const existing = rows.get(key) || {
+          dateKey: slice.dateKey,
+          classificationKey: toStringValue(source.classificationKey),
+          displayName: toStringValue(source.displayName),
+          objectType: toStringValue(source.objectType),
+          processName: toStringValue(source.processName),
+          categoryAtThatTime: toStringValue(source.categoryAtThatTime),
+          seconds: 0,
+        };
+        existing.seconds += Number(slice.seconds || 0);
+        rows.set(key, existing);
+      }
+    }
+
+    return [...rows.values()]
+      .map(row => ({ ...row, seconds: Math.round(row.seconds) }))
+      .sort((a, b) => a.dateKey.localeCompare(b.dateKey) || b.seconds - a.seconds);
+  }
+
+  readInputDailyRowsFromSource(startDate, endDate) {
+    const startKey = String(startDate || '').slice(0, 10);
+    const endKey = String(endDate || '').slice(0, 10);
+    const startMs = startOfLocalDateMs(startKey);
+    const endMs = startOfLocalDateMs(endKey) + 24 * 60 * 60 * 1000;
+    if (!startKey || !endKey || startMs <= 0 || endMs <= startMs) {
+      return [];
+    }
+
+    return this.db.all(
+      `
+      SELECT payload_json AS payloadJson, bucket_start_ms AS bucketStartMs
+      FROM input_activity_timeline
+      WHERE bucket_start_ms < ? AND bucket_end_ms > ? AND bucket_end_ms > bucket_start_ms
+      ORDER BY bucket_start_ms ASC
+      `,
+      [endMs, startMs],
+    )
+      .map(row => {
+        const record = safeJsonParse(row.payloadJson, null);
+        if (!record) {
+          return null;
+        }
+        const bucketStartMs = toTimeMs(record.bucketStartAt) || Number(row.bucketStartMs || 0);
+        const dateKey = toLocalDateKey(bucketStartMs);
+        if (!dateKey || dateKey < startKey || dateKey > endKey) {
+          return null;
+        }
+        return {
+          dateKey,
+          classificationKey: toStringValue(record.classificationKey),
+          displayName: toStringValue(record.displayName),
+          objectType: toStringValue(record.objectType),
+          processName: toStringValue(record.processName),
+          keyPresses: pickInteger(record.keyPresses),
+          leftClicks: pickInteger(record.leftClicks),
+          rightClicks: pickInteger(record.rightClicks),
+          middleClicks: pickInteger(record.middleClicks),
+          sideBackClicks: pickInteger(record.sideBackClicks),
+          sideForwardClicks: pickInteger(record.sideForwardClicks),
+          scrollTicks: pickInteger(record.scrollTicks),
+          mouseMovePixels: pickInteger(record.mouseMovePixels),
+          keyCounts: record.keyCounts && typeof record.keyCounts === 'object' ? record.keyCounts : {},
+          lastAtMs: bucketStartMs,
+        };
+      })
+      .filter(Boolean);
+  }
+
   readFocusDailyCache(startDate, endDate) {
     const startKey = String(startDate || '').slice(0, 10);
     const endKey = String(endDate || '').slice(0, 10);
     if (!startKey || !endKey) {
       return [];
     }
-    return this.db.all(
+    try {
+      this.ensureDailyCachesFresh();
+    } catch {
+      return this.readFocusDailyRowsFromSource(startKey, endKey);
+    }
+    const rows = this.db.all(
       `
       SELECT
         date_key AS dateKey,
@@ -931,6 +1102,10 @@ class SqliteStateStore {
       `,
       [startKey, endKey],
     );
+    if (rows.length === 0 && this.countValidFocusSources() > 0) {
+      return this.readFocusDailyRowsFromSource(startKey, endKey);
+    }
+    return rows;
   }
 
   readInputDailyCache(startDate, endDate) {
@@ -939,7 +1114,12 @@ class SqliteStateStore {
     if (!startKey || !endKey) {
       return [];
     }
-    return this.db.all(
+    try {
+      this.ensureDailyCachesFresh();
+    } catch {
+      return this.readInputDailyRowsFromSource(startKey, endKey);
+    }
+    const rows = this.db.all(
       `
       SELECT
         date_key AS dateKey,
@@ -966,6 +1146,10 @@ class SqliteStateStore {
       ...row,
       keyCounts: safeJsonParse(row.keyCountsJson, {}),
     }));
+    if (rows.length === 0 && this.countValidInputSources() > 0) {
+      return this.readInputDailyRowsFromSource(startKey, endKey);
+    }
+    return rows;
   }
 
   writeState(statePayload) {
