@@ -36,6 +36,8 @@ const PROCESS_WHITELIST_KEY_PREFIX = 'process-whitelist';
 const DEFAULT_CATEGORY = '其他';
 const DESKTOP_CATEGORY = '休息';
 const ANALYTICS_CATEGORIES = ['学习', '娱乐', '社交', '休息', '其他'];
+const ALL_HEATMAP_CATEGORIES = '全部性质';
+const LEGACY_ALL_HEATMAP_CATEGORIES = '全部';
 const DEFAULT_DISPLAY_MODE = '显示性质';
 const BUILTIN_COMPLETION_SOUND_ID = 'builtin-completion';
 const BUILTIN_WARNING_SOUND_ID = 'builtin-warning';
@@ -2858,7 +2860,11 @@ function buildHeatmapFromFocusRows(rows, profileMap, heatmapCategory, endDate) {
       continue;
     }
     const resolved = resolveAnalyticsRow(row, profileMap);
-    if (heatmapCategory !== '全部' && resolved.category !== heatmapCategory) {
+    if (
+      heatmapCategory !== ALL_HEATMAP_CATEGORIES &&
+      heatmapCategory !== LEGACY_ALL_HEATMAP_CATEGORIES &&
+      resolved.category !== heatmapCategory
+    ) {
       continue;
     }
     totals.set(row.dateKey, (totals.get(row.dateKey) || 0) + Number(row.seconds || 0));
