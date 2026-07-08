@@ -323,6 +323,7 @@ export interface TodoListUiState {
   monthlyDays: number[];
   customPattern: string;
   reminderEnabled: boolean;
+  scheduledAction: TodoScheduledAction;
   rYear: string;
   rMonth: string;
   rDay: string;
@@ -330,6 +331,8 @@ export interface TodoListUiState {
   rMinute: string;
   rSecond: string;
 }
+
+export type TodoScheduledAction = 'reminder' | 'shutdown';
 
 export interface FocusSubjectsUiState {
   modalOpen: boolean;
@@ -458,6 +461,7 @@ export interface TodoTask {
   monthlyDays?: number[];
   customPattern?: string;
   reminderEnabled: boolean;
+  scheduledAction: TodoScheduledAction;
   reminderYear?: number;
   reminderMonth?: number;
   reminderDay?: number;

@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
   clearAllData: () => ipcRenderer.invoke('app:clear-all-data'),
   clearDiagnosticLogs: () => ipcRenderer.invoke('app:clear-diagnostic-logs'),
   notify: (payload) => ipcRenderer.invoke('app:notify', payload),
+  shutdownSystem: (payload) => ipcRenderer.invoke('app:shutdown-system', payload),
   hideToTray: () => ipcRenderer.invoke('app:hide-to-tray'),
   selectAudioFile: () => ipcRenderer.invoke('app:select-audio-file'),
   getClipboardCurrent: () => ipcRenderer.invoke('clipboard:get-current'),

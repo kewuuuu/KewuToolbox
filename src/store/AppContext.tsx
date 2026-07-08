@@ -24,6 +24,7 @@ import {
   StopwatchLap,
   StopwatchRecord,
   TodoArchiveRecord,
+  TodoScheduledAction,
   TodoTask,
   WindowClassificationProfile,
 } from '@/types';
@@ -189,6 +190,10 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
     value === '每日' || value === '每周' || value === '每月' || value === '自定义'
       ? value
       : fallbackValue;
+  const normalizeTodoScheduledAction = (
+    value: unknown,
+    fallbackValue: TodoScheduledAction,
+  ): TodoScheduledAction => (value === 'shutdown' || value === 'reminder' ? value : fallbackValue);
   const normalizeHourlyMode = (value: unknown, fallbackValue: AppUiState['analytics']['hourlyMode']) =>
     value === 'total' || value === 'category' ? value : fallbackValue;
   const normalizeAnalyticsTab = (value: unknown, fallbackValue: AppUiState['analytics']['activeTab']) =>
@@ -277,6 +282,10 @@ function normalizeUiState(input: Partial<AppUiState> | undefined, fallback: AppU
       monthlyDays: pickNumberArray(input?.todos?.monthlyDays, fallback.todos.monthlyDays),
       customPattern: pickString(input?.todos?.customPattern, fallback.todos.customPattern),
       reminderEnabled: pickBoolean(input?.todos?.reminderEnabled, fallback.todos.reminderEnabled),
+      scheduledAction: normalizeTodoScheduledAction(
+        input?.todos?.scheduledAction,
+        fallback.todos.scheduledAction,
+      ),
       rYear: pickString(input?.todos?.rYear, fallback.todos.rYear),
       rMonth: pickString(input?.todos?.rMonth, fallback.todos.rMonth),
       rDay: pickString(input?.todos?.rDay, fallback.todos.rDay),
@@ -1052,11 +1061,16 @@ function loadBrowserState(): AppState {
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AppState>(() => (isElectronRuntime() ? createInitialState() : loadBrowserState()));
+  const stateRef = useRef(state);
   const lastSavedUserStateRef = useRef<string>('');
   const soundStateRef = useRef({
     settings: state.pomodoroSettings,
     soundFiles: state.soundFiles,
   });
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   useEffect(() => {
     soundStateRef.current = {
@@ -1130,59 +1144,72 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const timer = window.setInterval(() => {
       const now = new Date();
-      const dueTitles: string[] = [];
-      let shouldPlaySound = false;
-
-      setState(prev => {
-        let changed = false;
-        const stamp = buildReminderStamp(now);
-        const nextTodos = prev.todos.map(todo => {
-          if (!shouldTriggerReminder(todo, now)) {
-            return todo;
-          }
-
-          if (todo.lastReminderStamp === stamp) {
-            return todo;
-          }
-
-          changed = true;
-          dueTitles.push(todo.title);
-          shouldPlaySound = true;
-          return {
-            ...todo,
-            lastReminderStamp: stamp,
-            updatedAt: now.toISOString(),
-          };
-        });
-
-        return changed ? { ...prev, todos: nextTodos } : prev;
-      });
-
-      if (dueTitles.length === 0) {
+      const dueTodos = stateRef.current.todos.filter(
+        todo =>
+          shouldTriggerReminder(todo, now) &&
+          todo.lastReminderStamp !== buildReminderStamp(todo, now),
+      );
+      if (dueTodos.length === 0) {
         return;
       }
 
+      const dueStamps = new Map(
+        dueTodos.map(todo => [todo.id, buildReminderStamp(todo, now)]),
+      );
+      setState(prev => ({
+        ...prev,
+        todos: prev.todos.map(todo =>
+          dueStamps.has(todo.id)
+            ? {
+                ...todo,
+                lastReminderStamp: dueStamps.get(todo.id),
+                updatedAt: now.toISOString(),
+              }
+            : todo,
+        ),
+      }));
+
+      const reminderTodos = dueTodos.filter(todo => todo.scheduledAction !== 'shutdown');
+      const shutdownTodos = dueTodos.filter(todo => todo.scheduledAction === 'shutdown');
+
       if ('Notification' in window) {
         if (Notification.permission === 'granted') {
-          dueTitles.forEach(title => {
-            new Notification('待办提醒', { body: title });
+          reminderTodos.forEach(todo => {
+            new Notification('待办提醒', { body: todo.title });
           });
         } else if (Notification.permission === 'default') {
           void Notification.requestPermission();
         }
       }
 
-      dueTitles.forEach(title => {
-        toast.info('待办提醒', { description: title });
+      reminderTodos.forEach(todo => {
+        toast.info('待办提醒', { description: todo.title });
       });
 
-      if (shouldPlaySound) {
+      if (reminderTodos.length > 0) {
         const { settings, soundFiles } = soundStateRef.current;
         const playback = resolveSoundPlaybackForEvent(settings, soundFiles, 'completion');
         void playSoundById(soundFiles, {
           enabled: settings.soundEnabled,
           soundFileId: playback.soundFileId,
           eventVolumeMultiplier: playback.eventVolumeMultiplier,
+        });
+      }
+
+      const shutdownTodo = shutdownTodos[0];
+      if (shutdownTodo) {
+        if (!window.desktopApi?.shutdownSystem) {
+          toast.error('定时关机失败', { description: '当前环境不支持系统关机' });
+          return;
+        }
+        void window.desktopApi.shutdownSystem({
+          taskId: shutdownTodo.id,
+          title: shutdownTodo.title,
+          stamp: dueStamps.get(shutdownTodo.id) || buildReminderStamp(shutdownTodo, now),
+        }).then(result => {
+          if (!result.ok) {
+            toast.error('定时关机失败', { description: result.error || '无法执行系统关机' });
+          }
         });
       }
     }, 1000);

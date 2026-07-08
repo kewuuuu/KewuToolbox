@@ -5907,6 +5907,61 @@ function notifySystem(payload) {
   }
 }
 
+function requestSystemShutdown(payload) {
+  if (process.platform !== 'win32') {
+    return Promise.resolve({ ok: false, error: 'unsupported_platform' });
+  }
+
+  const taskId = typeof payload?.taskId === 'string' ? payload.taskId.trim() : '';
+  const title = typeof payload?.title === 'string' ? payload.title.trim() : '';
+  const stamp = typeof payload?.stamp === 'string' ? payload.stamp.trim() : '';
+  const nowIso = new Date().toISOString();
+
+  if (taskId && stamp) {
+    appState.todos = (appState.todos || []).map(todo =>
+      todo.id === taskId
+        ? {
+            ...todo,
+            lastReminderStamp: stamp,
+            updatedAt: nowIso,
+          }
+        : todo,
+    );
+    persistState();
+  }
+
+  addDiagnosticLog('warn', 'Scheduled system shutdown requested', title || taskId);
+
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = result => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(result);
+    };
+
+    try {
+      const shutdownProcess = childProcess.spawn('shutdown.exe', ['/s', '/t', '0'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+      shutdownProcess.once('spawn', () => {
+        shutdownProcess.unref();
+        finish({ ok: true });
+      });
+      shutdownProcess.once('error', error => {
+        addDiagnosticLog('error', 'Scheduled system shutdown failed', error?.message || String(error));
+        finish({ ok: false, error: error?.message || 'shutdown_failed' });
+      });
+    } catch (error) {
+      addDiagnosticLog('error', 'Scheduled system shutdown failed', error?.message || String(error));
+      finish({ ok: false, error: error?.message || 'shutdown_failed' });
+    }
+  });
+}
+
 function normalizeVersionText(value) {
   return String(value || '')
     .trim()
@@ -6795,6 +6850,7 @@ function registerIpc() {
     return { ok: true };
   });
   ipcMain.handle('app:notify', (_event, payload) => notifySystem(payload));
+  ipcMain.handle('app:shutdown-system', (_event, payload) => requestSystemShutdown(payload));
   ipcMain.handle('app:hide-to-tray', () => ({ ok: hideMainWindowToTray() }));
   ipcMain.handle('app:select-audio-file', async () => {
     const result = await dialog.showOpenDialog(mainWindow ?? undefined, {
@@ -7391,6 +7447,7 @@ function createWindow(options = {}) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      backgroundThrottling: false,
     },
   });
 

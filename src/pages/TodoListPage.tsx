@@ -5,8 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Plus, Search, ChevronDown, ChevronUp } from 'lucide-react';
-import { TodoTask, TaskType, RepeatMode } from '@/types';
+import { Bell, Plus, Search, ChevronUp, Power } from 'lucide-react';
+import { TodoTask, TaskType, RepeatMode, TodoScheduledAction } from '@/types';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { normalizeTodoTask, validateTodoTask } from '@/lib/todo';
@@ -31,6 +31,7 @@ export default function TodoListPage() {
     monthlyDays,
     customPattern,
     reminderEnabled,
+    scheduledAction,
     rYear,
     rMonth,
     rDay,
@@ -50,6 +51,7 @@ export default function TodoListPage() {
     updateTodoUi({ monthlyDays: typeof updater === 'function' ? updater(monthlyDays) : updater });
   const setCustomPattern = (customPattern: string) => updateTodoUi({ customPattern });
   const setReminderEnabled = (reminderEnabled: boolean) => updateTodoUi({ reminderEnabled });
+  const setScheduledAction = (scheduledAction: TodoScheduledAction) => updateTodoUi({ scheduledAction });
   const setRYear = (rYear: string) => updateTodoUi({ rYear });
   const setRMonth = (rMonth: string) => updateTodoUi({ rMonth });
   const setRDay = (rDay: string) => updateTodoUi({ rDay });
@@ -78,6 +80,7 @@ export default function TodoListPage() {
       monthlyDays: repeatMode === '每月' ? monthlyDays : undefined,
       customPattern: repeatMode === '自定义' ? customPattern : undefined,
       reminderEnabled,
+      scheduledAction,
       reminderYear: rYear ? +rYear : undefined,
       reminderMonth: rMonth ? +rMonth : undefined,
       reminderDay: rDay ? +rDay : undefined,
@@ -107,6 +110,7 @@ export default function TodoListPage() {
       monthlyDays: [],
       customPattern: '',
       reminderEnabled: false,
+      scheduledAction: 'reminder',
       rYear: '',
       rMonth: '',
       rDay: '',
@@ -223,16 +227,50 @@ export default function TodoListPage() {
             )}
             <div className="flex items-center gap-3">
               <Switch checked={reminderEnabled} onCheckedChange={setReminderEnabled} />
-              <span className="text-xs text-muted-foreground">定时提醒</span>
+              <span className="text-xs text-muted-foreground">定时</span>
             </div>
             {reminderEnabled && (
-              <div className="flex gap-2 items-end">
-                <div><label className="text-[10px] text-muted-foreground">年</label><Input value={rYear} onChange={e => setRYear(e.target.value)} placeholder="留空" className="h-7 w-16 text-xs" /></div>
-                <div><label className="text-[10px] text-muted-foreground">月</label><Input value={rMonth} onChange={e => setRMonth(e.target.value)} placeholder="留空" className="h-7 w-14 text-xs" /></div>
-                <div><label className="text-[10px] text-muted-foreground">日</label><Input value={rDay} onChange={e => setRDay(e.target.value)} placeholder="留空" className="h-7 w-14 text-xs" /></div>
-                <div><label className="text-[10px] text-muted-foreground">时</label><Input type="number" value={rHour} onChange={e => setRHour(e.target.value)} className="h-7 w-14 text-xs" /></div>
-                <div><label className="text-[10px] text-muted-foreground">分</label><Input type="number" value={rMinute} onChange={e => setRMinute(e.target.value)} className="h-7 w-14 text-xs" /></div>
-                <div><label className="text-[10px] text-muted-foreground">秒</label><Input type="number" value={rSecond} onChange={e => setRSecond(e.target.value)} className="h-7 w-14 text-xs" /></div>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs text-muted-foreground block mb-1">到点执行</label>
+                  <div className="inline-flex rounded-lg border border-border overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setScheduledAction('reminder')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors ${
+                        scheduledAction === 'reminder'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-secondary text-secondary-foreground'
+                      }`}
+                    >
+                      <Bell className="w-3.5 h-3.5" /> 定时提醒
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setScheduledAction('shutdown')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors ${
+                        scheduledAction === 'shutdown'
+                          ? 'bg-destructive text-destructive-foreground'
+                          : 'bg-secondary text-secondary-foreground'
+                      }`}
+                    >
+                      <Power className="w-3.5 h-3.5" /> 定时关机
+                    </button>
+                  </div>
+                </div>
+                {scheduledAction === 'shutdown' && (
+                  <p className="text-xs text-destructive">
+                    到点后将立即关闭 Windows，请提前保存未完成的工作。
+                  </p>
+                )}
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                  <div><label className="text-[10px] text-muted-foreground">年</label><Input type="number" min={1} max={9999} value={rYear} onChange={e => setRYear(e.target.value)} placeholder="留空" className="h-7 text-xs" /></div>
+                  <div><label className="text-[10px] text-muted-foreground">月</label><Input type="number" min={1} max={12} value={rMonth} onChange={e => setRMonth(e.target.value)} placeholder="留空" className="h-7 text-xs" /></div>
+                  <div><label className="text-[10px] text-muted-foreground">日</label><Input type="number" min={1} max={31} value={rDay} onChange={e => setRDay(e.target.value)} placeholder="留空" className="h-7 text-xs" /></div>
+                  <div><label className="text-[10px] text-muted-foreground">时</label><Input type="number" min={0} max={23} value={rHour} onChange={e => setRHour(e.target.value)} className="h-7 text-xs" /></div>
+                  <div><label className="text-[10px] text-muted-foreground">分</label><Input type="number" min={0} max={59} value={rMinute} onChange={e => setRMinute(e.target.value)} className="h-7 text-xs" /></div>
+                  <div><label className="text-[10px] text-muted-foreground">秒</label><Input type="number" min={0} max={59} value={rSecond} onChange={e => setRSecond(e.target.value)} className="h-7 text-xs" /></div>
+                </div>
               </div>
             )}
             <Button onClick={handleCreate} size="sm">创建</Button>
@@ -255,7 +293,13 @@ export default function TodoListPage() {
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">{getRecurrenceSummary(t)}</span>
                     )}
                     {t.reminderEnabled && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-cat-entertainment/10 text-cat-entertainment">⏰ {getReminderSummary(t)}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                        t.scheduledAction === 'shutdown'
+                          ? 'bg-destructive/10 text-destructive'
+                          : 'bg-cat-entertainment/10 text-cat-entertainment'
+                      }`}>
+                        {t.scheduledAction === 'shutdown' ? '关机' : '提醒'} · {getReminderSummary(t)}
+                      </span>
                     )}
                   </div>
                   <span className="text-[10px] text-muted-foreground">

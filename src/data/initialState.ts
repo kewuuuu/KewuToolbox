@@ -121,6 +121,7 @@ export function createInitialState(): AppState {
         monthlyDays: [],
         customPattern: '',
         reminderEnabled: false,
+        scheduledAction: 'reminder',
         rYear: '',
         rMonth: '',
         rDay: '',

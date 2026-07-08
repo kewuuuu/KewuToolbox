@@ -1,7 +1,8 @@
-import { RepeatMode, TaskType, TodoTask } from '@/types';
+import { RepeatMode, TaskType, TodoScheduledAction, TodoTask } from '@/types';
 
 const TASK_TYPES: TaskType[] = ['一次性', '重复'];
 const REPEAT_MODES: RepeatMode[] = ['每日', '每周', '每月', '自定义'];
+const REMINDER_TRIGGER_GRACE_MS = 10000;
 
 interface PatternPhase {
   activeDays: number;
@@ -22,6 +23,7 @@ export function normalizeTodoTask(input: TodoTask): TodoTask {
   const monthlyDays = repeatMode === '每月' ? normalizeDayList(input.monthlyDays, 1, 31) : undefined;
   const customPattern = repeatMode === '自定义' ? normalizePatternText(input.customPattern) : undefined;
   const reminderEnabled = !!input.reminderEnabled;
+  const scheduledAction: TodoScheduledAction = input.scheduledAction === 'shutdown' ? 'shutdown' : 'reminder';
   const reminderYear = reminderEnabled ? clampOptionalInt(input.reminderYear, 1, 9999) : undefined;
   const reminderMonth = reminderEnabled ? clampOptionalInt(input.reminderMonth, 1, 12) : undefined;
   const reminderDay = reminderEnabled ? clampOptionalInt(input.reminderDay, 1, 31) : undefined;
@@ -38,6 +40,7 @@ export function normalizeTodoTask(input: TodoTask): TodoTask {
     monthlyDays,
     customPattern,
     reminderEnabled,
+    scheduledAction,
     reminderYear,
     reminderMonth,
     reminderDay,
@@ -109,18 +112,25 @@ export function shouldTriggerReminder(task: TodoTask, now: Date): boolean {
     return false;
   }
 
-  return (task.reminderHour ?? 0) === now.getHours() &&
-    (task.reminderMinute ?? 0) === now.getMinutes() &&
-    (task.reminderSecond ?? 0) === now.getSeconds();
+  const scheduledAt = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    task.reminderHour ?? 0,
+    task.reminderMinute ?? 0,
+    task.reminderSecond ?? 0,
+  );
+  const delayMs = now.getTime() - scheduledAt.getTime();
+  return delayMs >= 0 && delayMs < REMINDER_TRIGGER_GRACE_MS;
 }
 
-export function buildReminderStamp(now: Date): string {
+export function buildReminderStamp(task: TodoTask, now: Date): string {
   const y = now.getFullYear();
   const m = `${now.getMonth() + 1}`.padStart(2, '0');
   const d = `${now.getDate()}`.padStart(2, '0');
-  const hh = `${now.getHours()}`.padStart(2, '0');
-  const mm = `${now.getMinutes()}`.padStart(2, '0');
-  const ss = `${now.getSeconds()}`.padStart(2, '0');
+  const hh = `${task.reminderHour ?? 0}`.padStart(2, '0');
+  const mm = `${task.reminderMinute ?? 0}`.padStart(2, '0');
+  const ss = `${task.reminderSecond ?? 0}`.padStart(2, '0');
   return `${y}${m}${d}${hh}${mm}${ss}`;
 }
 

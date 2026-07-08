@@ -302,6 +302,11 @@ declare global {
       clearAllData: () => Promise<AppState>;
       clearDiagnosticLogs: () => Promise<{ ok: boolean }>;
       notify: (payload: { title: string; body?: string }) => Promise<{ ok: boolean; error?: string }>;
+      shutdownSystem: (payload: {
+        taskId: string;
+        title: string;
+        stamp: string;
+      }) => Promise<{ ok: boolean; error?: string }>;
       hideToTray: () => Promise<{ ok: boolean }>;
       selectAudioFile: () => Promise<string | null>;
       getClipboardCurrent: () => Promise<ClipboardSnapshot>;

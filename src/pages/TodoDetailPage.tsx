@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Bell, Power } from 'lucide-react';
 import { normalizeTodoTask, validateTodoTask } from '@/lib/todo';
 import { toast } from 'sonner';
 
@@ -88,13 +88,50 @@ export default function TodoDetailPage() {
             </div>
             <div className="flex items-center gap-3">
               <Switch checked={todo.reminderEnabled} onCheckedChange={v => handleFieldUpdate({ reminderEnabled: v })} />
-              <span className="text-xs text-muted-foreground">定时提醒</span>
+              <span className="text-xs text-muted-foreground">定时</span>
             </div>
             {todo.reminderEnabled && (
-              <div className="grid grid-cols-3 gap-2">
-                <div><label className="text-[10px] text-muted-foreground">时</label><Input type="number" value={todo.reminderHour || 0} onChange={e => handleFieldUpdate({ reminderHour: +e.target.value })} className="h-7 text-xs" /></div>
-                <div><label className="text-[10px] text-muted-foreground">分</label><Input type="number" value={todo.reminderMinute || 0} onChange={e => handleFieldUpdate({ reminderMinute: +e.target.value })} className="h-7 text-xs" /></div>
-                <div><label className="text-[10px] text-muted-foreground">秒</label><Input type="number" value={todo.reminderSecond || 0} onChange={e => handleFieldUpdate({ reminderSecond: +e.target.value })} className="h-7 text-xs" /></div>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs text-muted-foreground block mb-1">到点执行</label>
+                  <div className="inline-flex rounded-lg border border-border overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => handleFieldUpdate({ scheduledAction: 'reminder' })}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors ${
+                        todo.scheduledAction === 'reminder'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-secondary text-secondary-foreground'
+                      }`}
+                    >
+                      <Bell className="w-3.5 h-3.5" /> 定时提醒
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleFieldUpdate({ scheduledAction: 'shutdown' })}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors ${
+                        todo.scheduledAction === 'shutdown'
+                          ? 'bg-destructive text-destructive-foreground'
+                          : 'bg-secondary text-secondary-foreground'
+                      }`}
+                    >
+                      <Power className="w-3.5 h-3.5" /> 定时关机
+                    </button>
+                  </div>
+                </div>
+                {todo.scheduledAction === 'shutdown' && (
+                  <p className="text-xs text-destructive">
+                    到点后将立即关闭 Windows，请提前保存未完成的工作。
+                  </p>
+                )}
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                  <div><label className="text-[10px] text-muted-foreground">年</label><Input type="number" min={1} max={9999} value={todo.reminderYear ?? ''} onChange={e => handleFieldUpdate({ reminderYear: e.target.value ? +e.target.value : undefined })} placeholder="留空" className="h-7 text-xs" /></div>
+                  <div><label className="text-[10px] text-muted-foreground">月</label><Input type="number" min={1} max={12} value={todo.reminderMonth ?? ''} onChange={e => handleFieldUpdate({ reminderMonth: e.target.value ? +e.target.value : undefined })} placeholder="留空" className="h-7 text-xs" /></div>
+                  <div><label className="text-[10px] text-muted-foreground">日</label><Input type="number" min={1} max={31} value={todo.reminderDay ?? ''} onChange={e => handleFieldUpdate({ reminderDay: e.target.value ? +e.target.value : undefined })} placeholder="留空" className="h-7 text-xs" /></div>
+                  <div><label className="text-[10px] text-muted-foreground">时</label><Input type="number" min={0} max={23} value={todo.reminderHour ?? 0} onChange={e => handleFieldUpdate({ reminderHour: +e.target.value })} className="h-7 text-xs" /></div>
+                  <div><label className="text-[10px] text-muted-foreground">分</label><Input type="number" min={0} max={59} value={todo.reminderMinute ?? 0} onChange={e => handleFieldUpdate({ reminderMinute: +e.target.value })} className="h-7 text-xs" /></div>
+                  <div><label className="text-[10px] text-muted-foreground">秒</label><Input type="number" min={0} max={59} value={todo.reminderSecond ?? 0} onChange={e => handleFieldUpdate({ reminderSecond: +e.target.value })} className="h-7 text-xs" /></div>
+                </div>
               </div>
             )}
             <p className="text-[10px] text-muted-foreground">创建: {new Date(todo.createdAt).toLocaleString('zh-CN')}</p>
